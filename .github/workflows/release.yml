@@ -1,0 +1,166 @@
+# SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
+# SPDX-License-Identifier: SSPL-1.0
+
+# Builds the nfi-desk server as ONE self-contained binary per platform and
+# attaches it (plus checksums) to the GitHub release for the pushed tag.
+#
+# The binary embeds everything: Effect server, REST + SSE API, sqlite
+# (bun:sqlite) and the built web shell — no node_modules, no web dist, no
+# runtime on the target machine. Run it:
+#
+#   ./nfi-desk-linux-x64            # listens on :4000, serves web + API
+#
+# Triggered by pushing a version tag:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Deliberately SINGLE-JOB and free of third-party actions (no
+# actions/setup-*, pnpm/action-setup, upload/download-artifact or
+# gh-release): everything comes from the runner image, nodejs.org or the
+# npm registry, and the release is published with the preinstalled gh CLI
+# against the GitHub API using the run's GITHUB_TOKEN.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: "24.6.0"
+  PNPM_VERSION: "11.25.0"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout (direct git — no action clones)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          # Token goes straight into the remote URL — no global insteadOf
+          # rewrite (a wrong rewrite silently mangles the host).
+          HOST_PART="${GITHUB_SERVER_URL#https://}"
+          git init -q .
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@${HOST_PART}/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git log -1 --oneline
+
+      - name: Install pinned Node (nodejs.org tarball)
+        run: |
+          set -eux
+          # GitHub-hosted runners run as non-root: extract into a user-owned
+          # prefix (NOT /usr/local) so tar, `corepack enable` and
+          # `npm install -g` can all write without sudo. GITHUB_PATH exports
+          # it to every later step; the inline export covers this one.
+          ARCH=$(uname -m); [ "$ARCH" = x86_64 ] && ARCH=x64 || ARCH=arm64
+          NODE_PREFIX="$HOME/.local/node"
+          mkdir -p "$NODE_PREFIX"
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz" \
+            | tar -xJ -C "$NODE_PREFIX" --strip-components=1
+          echo "$NODE_PREFIX/bin" >> "$GITHUB_PATH"
+          export PATH="$NODE_PREFIX/bin:$PATH"
+          node --version
+          npm --version
+
+      - name: Enable pnpm
+        run: |
+          set -eux
+          corepack enable
+          corepack prepare "pnpm@${PNPM_VERSION}" --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web shell
+        run: pnpm --filter @nfi/web build
+
+      - name: Embed web shell into the binary entry
+        run: node scripts/embed-web-dist.mjs
+
+      - name: Install bun
+        run: |
+          set -eux
+          npm install -g bun
+          bun --version
+
+      - name: Compile single-file binaries (all platforms)
+        run: |
+          set -eux
+          for target in bun-linux-x64 bun-linux-arm64 bun-darwin-x64 bun-darwin-arm64 bun-windows-x64; do
+            ext=""
+            case "$target" in bun-windows-*) ext=".exe" ;; esac
+            bun build --compile --target="$target" \
+              --outfile="release/nfi-desk-${target#bun-}${ext}" \
+              apps/server/src/binary.ts
+          done
+          ls -lh release/
+
+      - name: Smoke-test the linux binary
+        run: |
+          set -eux
+          chmod +x release/nfi-desk-linux-x64
+          PORT=4799 SQLITE_PATH=/tmp/nfi-desk-smoke.db ./release/nfi-desk-linux-x64 &
+          SMOKE_PID=$!
+          sleep 5
+          curl -fsS http://127.0.0.1:4799/api/health
+          curl -fsS -o /dev/null http://127.0.0.1:4799/
+          curl -fsS -o /dev/null http://127.0.0.1:4799/login
+          kill "$SMOKE_PID"
+
+      - name: Checksums
+        run: |
+          set -eux
+          cd release
+          # Only the binaries — `*` would pick up checksums.txt itself because
+          # the redirect creates it before the glob expands.
+          sha256sum -- nfi-desk-* > checksums.txt
+          cat checksums.txt
+
+      - name: Publish release and upload binaries (GitHub API via gh)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          REPO_API="repos/${GITHUB_REPOSITORY}"
+          TAG="${GITHUB_REF_NAME}"
+
+          # Find or create the release for this tag.
+          RELEASE_ID=$(gh api "$REPO_API/releases/tags/$TAG" --jq .id) || RELEASE_ID=""
+          if [ -z "${RELEASE_ID:-}" ]; then
+            RELEASE_ID=$(gh api --method POST "$REPO_API/releases" \
+              -f tag_name="$TAG" \
+              -f name="nfi-desk $TAG" \
+              -F draft=false \
+              -F prerelease=false \
+              -f body="Single-binary server release — web shell, REST + SSE API and sqlite embedded in one file. Usage: DEPLOYMENT.md in the repo." \
+              --jq .id)
+          fi
+          echo "release id: $RELEASE_ID"
+
+          for f in release/*; do
+            name=$(basename "$f")
+            # Re-runs: drop an existing asset of the same name first.
+            ASSET_ID=$(gh api "$REPO_API/releases/$RELEASE_ID/assets" \
+              --jq ".[] | select(.name == \"$name\") | .id") || ASSET_ID=""
+            if [ -n "${ASSET_ID:-}" ]; then
+              gh api --method DELETE "$REPO_API/releases/assets/$ASSET_ID"
+            fi
+            # Asset uploads live on uploads.github.com, NOT api.github.com —
+            # POSTing the binary to the API host 404s.
+            gh api --method POST \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=$name" \
+              -H "Content-Type: application/octet-stream" \
+              --input "$f" > /dev/null
+            echo "uploaded $name"
+          done
+
+          echo "release $TAG published with $(ls release | wc -l) files"
