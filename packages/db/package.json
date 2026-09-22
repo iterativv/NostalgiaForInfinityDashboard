@@ -1,0 +1,33 @@
+{
+  "name": "@nfi/db",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "license": "SSPL-1.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@effect/platform": "^0.97.0",
+    "@effect/sql": "^0.52.0",
+    "@effect/sql-sqlite-bun": "^0.53.0",
+    "@effect/sql-sqlite-node": "^0.53.0",
+    "@nfi/api-contract": "workspace:*",
+    "effect": "^3.17.14"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "26.4.1",
+    "eslint": "10.9.1",
+    "typescript": "7.0.2",
+    "vitest": "^3.0.0"
+  }
+}
