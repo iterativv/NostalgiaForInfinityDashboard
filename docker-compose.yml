@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
+# SPDX-License-Identifier: SSPL-1.0
+
+# nfi-desk production compose file. The image serves the web shell AND the
+# API on one port (4000) — no CORS setup needed for same-origin use.
+#
+#   docker compose up -d          # build + start → http://localhost:4000
+#
+# Configure by exporting env vars (or a .env file next to this compose file):
+#
+#   ROOT_USERNAME=admin           # skip the first-run setup screen
+#   ROOT_PASSWORD=change-me
+#   FREQTRADE_URL=http://freqtrade:8080   # or http://host.docker.internal:8080
+#   FREQTRADE_USERNAME=freqtrader
+#   FREQTRADE_PASSWORD=secret
+#
+# Extra instances can be added from the Instances widget at runtime — env is
+# only for the implicit `default` connection.
+
+services:
+  nfi-desk:
+    build: .
+    image: nfi-desk:latest
+    container_name: nfi-desk
+    ports:
+      - "4000:4000"
+    environment:
+      ROOT_USERNAME: ${ROOT_USERNAME:-}
+      ROOT_PASSWORD: ${ROOT_PASSWORD:-}
+      FREQTRADE_URL: ${FREQTRADE_URL:-}
+      FREQTRADE_USERNAME: ${FREQTRADE_USERNAME:-}
+      FREQTRADE_PASSWORD: ${FREQTRADE_PASSWORD:-}
+      # Only needed when the browser talks to a DIFFERENT origin than this
+      # server (same-origin deployments like this one don't need it).
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    volumes:
+      - nfi-desk-data:/data
+    restart: unless-stopped
+
+  # Optional local freqtrade for trying the panel out (docker compose
+  # --profile freqtrade up). Bring your own config — see
+  # https://www.freqtrade.io/en/stable/configuration/.
+  # freqtrade:
+  #   image: freqtradeorg/freqtrade:stable
+  #   profiles: ["freqtrade"]
+  #   command: trade --config /freqtrade/user/config.json
+  #   volumes:
+  #     - ./freqtrade-userdata:/freqtrade/user
+  #   ports:
+  #     - "127.0.0.1:8080:8080"
+
+volumes:
+  nfi-desk-data:

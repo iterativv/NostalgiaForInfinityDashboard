@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
+# SPDX-License-Identifier: SSPL-1.0
+
+# Everything the builder re-creates, plus local state. Keep in sync with
+# .gitignore.
+
+.git
+.github
+.data
+.turbo
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+coverage
+*.log
+.env
+.env.*
+!.env.example
+Dockerfile
+docker-compose.yml
+docs
+README.md
+LICENSE
