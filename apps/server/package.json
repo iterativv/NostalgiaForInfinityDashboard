@@ -1,0 +1,31 @@
+{
+  "name": "@nfi/server",
+  "version": "0.2.0",
+  "type": "module",
+  "private": true,
+  "license": "SSPL-1.0",
+  "scripts": {
+    "dev": "tsx --watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src --max-warnings 0"
+  },
+  "dependencies": {
+    "@effect/platform": "^0.97.0",
+    "@effect/platform-node": "^0.108.0",
+    "@nfi/api-contract": "workspace:*",
+    "@nfi/capabilities": "workspace:*",
+    "@nfi/db": "workspace:*",
+    "@nfi/freqtrade-client": "workspace:*",
+    "effect": "^3.17.14"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "26.4.1",
+    "eslint": "10.9.1",
+    "tsx": "^4.19.0",
+    "typescript": "7.0.2"
+  }
+}
