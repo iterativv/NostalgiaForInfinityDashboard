@@ -6,6 +6,7 @@ import {
   HttpServerRequest,
   HttpServerResponse,
 } from "@effect/platform";
+import { toServerResponse } from "@effect/platform-node/NodeHttpServerRequest";
 import { Duration, Effect, Stream } from "effect";
 import {
   CAPABILITY_REGISTRY,
@@ -54,6 +55,65 @@ const snapshotEvent = (
 
 const HEARTBEAT = encoder.encode(": ping\n\n");
 const HEARTBEAT_MS = 25_000;
+
+/** Responses already wrapped by `hardenSseResponse` (idempotence). */
+const hardenedResponses = new WeakSet<object>();
+
+/**
+ * Harden the raw node response against client-disconnect races (issue #3).
+ *
+ * An SSE response stays open for hours, and the platform's stream drain
+ * (`NodeHttpServer.handleResponse`) keeps calling `write()` on it until the
+ * abort interrupt lands. Between the TCP socket dying and that interrupt
+ * there is a window where a `write()` (or the error-response `writeHead()`
+ * the platform emits after a failed drain) hits a dead response. Bun then
+ * throws `Cannot writeHead headers after they are sent to the client` —
+ * its `end()` also fails to set `writableEnded` on a dead handle
+ * (oven-sh/bun#25632), which defeats the platform's only double-write guard
+ * — wedging connections until restart.
+ *
+ * The wrappers close both halves of that race for THIS route only, and are
+ * no-ops for any healthy response:
+ * - `write` after the response is ended/destroyed reports "flushed" instead
+ *   of throwing, so the drain never fails on a client that already left and
+ *   the platform's 500-error-response path never runs for a live stream.
+ * - `writeHead` after headers were sent returns instead of throwing, so even
+ *   an unrelated mid-stream failure cannot crash the request fiber.
+ */
+const hardenSseResponse = (
+  request: HttpServerRequest.HttpServerRequest,
+): void => {
+  const raw = toServerResponse(request);
+  if (hardenedResponses.has(raw)) return;
+
+  // "Writes into this response can only throw": the socket died (client
+  // disconnect) or the response finished. Node marks `destroyed` only after
+  // the socket detaches, so the socket check is what actually covers the
+  // disconnect-to-interrupt window.
+  const writeWouldThrow = (): boolean =>
+    raw.writableEnded ||
+    raw.destroyed ||
+    raw.socket === null ||
+    raw.socket === undefined ||
+    raw.socket.destroyed;
+
+  const originalWrite = raw.write.bind(raw);
+  const originalWriteHead = raw.writeHead.bind(raw);
+
+  // SAFETY: the wrapper forwards the spread arguments verbatim to the bound
+  // original, so it satisfies the overloaded `write` method shape.
+  raw.write = ((...args: Parameters<typeof originalWrite>) =>
+    writeWouldThrow() ? true : originalWrite(...args)) as typeof raw.write;
+
+  // SAFETY: same verbatim forwarding as the `write` wrapper above; returns
+  // the response itself (as `writeHead` does) when headers already went out.
+  raw.writeHead = ((...args: Parameters<typeof originalWriteHead>) =>
+    raw.headersSent
+      ? raw
+      : originalWriteHead(...args)) as typeof raw.writeHead;
+
+  hardenedResponses.add(raw);
+};
 
 export const streamRouteHandler = (
   request: HttpServerRequest.HttpServerRequest,
@@ -105,15 +165,29 @@ export const streamRouteHandler = (
     // release untracks it so the poller stops refreshing (and caching)
     // options combinations nobody watches anymore.
     for (const { key } of tracked) liveHub.retain(key)
-    const body = Stream.asyncScoped<Uint8Array>((emit) =>
-      Effect.gen(function* () {
+
+    // Before the stream starts: make late writes into a gone client (and the
+    // platform's post-failure error response) no-ops instead of throws —
+    // see `hardenSseResponse`. Must run before any byte is flushed.
+    hardenSseResponse(request)
+
+    const body = Stream.asyncScoped<Uint8Array>((emit) => {
+      // `emit.single` returns a promise that rejects when the stream's queue
+      // shuts down while an emit is still backed up (client gone mid-
+      // backpressure). A dropped frame on a dead connection is fine; an
+      // unhandled rejection kills the process (Node) or spams the log (Bun).
+      const safeEmit = (frame: Uint8Array): void => {
+        void Promise.resolve(emit.single(frame)).catch(() => {})
+      }
+
+      return Effect.gen(function* () {
         const unsubscribes: Array<() => void> = []
         yield* Effect.acquireRelease(
           Effect.sync(() => {
             for (const { name, key } of tracked) {
               unsubscribes.push(
                 liveHub.subscribe(key, (snapshot) => {
-                  emit.single(
+                  safeEmit(
                     snapshotEvent(
                       name,
                       key,
@@ -134,18 +208,18 @@ export const streamRouteHandler = (
         for (const { name, key } of tracked) {
           const cached = liveHub.get(key);
           if (cached)
-            emit.single(
+            safeEmit(
               snapshotEvent(name, key, cached.result, cached.updatedAt),
             );
         }
         yield* Effect.forever(
           Effect.andThen(
-            Effect.sync(() => emit.single(HEARTBEAT)),
+            Effect.sync(() => safeEmit(HEARTBEAT)),
             Effect.sleep(Duration.millis(HEARTBEAT_MS)),
           ),
         ).pipe(Effect.forkScoped);
-      }),
-    );
+      });
+    });
     return HttpServerResponse.stream(body, {
       status: 200,
       contentType: "text/event-stream",
