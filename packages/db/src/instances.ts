@@ -154,7 +154,11 @@ export const InstanceRepoLive: Layer.Layer<InstanceRepo, never, SqlClient.SqlCli
             baseUrl:
               input.baseUrl !== undefined ? input.baseUrl.trim().replace(/\/$/, "") : current.baseUrl,
             username: input.username !== undefined ? input.username : current.username,
-            // Empty/omitted password keeps the stored secret.
+            // Empty/omitted password keeps the stored secret. NOTE: the
+            // `instances.update` capability guards the repoint case above
+            // this layer — a baseUrl/username change without a fresh
+            // password is rejected there, so the secret kept here can never
+            // be forwarded to a repointed host.
             password:
               input.password !== undefined && input.password.length > 0 ? input.password : current.password,
             updatedAt: new Date().toISOString(),

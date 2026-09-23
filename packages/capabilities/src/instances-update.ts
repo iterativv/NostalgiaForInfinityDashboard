@@ -39,6 +39,27 @@ export const InstancesUpdateCapability = defineCapability({
           return yield* Effect.fail(BackendError.make({ error: "invalid baseUrl", detail: options.baseUrl ?? "" }))
         }
       }
+      // Credential-repoint guard: an empty/omitted password keeps the stored
+      // secret (see `InstanceRepo.updateInstance`), so repointing the base
+      // URL or username without a fresh password would forward the REAL bot
+      // credentials to an attacker-controlled host on the next login. Compare
+      // against the STORED values (the edit form always sends baseUrl and
+      // username, even unchanged) and require the password on any change.
+      const current = yield* ctx.getStoredInstance(options.id)
+      if (!current) return yield* Effect.fail(notFoundError("instance", options.id))
+      const normalizeBaseUrl = (url: string): string => url.trim().replace(/\/$/, "")
+      const nextBaseUrl =
+        options.baseUrl !== undefined ? normalizeBaseUrl(options.baseUrl) : current.baseUrl
+      const nextUsername = options.username !== undefined ? options.username : current.username
+      const passwordProvided = options.password !== undefined && options.password.length > 0
+      if ((nextBaseUrl !== current.baseUrl || nextUsername !== current.username) && !passwordProvided) {
+        return yield* Effect.fail(
+          BackendError.make({
+            error: "password required",
+            detail: "re-enter the freqtrade password when changing the base URL or username",
+          }),
+        )
+      }
       const instance = yield* ctx.instances.updateInstance(options.id, {
         name: options.name,
         baseUrl: options.baseUrl,

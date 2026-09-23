@@ -10,6 +10,7 @@
 #
 #   ROOT_USERNAME=admin           # skip the first-run setup screen
 #   ROOT_PASSWORD=change-me
+#   NFI_SETUP_TOKEN=fixed-token   # optional: pin the first-run setup token
 #   FREQTRADE_URL=http://freqtrade:8080   # or http://host.docker.internal:8080
 #   FREQTRADE_USERNAME=freqtrader
 #   FREQTRADE_PASSWORD=secret
@@ -23,10 +24,17 @@ services:
     image: nfi-desk:latest
     container_name: nfi-desk
     ports:
-      - "4000:4000"
+      # Loopback-only: the first-run setup screen (whoever opens it first
+      # becomes root) must not be reachable from the network. To expose the
+      # panel beyond this host, put it behind a reverse proxy with TLS (see
+      # DEPLOYMENT.md) instead of publishing the port.
+      - "127.0.0.1:4000:4000"
     environment:
       ROOT_USERNAME: ${ROOT_USERNAME:-}
       ROOT_PASSWORD: ${ROOT_PASSWORD:-}
+      # Optional: pin the one-time first-run setup token (automation).
+      # Default: a random token per boot, printed with `docker compose logs`.
+      NFI_SETUP_TOKEN: ${NFI_SETUP_TOKEN:-}
       FREQTRADE_URL: ${FREQTRADE_URL:-}
       FREQTRADE_USERNAME: ${FREQTRADE_USERNAME:-}
       FREQTRADE_PASSWORD: ${FREQTRADE_PASSWORD:-}

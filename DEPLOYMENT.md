@@ -97,7 +97,7 @@ sudo systemctl enable --now nfi-desk
 ```sh
 docker build -t nfi-desk .
 docker run -d --name nfi-desk \
-  -p 4000:4000 \
+  -p 127.0.0.1:4000:4000 \
   -e ROOT_USERNAME=admin -e ROOT_PASSWORD=a-long-random-password \
   -e FREQTRADE_URL=http://host.docker.internal:8080 \
   -e FREQTRADE_USERNAME=freqtrader -e FREQTRADE_PASSWORD=secret \
@@ -105,6 +105,10 @@ docker run -d --name nfi-desk \
   --restart unless-stopped \
   nfi-desk
 ```
+
+The port stays on loopback (same as the compose file): the first-run setup
+screen must not be reachable from the network. Expose the panel through a
+reverse proxy with TLS (see below), not by publishing the port.
 
 On Linux, `host.docker.internal` needs `--add-host=host.docker.internal:host-gateway` (or use the host's IP / a shared Docker network).
 
@@ -124,8 +128,11 @@ This is the same code path as `pnpm dev`, minus the dev servers: the built web s
 
 ## First-run setup
 
-1. Open `http://your-server:4000`.
-2. If you did **not** set `ROOT_USERNAME`/`ROOT_PASSWORD`, the setup screen asks you to create the root admin (stored server-side; you can reset it by deleting the `root` row from the `users` table — see [Data](#data-backups-upgrades)).
+1. Open `http://localhost:4000` (Docker publishes on loopback only — from a
+   remote host, use an SSH tunnel or the reverse proxy below).
+2. If you did **not** set `ROOT_USERNAME`/`ROOT_PASSWORD`, the setup screen asks you to create the root admin (stored server-side; you can reset it by deleting the `root` row from the `users` table — see [Data](#data-backups-upgrades)):
+   - **One-time setup token**: the server prints it to its log on first boot (`docker compose logs -f nfi-desk`). Enter it on the setup screen — it proves you own the deployment, so whoever opens the page first on an exposed network cannot claim root. Pin a fixed token with `NFI_SETUP_TOKEN` for automated deployments.
+   - **Root password**: at least 12 characters.
 3. Connect your first freqtrade instance — via env (the implicit `default` instance) or the **Instances** widget (as many as you like, stored server-side).
 4. Build your terminal. Everything else (users, capabilities, the public read-only share) is managed from the UI.
 
@@ -150,19 +157,20 @@ Additional instances never touch env: add them in the **Instances** widget (URL 
 
 All optional; empty means unset.
 
-| Var                                         | Default (Docker / binary)                     | Purpose                                                                             |
-| ------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `PORT`                                      | `4000`                                        | Listen port (web + API on the same port)                                            |
-| `HOST`                                      | `0.0.0.0` (Docker) / `127.0.0.1` (binary)     | Bind address — the binary is loopback-only by default; set `0.0.0.0` for LAN/remote |
-| `SQLITE_PATH`                               | `/data/nfi-desk.db` (binary: `./nfi-desk.db`) | SQLite file — put it on a persistent volume                                         |
-| `ROOT_USERNAME` / `ROOT_PASSWORD`           | —                                             | Virtual root admin; skip the first-run setup screen                                 |
-| `FREQTRADE_URL`                             | `http://127.0.0.1:8080`                       | Implicit `default` instance (server-side only)                                      |
-| `FREQTRADE_USERNAME` / `FREQTRADE_PASSWORD` | —                                             | Credentials for the `default` instance                                              |
-| `FREQTRADE_TIMEOUT_MS`                      | `10000`                                       | freqtrade request timeout                                                           |
-| `CORS_ORIGINS`                              | `http://localhost:3000`                       | Only needed if the browser loads the shell from a DIFFERENT origin than this server |
-| `SNAPSHOT_INTERVAL_MS`                      | `60000`                                       | SQLite snapshot throttle                                                            |
-| `STATIC_DIR`                                | `../web/dist` (Node boots)                    | Web shell directory; the compiled binary ignores it (shell is embedded)             |
-| `OPEN_BROWSER`                              | `1` (binary)                                  | Auto-open the terminal in the browser on boot; set `0` for headless servers         |
+| Var                                         | Default (Docker / binary)                     | Purpose                                                                                                |
+| ------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `PORT`                                      | `4000`                                        | Listen port (web + API on the same port)                                                               |
+| `HOST`                                      | `0.0.0.0` (Docker) / `127.0.0.1` (binary)     | Bind address — the binary is loopback-only by default; set `0.0.0.0` for LAN/remote                    |
+| `SQLITE_PATH`                               | `/data/nfi-desk.db` (binary: `./nfi-desk.db`) | SQLite file — put it on a persistent volume                                                            |
+| `ROOT_USERNAME` / `ROOT_PASSWORD`           | —                                             | Virtual root admin; skip the first-run setup screen (password should be at least 12 characters)        |
+| `NFI_SETUP_TOKEN`                           | random per boot                               | Fixed one-time token for the first-run setup screen (automation); default is printed to the server log |
+| `FREQTRADE_URL`                             | `http://127.0.0.1:8080`                       | Implicit `default` instance (server-side only)                                                         |
+| `FREQTRADE_USERNAME` / `FREQTRADE_PASSWORD` | —                                             | Credentials for the `default` instance                                                                 |
+| `FREQTRADE_TIMEOUT_MS`                      | `10000`                                       | freqtrade request timeout                                                                              |
+| `CORS_ORIGINS`                              | `http://localhost:3000`                       | Only needed if the browser loads the shell from a DIFFERENT origin than this server                    |
+| `SNAPSHOT_INTERVAL_MS`                      | `60000`                                       | SQLite snapshot throttle                                                                               |
+| `STATIC_DIR`                                | `../web/dist` (Node boots)                    | Web shell directory; the compiled binary ignores it (shell is embedded)                                |
+| `OPEN_BROWSER`                              | `1` (binary)                                  | Auto-open the terminal in the browser on boot; set `0` for headless servers                            |
 
 ## HTTPS / reverse proxy
 
@@ -211,7 +219,8 @@ If the shell is served cross-origin (advanced setups), set `CORS_ORIGINS` to the
 
 ## Security notes
 
-- **Network exposure is opt-in.** The single binary and Node boots listen on `127.0.0.1` only — nothing on your network can reach the panel until you set `HOST=0.0.0.0` (or put it behind a reverse proxy). The Docker image binds `0.0.0.0` inside the container because port mapping requires it; prefer publishing on loopback (`-p 127.0.0.1:4000:4000`) and terminating TLS in front for anything reachable from the internet.
+- **Network exposure is opt-in.** The single binary and Node boots listen on `127.0.0.1` only — nothing on your network can reach the panel until you set `HOST=0.0.0.0` (or put it behind a reverse proxy). Docker publishes on loopback too (`127.0.0.1:4000:4000` in the compose file and the `docker run` example) — do not publish the port to the network; terminate TLS in front for anything reachable from the internet.
+- **First-run setup is token-gated.** Until root exists, the server prints a one-time setup token to its log and the setup screen requires it — the first visitor only becomes root by proving server access. The root password needs at least 12 characters.
 - Serve over HTTPS in production (reverse proxy above); session cookies are `HttpOnly` `SameSite=Lax`, plus `Secure` when the login arrives over TLS (directly or via `X-Forwarded-Proto`).
 - Repeated failed logins temporarily lock the username (5 failures within 15 minutes → 15-minute lockout, in-memory per server instance).
 - The public share (`/public`) exposes only the relative-only capability set — percentages and indices, never absolute balances. Audit what the `anonymous` grant includes on the **Manage users** page.

@@ -91,6 +91,19 @@ function InstanceForm({
       setFormError("Password is required.");
       return;
     }
+    if (!passwordRequired && values.password.length === 0) {
+      // Mirror of the backend repoint guard (`instances.update`): leaving
+      // the password empty keeps the stored secret, so a changed URL or
+      // username would forward the REAL credentials to the new host.
+      const normalize = (url: string) => url.trim().replace(/\/$/, "");
+      if (
+        normalize(values.baseUrl) !== normalize(initial.baseUrl) ||
+        values.username !== initial.username
+      ) {
+        setFormError("Password is required when changing the URL or username.");
+        return;
+      }
+    }
     setSaving(true);
     try {
       await onSubmit({
@@ -167,6 +180,12 @@ function InstanceForm({
         size="sm"
         autoComplete="current-password"
       />
+      {!passwordRequired ? (
+        <p style={{ fontSize: "0.75rem", opacity: 0.65 }}>
+          Required if the URL or username changes — otherwise the stored
+          password is kept.
+        </p>
+      ) : null}
       {formError ? (
         <p
           style={{

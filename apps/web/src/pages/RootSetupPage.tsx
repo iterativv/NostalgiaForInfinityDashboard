@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { Button, InlineNotification, PasswordInput, TextInput, Tile } from "@carbon/react"
+import { MIN_ROOT_PASSWORD_LENGTH } from "@nfi/api-contract"
 import { formatQueryError, runApi } from "../api"
 import { hydrateCapabilities, useCapabilities } from "../auth/capabilities"
 import { refreshSessionState } from "../auth/session"
@@ -26,6 +27,7 @@ export function RootSetupPage() {
   const [username, setUsername] = useState("root")
   const [password, setPassword] = useState("")
   const [confirm, setConfirm] = useState("")
+  const [setupToken, setSetupToken] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -65,14 +67,24 @@ export function RootSetupPage() {
       setError("Choose a password for the root account.")
       return
     }
+    if (password.length < MIN_ROOT_PASSWORD_LENGTH) {
+      setError(`Use at least ${MIN_ROOT_PASSWORD_LENGTH} characters for the root password.`)
+      return
+    }
     if (password !== confirm) {
       setError("Passwords do not match.")
+      return
+    }
+    if (setupToken.trim().length === 0) {
+      setError("Enter the one-time setup token from the server log.")
       return
     }
     setBusy(true)
     try {
       await runApi((client) =>
-        client.Auth.setupRoot({ payload: { username: username.trim(), password } }),
+        client.Auth.setupRoot({
+          payload: { username: username.trim(), password, setupToken: setupToken.trim() },
+        }),
       )
       // The backend set the session cookie — re-derive the whole shell as root.
       await refreshSessionState()
@@ -90,8 +102,9 @@ export function RootSetupPage() {
         <p className="nfi-login-subtitle">
           This deployment has no admin account yet. Create the <strong>root</strong>{" "}
           user now — it always holds every capability and manages users,
-          grants and instances. Anyone visiting before it exists can claim it,
-          so set it up if this is your panel.
+          grants and instances. Claiming it needs the one-time setup token
+          from the server log, so only someone with server access can take
+          ownership.
         </p>
         {capabilities.status === "offline" ? (
           <InlineNotification
@@ -113,7 +126,7 @@ export function RootSetupPage() {
           />
           <PasswordInput
             id="setup-password"
-            labelText="Password"
+            labelText={`Password (at least ${MIN_ROOT_PASSWORD_LENGTH} characters)`}
             autoComplete="new-password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
@@ -124,6 +137,14 @@ export function RootSetupPage() {
             autoComplete="new-password"
             value={confirm}
             onChange={(event) => setConfirm(event.target.value)}
+          />
+          <TextInput
+            id="setup-token"
+            labelText="One-time setup token"
+            helperText="Printed in the server log on first boot (docker compose logs -f nfi-desk). Anyone opening this screen first would become root, so the token proves you own the deployment."
+            autoComplete="off"
+            value={setupToken}
+            onChange={(event) => setSetupToken(event.target.value)}
           />
           {error ? (
             <InlineNotification
@@ -140,8 +161,9 @@ export function RootSetupPage() {
               disabled={
                 busy ||
                 username.trim().length === 0 ||
-                password.length === 0 ||
-                confirm.length === 0
+                password.length < MIN_ROOT_PASSWORD_LENGTH ||
+                confirm.length === 0 ||
+                setupToken.trim().length === 0
               }
             >
               {busy ? "Creating root…" : "Create root account"}

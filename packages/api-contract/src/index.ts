@@ -1759,10 +1759,20 @@ export type LoginRequest = typeof LoginRequest.Type;
 /**
  * First-run root provisioning (only while no root exists): creates the
  * always-privileged root account and signs the caller in as root.
+ *
+ * The password floor (`MIN_ROOT_PASSWORD_LENGTH`) is enforced at the wire
+ * schema AND in `SessionAuth.setupRoot` (clear error for direct callers):
+ * the setup screen is reachable by whoever arrives first, so short secrets
+ * must not slip through. `setupToken` is the one-time token the server
+ * prints to its log on first boot — required so an exposed first boot
+ * cannot be claimed by a stranger on the network.
  */
+export const MIN_ROOT_PASSWORD_LENGTH = 12
+
 export const SetupRootRequest = Schema.Struct({
   username: Schema.String.pipe(Schema.minLength(1)),
-  password: Schema.String.pipe(Schema.minLength(1)),
+  password: Schema.String.pipe(Schema.minLength(MIN_ROOT_PASSWORD_LENGTH)),
+  setupToken: Schema.optional(Schema.String),
 });
 export type SetupRootRequest = typeof SetupRootRequest.Type;
 

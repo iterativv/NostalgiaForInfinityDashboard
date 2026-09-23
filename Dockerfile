@@ -9,7 +9,7 @@
 # glibc + CA certificates. See DEPLOYMENT.md for the full production guide.
 #
 #   docker build -t nfi-desk .
-#   docker run -p 4000:4000 -v nfi-desk-data:/data nfi-desk
+#   docker run -p 127.0.0.1:4000:4000 -v nfi-desk-data:/data nfi-desk
 #
 # Cross-compile for another host arch on the same machine:
 #

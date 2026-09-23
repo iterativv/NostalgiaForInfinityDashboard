@@ -27,7 +27,9 @@ import { clearedSessionCookie, requestIsSecure, SessionAuth, sessionTokenFromReq
  *   `runCapabilityForHttp` (403 on missing grants).
  * - `Auth.setupRoot` is the first-run root provisioning exchange: while the
  *   deployment has no root (no env credentials, no stored row) it creates
- *   the always-privileged account and signs the caller in as root. Once root
+ *   the always-privileged account and signs the caller in as root. The
+ *   caller must present the one-time setup token from the server log plus a
+ *   password of at least `MIN_ROOT_PASSWORD_LENGTH` characters. Once root
  *   exists it refuses with `ForbiddenError` (403) — this is the only path
  *   that can ever create root, so the window is exactly "before first use".
  *
@@ -42,7 +44,7 @@ const encodeFailure = (operation: string) => (cause: unknown) =>
     detail: cause instanceof Error ? cause.message : String(cause),
   })
 
-const decodePayload = (schema: typeof LoginRequest | typeof SetupRootRequest) => (body: unknown) =>
+const decodePayload = <A, I>(schema: Schema.Schema<A, I>) => (body: unknown) =>
   Effect.try({
     try: () => Schema.decodeUnknownSync(schema)(body),
     catch: (cause) =>
@@ -84,7 +86,12 @@ export const AuthGroupLive = HttpApiBuilder.group(NfiApi, "Auth", (handlers) =>
         const payload = yield* decodePayload(SetupRootRequest)(body)
         const auth = yield* SessionAuth
         return yield* respondWithSession(
-          auth.setupRoot(payload.username, payload.password, requestIsSecure(request)),
+          auth.setupRoot(
+            payload.username,
+            payload.password,
+            payload.setupToken,
+            requestIsSecure(request),
+          ),
         )
       }),
     )

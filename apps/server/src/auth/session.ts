@@ -10,6 +10,7 @@ import {
   BackendError,
   ForbiddenError,
   LoginResponse,
+  MIN_ROOT_PASSWORD_LENGTH,
   NON_SENSITIVE_CAPABILITIES,
   ROOT_USER_ID,
   UnauthorizedError,
@@ -53,6 +54,36 @@ export const readEnvRootCredentials = (): { rootUsername: string; rootPassword: 
   const rootPassword = process.env["ROOT_PASSWORD"] ?? ""
   if (rootUsername.length === 0 || rootPassword.length === 0) return null
   return { rootUsername, rootPassword }
+}
+
+/**
+ * One-time first-run setup token.
+ *
+ * The Docker defaults publish the port on every interface while root is
+ * still unprovisioned, so whoever opens the setup screen first would become
+ * root. The token closes that window: the server prints it to its log on
+ * first boot (see the `SessionAuthLive` boot check) and `setupRoot` refuses
+ * without it — even an exposed first boot cannot be claimed by a stranger.
+ *
+ * - `NFI_SETUP_TOKEN` pins a fixed token (automation, reproducible
+ *   deployments); otherwise a random 128-bit hex token is generated once
+ *   per process and stays valid until restart.
+ * - Empty env means unset (compose passes `${VAR:-}` through as `""`).
+ */
+let generatedSetupToken: string | null = null
+
+export const readSetupToken = (): string => {
+  const fixed = (process.env["NFI_SETUP_TOKEN"] ?? "").trim()
+  if (fixed.length > 0) return fixed
+  if (generatedSetupToken === null) {
+    generatedSetupToken = randomBytes(16).toString("hex")
+  }
+  return generatedSetupToken
+}
+
+/** Test hook: drop the cached generated token so the next read re-rolls. */
+export const resetSetupTokenForTests = (): void => {
+  generatedSetupToken = null
 }
 
 /**
@@ -165,11 +196,15 @@ interface SessionAuthService {
   ) => Effect.Effect<SessionAuthLogin, UnauthorizedError | BackendError>
   /**
    * First-run root provisioning: create the always-privileged root account
-   * and mint its session. Refuses once root exists (env or stored).
+   * and mint its session. Refuses once root exists (env or stored). Requires
+   * the one-time setup token (`readSetupToken`, printed to the server log on
+   * first boot) and a password of at least `MIN_ROOT_PASSWORD_LENGTH`
+   * characters.
    */
   readonly setupRoot: (
     username: string,
     password: string,
+    setupToken?: string,
     secure?: boolean,
   ) => Effect.Effect<SessionAuthLogin, ForbiddenError | BackendError>
   /** Drop the session behind `token` (missing token = no-op). */
@@ -393,7 +428,7 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> = Layer.
           : grantFor(row.id, row.username, "user", row.capabilities, secure)
       })
 
-    const setupRoot = (username: string, password: string, secure = false) =>
+    const setupRoot = (username: string, password: string, setupToken?: string, secure = false) =>
       Effect.gen(function* () {
         const name = username.trim()
         if (envRoot) {
@@ -407,6 +442,14 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> = Layer.
         if (name.length === 0 || password.length === 0) {
           return yield* Effect.fail(
             ForbiddenError.make({ error: "username and password are required" }),
+          )
+        }
+        if (password.length < MIN_ROOT_PASSWORD_LENGTH) {
+          return yield* Effect.fail(
+            ForbiddenError.make({
+              error: "password too short",
+              detail: `use at least ${MIN_ROOT_PASSWORD_LENGTH} characters for the root password`,
+            }),
           )
         }
         if (name.toLowerCase() === ANONYMOUS_USER_ID) {
@@ -426,6 +469,14 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> = Layer.
             }),
           )
         }
+        if (!constantTimeEquals((setupToken ?? "").trim(), readSetupToken())) {
+          return yield* Effect.fail(
+            ForbiddenError.make({
+              error: "invalid setup token",
+              detail: "find the one-time token in the server log (docker compose logs -f nfi-desk)",
+            }),
+          )
+        }
         const row = yield* Effect.mapError(
           users.createRootUser({ username: name, password }),
           (cause): BackendError =>
@@ -436,6 +487,27 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> = Layer.
         )
         return grantFor(ROOT_USER_ID, row.username, "root", [...ALL_CAPABILITIES], secure)
       })
+
+    // First-boot setup token: while root is still unprovisioned (no env
+    // credentials, no stored row) whoever opens the setup screen first would
+    // become root. Print the one-time token `setupRoot` requires so an
+    // exposed first boot (e.g. Docker publishing every interface) cannot be
+    // claimed by a stranger. Detached on purpose — a storage failure only
+    // skips the log line, never the boot.
+    yield* Effect.forkDaemon(
+      Effect.ignore(
+        Effect.gen(function* () {
+          if (envRoot) return
+          const existing = yield* Effect.catchAll(
+            users.getUser(ROOT_USER_ID),
+            () => Effect.succeed(null),
+          )
+          if (existing) return
+          yield* Effect.log("First-run setup is open — create the root account on the /setup screen")
+          yield* Effect.log(`One-time setup token (required on the setup screen): ${readSetupToken()}`)
+        }),
+      ),
+    )
 
     // Install the R/E-free stream bridge BEFORE the service value: services
     // are captured in the closure, so the SSE route can resolve principals
