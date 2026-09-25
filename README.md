@@ -58,7 +58,7 @@ One process serves the web shell, the REST + SSE API and SQLite on a single port
 
 ### Which release file for my machine?
 
-Releases live on GitHub: **[github.com/lamualfa/NostalgiaForInfinityDashboard/releases](https://github.com/lamualfa/NostalgiaForInfinityDashboard/releases)**. Downloads are public — no token needed.
+Releases live on GitHub: **[github.com/iterativv/NostalgiaForInfinityDashboard/releases](https://github.com/iterativv/NostalgiaForInfinityDashboard/releases)**. Downloads are public — no token needed.
 
 Not sure about your architecture? Run `uname -m`: `x86_64` means **x64**, `aarch64`/`arm64` means **arm64**.
 
@@ -77,7 +77,7 @@ Every file is self-contained (~100 MB, no runtime) — server, API and web termi
 Paste this single line — it resolves the newest release, picks the right file for your architecture, and starts the server:
 
 ```sh
-curl -fsSL -o nfi-desk "https://github.com/lamualfa/NostalgiaForInfinityDashboard/releases/latest/download/nfi-desk-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')" && chmod +x nfi-desk && ./nfi-desk
+curl -fsSL -o nfi-desk "https://github.com/iterativv/NostalgiaForInfinityDashboard/releases/latest/download/nfi-desk-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')" && chmod +x nfi-desk && ./nfi-desk
 ```
 
 → open **http://localhost:4000** — the web walks you through first-run setup (create the root admin, connect your first freqtrade instance). No env vars, no database, no web server needed.
@@ -85,7 +85,7 @@ curl -fsSL -o nfi-desk "https://github.com/lamualfa/NostalgiaForInfinityDashboar
 Windows PowerShell equivalent:
 
 ```powershell
-Invoke-WebRequest -OutFile nfi-desk.exe "https://github.com/lamualfa/NostalgiaForInfinityDashboard/releases/latest/download/nfi-desk-windows-x64.exe"; .\nfi-desk.exe
+Invoke-WebRequest -OutFile nfi-desk.exe "https://github.com/iterativv/NostalgiaForInfinityDashboard/releases/latest/download/nfi-desk-windows-x64.exe"; .\nfi-desk.exe
 ```
 
 ```sh
