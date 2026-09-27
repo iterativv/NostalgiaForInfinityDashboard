@@ -1,12 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { useState } from "react"
-import { useNavigate } from "@tanstack/react-router"
-import { Button, InlineNotification, PasswordInput, TextInput, Tile } from "@carbon/react"
-import { formatQueryError } from "../api"
-import { login } from "../auth/session"
-import { useFirstRunGate } from "../auth/firstRun"
+import { useNavigate } from "@tanstack/react-router";
+import { useStore } from "@tanstack/react-store";
+import {
+  Button,
+  InlineNotification,
+  PasswordInput,
+  TextInput,
+  Tile,
+} from "@carbon/react";
+import { useLocalStore } from "@nfi/ui";
+import { formatQueryError } from "../api";
+import { login } from "../auth/session";
+import { useFirstRunGate } from "../auth/firstRun";
 
 /**
  * Sign-in page (`/login`). Thin by design: credentials go straight to the
@@ -20,27 +27,47 @@ import { useFirstRunGate } from "../auth/firstRun"
  * is claiming root (`/setup`).
  */
 export function LoginPage() {
-  const navigate = useNavigate()
-  const [username, setUsername] = useState("")
-  const [password, setPassword] = useState("")
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const navigate = useNavigate();
+
+  // One form store: credentials + submit status share a single state object.
+  interface LoginFormState {
+    username: string;
+    password: string;
+    error: string | null;
+    busy: boolean;
+  }
+
+  const formStore = useLocalStore<LoginFormState>({
+    username: "",
+    password: "",
+    error: null,
+    busy: false,
+  });
+
+  const { username, password, error, busy } = useStore(formStore, (s) => s);
   // Fresh deployment: /login has nothing to authenticate against yet.
-  useFirstRunGate()
+  useFirstRunGate();
 
   const submit = async (event: React.FormEvent) => {
-    event.preventDefault()
-    if (busy) return
-    setError(null)
-    setBusy(true)
+    event.preventDefault();
+
+    // Latest values from the store, not the render-time closure.
+    const current = formStore.state;
+
+    if (current.busy) return;
+    formStore.setState((p) => ({ ...p, error: null, busy: true }));
+
     try {
-      await login(username.trim(), password)
-      void navigate({ to: "/" })
+      await login(current.username.trim(), current.password);
+      void navigate({ to: "/" });
     } catch (cause) {
-      setError(formatQueryError(cause) ?? "Sign-in failed")
-      setBusy(false)
+      formStore.setState((p) => ({
+        ...p,
+        error: formatQueryError(cause) ?? "Sign-in failed",
+        busy: false,
+      }));
     }
-  }
+  };
 
   return (
     <div className="nfi-login-host">
@@ -58,14 +85,24 @@ export function LoginPage() {
             placeholder="root"
             autoComplete="username"
             value={username}
-            onChange={(event) => setUsername(event.target.value)}
+            onChange={(event) =>
+              formStore.setState((p) => ({
+                ...p,
+                username: event.target.value,
+              }))
+            }
           />
           <PasswordInput
             id="login-password"
             labelText="Password"
             autoComplete="current-password"
             value={password}
-            onChange={(event) => setPassword(event.target.value)}
+            onChange={(event) =>
+              formStore.setState((p) => ({
+                ...p,
+                password: event.target.value,
+              }))
+            }
           />
           {error ? (
             <InlineNotification
@@ -77,15 +114,24 @@ export function LoginPage() {
             />
           ) : null}
           <div className="nfi-login-actions">
-            <Button type="submit" disabled={busy || username.trim().length === 0 || password.length === 0}>
+            <Button
+              type="submit"
+              disabled={
+                busy || username.trim().length === 0 || password.length === 0
+              }
+            >
               {busy ? "Signing in…" : "Sign in"}
             </Button>
-            <Button kind="secondary" type="button" onClick={() => void navigate({ to: "/" })}>
+            <Button
+              kind="secondary"
+              type="button"
+              onClick={() => void navigate({ to: "/" })}
+            >
               Continue without signing in
             </Button>
           </div>
         </form>
       </Tile>
     </div>
-  )
+  );
 }

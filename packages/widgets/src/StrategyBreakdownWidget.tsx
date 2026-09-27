@@ -8,22 +8,19 @@
  * strategy earns, which churns, and where the trade count concentrates.
  * Fleet mode (`instanceId === "all"`) groups per (strategy, instance) and
  * labels rows `strategy · instanceName` so attribution stays unambiguous.
+ * Rows render through NfiDataTable in fixed order (profit best-first).
  */
 
-import {
-  NumberInput,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-  Tag,
-} from "@carbon/react";
+import { NumberInput, Tag } from "@carbon/react";
 import { Schema } from "effect";
 import type { Capability } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
-import { EmptyState, WidgetFrame } from "@nfi/ui";
+import {
+  EmptyState,
+  NfiDataTable,
+  WidgetFrame,
+  type NfiColumnDef,
+} from "@nfi/ui";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import { InstanceIdField, numberWithDefault } from "./shared/config";
 import { clampInt } from "./shared/format";
@@ -46,10 +43,57 @@ export const StrategyBreakdownConfigSchema = Schema.Struct({
   limit: numberWithDefault(200),
   minTrades: numberWithDefault(1),
 });
+
 export type StrategyBreakdownConfig = typeof StrategyBreakdownConfigSchema.Type;
 
 export const STRATEGY_BREAKDOWN_DEFAULTS: StrategyBreakdownConfig =
   Schema.decodeUnknownSync(StrategyBreakdownConfigSchema)({});
+
+/** One aggregated strategy row — fleet mode labels `strategy · instance`. */
+interface StrategyRow {
+  readonly key: string;
+  readonly strategy: string;
+  readonly trades: number;
+  readonly wins: number;
+  readonly profit: number;
+  readonly winrate: number;
+}
+
+/** Static column set — module scope keeps the table inputs stable. Rows keep
+ * their fixed business order (profit best-first), so no column sorts. */
+const COLUMNS: NfiColumnDef<StrategyRow>[] = [
+  {
+    id: "strategy",
+    header: "Strategy",
+    cell: ({ row }) => row.original.strategy,
+    enableSorting: false,
+  },
+  {
+    id: "trades",
+    header: "Trades",
+    cell: ({ row }) => row.original.trades,
+    meta: { className: "nfi-mono" },
+    enableSorting: false,
+  },
+  {
+    id: "winrate",
+    header: "Winrate",
+    cell: ({ row }) => `${row.original.winrate.toFixed(1)}%`,
+    meta: { className: "nfi-mono" },
+    enableSorting: false,
+  },
+  {
+    id: "profit",
+    header: "Profit",
+    cell: ({ row }) => (
+      <Tag type={row.original.profit >= 0 ? "green" : "red"} size="sm">
+        {row.original.profit >= 0 ? "+" : ""}
+        {row.original.profit.toFixed(2)}
+      </Tag>
+    ),
+    enableSorting: false,
+  },
+];
 
 export function StrategyBreakdownWidget({
   config,
@@ -59,45 +103,61 @@ export function StrategyBreakdownWidget({
   const limit = clampInt(cfg.limit, 200, 10, 1000);
   const minTrades = clampInt(cfg.minTrades, 1, 0, 100);
   const access = useWidgetAccess(STRATEGY_BREAKDOWN_CAPABILITIES);
+
   const src = useClosedPositionsSource(cfg.instanceId, limit, {
     enabled: access.allowed,
   });
+
   const state = queryState(src.error, src.isLoading);
+
   const accessError = access.allowed
     ? null
     : `Not authorized — needs ${access.missing.join(", ")}`;
+
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<StrategyBreakdownConfig>) =>
     applyWidgetSettings(panelId, "strategy-breakdown", cfg, p);
 
   /** Fleet rows are per-instance; group by (strategy, instance) there. */
   const fleet = cfg.instanceId === "all";
+
   const groups = new Map<
     string,
     { strategy: string; trades: number; wins: number; profit: number }
   >();
+
   for (const p of src.data ?? []) {
     const name = (p.strategy ?? "unknown").trim() || "unknown";
     const key = fleet ? `${name}|${p.instanceName ?? ""}` : name;
+
     const entry = groups.get(key) ?? {
       strategy: fleet && p.instanceName ? `${name} · ${p.instanceName}` : name,
       trades: 0,
       wins: 0,
       profit: 0,
     };
+
     const profit = p.closeProfitAbs ?? p.profitAbs ?? 0;
     entry.trades += 1;
+
     if (profit > 0) entry.wins += 1;
     entry.profit += profit;
     groups.set(key, entry);
   }
-  const rows = [...groups.entries()]
-    .map(([key, g]) => ({
-      key,
-      ...g,
-      winrate: g.trades > 0 ? (g.wins / g.trades) * 100 : 0,
-    }))
-    .filter((r) => r.trades >= minTrades)
+
+  const rows: StrategyRow[] = [...groups.entries()]
+    .flatMap(([key, g]) =>
+      g.trades < minTrades
+        ? []
+        : [
+            {
+              key,
+              ...g,
+              winrate: g.trades > 0 ? (g.wins / g.trades) * 100 : 0,
+            },
+          ],
+    )
     .sort((a, b) => b.profit - a.profit);
 
   return (
@@ -140,47 +200,25 @@ export function StrategyBreakdownWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Strategy Breakdown"
-      isLoading={state.isLoading}
-      error={accessError ?? state.error}
-    >
-      {rows.length > 0 ? (
-        <div className="nfi-table-scroll">
-          <Table size="sm" useZebraStyles={false}>
-            <TableHead>
-              <TableRow>
-                <TableHeader>Strategy</TableHeader>
-                <TableHeader>Trades</TableHeader>
-                <TableHeader>Winrate</TableHeader>
-                <TableHeader>Profit</TableHeader>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {rows.map((row) => (
-                <TableRow key={row.key}>
-                  <TableCell>{row.strategy}</TableCell>
-                  <TableCell className="nfi-mono">{row.trades}</TableCell>
-                  <TableCell className="nfi-mono">
-                    {row.winrate.toFixed(1)}%
-                  </TableCell>
-                  <TableCell>
-                    <Tag type={row.profit >= 0 ? "green" : "red"} size="sm">
-                      {row.profit >= 0 ? "+" : ""}
-                      {row.profit.toFixed(2)}
-                    </Tag>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      ) : (
-        <EmptyState
-          title="No strategy data"
-          hint="No closed trades in the window."
-        />
-      )}
-    </WidgetFrame>
+        title="Strategy Breakdown"
+        isLoading={state.isLoading}
+        error={accessError ?? state.error}
+      >
+        {rows.length > 0 ? (
+          <div className="nfi-table-scroll">
+            <NfiDataTable
+              columns={COLUMNS}
+              data={rows}
+              getRowId={(row) => row.key}
+            />
+          </div>
+        ) : (
+          <EmptyState
+            title="No strategy data"
+            hint="No closed trades in the window."
+          />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -194,6 +232,8 @@ export const StrategyBreakdownWidgetDef = defineWidget({
   defaultConfig: STRATEGY_BREAKDOWN_DEFAULTS,
   component: StrategyBreakdownWidget,
   capabilities: [...STRATEGY_BREAKDOWN_CAPABILITIES],
-  minWidth: 340,
-  minHeight: 140,
+  minWidth: 500,
+  minHeight: 170,
+  defaultWidth: 480,
+  defaultHeight: 340,
 });

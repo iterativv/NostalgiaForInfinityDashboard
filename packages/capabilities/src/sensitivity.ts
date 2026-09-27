@@ -18,9 +18,13 @@ import { CAPABILITY_REGISTRY, type CapabilityName } from "./registry.js";
  */
 
 /** Kinds of information the capability can expose (its declaration). */
-export const capabilityExposes = (
-  name: Capability,
-): ReadonlyArray<InfoKind> => CAPABILITY_REGISTRY[name as CapabilityName]?.exposes ?? [];
+export const capabilityExposes = (name: Capability): ReadonlyArray<InfoKind> => {
+  // SAFETY: the registry literal is `satisfies Record<Capability, ...>` and
+  // registry.ts carries the compile-time proof that every `Capability` id is
+  // a registry key, so the index is always in range; unknown ids expose
+  // nothing (the `?? []` arm is unreachable for contract ids).
+  return CAPABILITY_REGISTRY[name as CapabilityName]?.exposes ?? [];
+};
 
 /**
  * A capability is sensitive iff it exposes at least one kind in the
@@ -32,6 +36,7 @@ export const isCapabilitySensitive = (
   sensitiveKinds: ReadonlyArray<InfoKind>,
 ): boolean => {
   const sensitive = new Set(sensitiveKinds);
+
   return capabilityExposes(name).some((kind) => sensitive.has(kind));
 };
 
@@ -53,6 +58,9 @@ export const isCapabilitySensitiveByDefault = (name: Capability): boolean =>
 
 /** Capability ids that are non-sensitive under the default criteria. */
 export const nonSensitiveCapabilityNames = (): ReadonlyArray<Capability> =>
-  (Object.keys(CAPABILITY_REGISTRY) as ReadonlyArray<CapabilityName>).filter(
-    (name) => !isCapabilitySensitiveByDefault(name),
-  );
+  (
+    // SAFETY: `Object.keys` returns the registry's literal keys, and the
+    // compile-time vocabulary proof in registry.ts guarantees those keys are
+    // exactly the `Capability` union.
+    Object.keys(CAPABILITY_REGISTRY) as ReadonlyArray<CapabilityName>
+  ).filter((name) => !isCapabilitySensitiveByDefault(name));

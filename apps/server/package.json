@@ -3,11 +3,10 @@
   "version": "0.2.0",
   "type": "module",
   "private": true,
-  "license": "SSPL-1.0",
   "scripts": {
     "dev": "tsx --watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "node --import tsx src/index.ts",
     "check-types": "tsc --noEmit",
     "lint": "eslint src --max-warnings 0"
   },

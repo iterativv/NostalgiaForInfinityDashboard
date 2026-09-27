@@ -73,7 +73,9 @@ export function WidgetStateView({
       </div>
     );
   }
+
   const Icon = STATE_ICONS[tone];
+
   return (
     <div
       className={`nfi-widget-state ${STATE_CLASS[tone]}`}
@@ -105,6 +107,7 @@ export function isFreqtradeAuthError(
   error: string | null | undefined,
 ): boolean {
   if (!error) return false;
+
   return (
     error.includes("freqtrade login returned 401") ||
     /"status":\s*401/.test(error)
@@ -159,6 +162,7 @@ export function WidgetFrame({
   const chrome = useContext(WidgetChromeContext);
   const cta = useContext(WidgetCtaContext);
   const titleHidden = hideTitle ?? chrome.hideTitle;
+
   return (
     <Tile
       className="nfi-widget"
@@ -262,6 +266,16 @@ export function WidgetFrame({
   );
 }
 
+/** Tone → CSS class for the `Stat` value; a neutral/absent tone gets none. */
+const PNL_TONE_CLASS: Record<
+  "positive" | "negative" | "neutral",
+  string | undefined
+> = {
+  positive: "nfi-pnl-positive",
+  negative: "nfi-pnl-negative",
+  neutral: undefined,
+};
+
 export function Stat({
   label,
   value,
@@ -274,12 +288,8 @@ export function Stat({
   /** Profit/loss coloring: green for gains, red for losses. */
   tone?: "positive" | "negative" | "neutral";
 }) {
-  const className =
-    tone === "positive"
-      ? "nfi-pnl-positive"
-      : tone === "negative"
-        ? "nfi-pnl-negative"
-        : undefined;
+  const className = PNL_TONE_CLASS[tone ?? "neutral"];
+
   return (
     <div
       style={{
@@ -344,6 +354,13 @@ export function EmptyState({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
+/** Direction triangle rendered by `PnlPill` for each tone. */
+const PNL_DIRECTION: Record<"positive" | "negative" | "neutral", string> = {
+  positive: "▲",
+  negative: "▼",
+  neutral: "•",
+};
+
 /**
  * Freqtrade-style boxed P&L value: colored border + tinted background with a
  * direction triangle, e.g. `▲ 31.66% (30.805)`. Tone comes from `value`,
@@ -370,11 +387,13 @@ export function PnlPill({
       : percent !== undefined && percent !== null
         ? percent
         : (absolute ?? 0);
+
   const tone =
     toneSource > 0 ? "positive" : toneSource < 0 ? "negative" : "neutral";
+
   return (
     <span className={`nfi-pill nfi-pill-${tone}`}>
-      {tone === "positive" ? "▲" : tone === "negative" ? "▼" : "•"}
+      {PNL_DIRECTION[tone]}
       {percent !== undefined && percent !== null
         ? ` ${percent > 0 ? "+" : ""}${percent.toFixed(digits)}%`
         : ""}
@@ -391,6 +410,7 @@ export function PnlPill({
  */
 export function ModeBadge({ dryRun }: { dryRun?: boolean }) {
   if (dryRun === undefined) return null;
+
   return (
     <span
       className={`nfi-mode-badge ${dryRun ? "nfi-mode-badge-dry" : "nfi-mode-badge-live"}`}
@@ -399,3 +419,22 @@ export function ModeBadge({ dryRun }: { dryRun?: boolean }) {
     </span>
   );
 }
+
+export {
+  NfiDataTable,
+  type NfiColumnDef,
+  type NfiColumnMeta,
+  type NfiDataTableProps,
+  type NfiTableFeatures,
+} from "./DataTable.js";
+
+export {
+  shallow,
+  useDebouncedValue,
+  useDerived,
+  useElementStore,
+  useLocalStore,
+  useStore,
+  useStoreEffect,
+  useSyncedStore,
+} from "./store.js";

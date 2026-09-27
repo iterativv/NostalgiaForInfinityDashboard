@@ -3,12 +3,20 @@
 
 import { describe, expect, it } from "vitest";
 import { collectPanelIds, integrityErrors } from "@nfi/widget-sdk";
+import { builtinWidgets } from "@nfi/widgets";
 import {
   DEFAULT_WORKSPACE_ID,
   buildDefaultWorkspace,
 } from "./defaultWorkspace";
 import { homeFingerprint, maybeUpgradeStoredHome } from "./pages";
-import type { Workspace } from "@nfi/api-contract";
+import { decodeWorkspace, type Workspace } from "@nfi/api-contract";
+
+const widgetMin = new Map(
+  builtinWidgets.map((definition) => [
+    definition.type,
+    { minWidth: definition.minWidth, minHeight: definition.minHeight },
+  ]),
+);
 
 describe("default workspace", () => {
   it("is a valid, self-consistent workspace", () => {
@@ -19,25 +27,26 @@ describe("default workspace", () => {
 
   it("mirrors the freq-ui fleet dashboard, not demo widgets", () => {
     const workspace = buildDefaultWorkspace();
-    expect(workspace.layout.type).toBe("grid");
-    const grid = workspace.layout as Extract<
-      ReturnType<typeof buildDefaultWorkspace>["layout"],
-      { type: "grid" }
-    >;
-    // Freqtrade-UI proportions: a wide fleet column and a narrow charts column.
-    expect(grid.columns).toEqual([1.7, 1]);
-    expect(grid.rows.length).toBe(3);
-    // Every cell holds exactly one widget — nothing hidden behind tabs.
+    expect(workspace.layout.type).toBe("auto");
+
+    if (workspace.layout.type !== "auto")
+      throw new Error("expected auto layout");
+    const auto = workspace.layout;
+
+    expect(auto.columnWidth).toBe(360);
+    // Every card holds exactly one widget — nothing hidden behind tabs.
     expect(
-      grid.items.every(
+      auto.items.every(
         (item) => item.child.type === "tabs" && item.child.panels.length === 1,
       ),
     ).toBe(true);
+
     const typeOf = (id: string): string | undefined =>
       workspace.panels[id]?.widgetType;
+
     const ids = collectPanelIds(workspace.layout).map(String);
     const types = new Set(ids.map(typeOf));
-    // Left column: comparison + trade tables; right column: charts.
+
     for (const expected of [
       "fleet-overview",
       "open-positions",
@@ -48,7 +57,7 @@ describe("default workspace", () => {
     ]) {
       expect(types.has(expected)).toBe(true);
     }
-    // Fleet tables subscribe to every instance, like freq-ui's comparison.
+
     expect(workspace.panels["panel-open"]?.widgetConfig).toMatchObject({
       instanceId: "all",
       showBot: true,
@@ -61,8 +70,55 @@ describe("default workspace", () => {
       instanceId: "all",
       bucket: "monthly",
     });
-    // Demo fixtures stay reachable via the palette, not the default screen.
     expect([...types].some((t) => t?.startsWith("development."))).toBe(false);
+  });
+
+  it("matches the fleet screenshot: wide+narrow rows with freq-ui titles", () => {
+    const workspace = buildDefaultWorkspace();
+    expect(workspace.layout.type).toBe("auto");
+
+    if (workspace.layout.type !== "auto")
+      throw new Error("expected auto layout");
+
+    // Three rows of 3/5 + 2/5: fleet+daily, open+cumulative, closed+wallet.
+    expect(workspace.layout.items.map((item) => item.span)).toEqual([
+      3, 2, 3, 2, 3, 2,
+    ]);
+    expect(workspace.panels["panel-fleet"]?.title).toBe("Bot Comparison");
+    expect(workspace.panels["panel-daily"]?.title).toBe(
+      "Profit Over Time Combined",
+    );
+    expect(workspace.panels["panel-open"]?.title).toBe("Open Trades");
+    expect(workspace.panels["panel-cumulative"]?.title).toBe(
+      "Cumulative Profit",
+    );
+    expect(workspace.panels["panel-closed"]?.title).toBe("Closed Trades");
+    expect(workspace.panels["panel-wallet"]?.title).toBe("Wallet History");
+  });
+
+  it("starts every card at or above its widget minimum (no fresh-page warnings)", () => {
+    const workspace = buildDefaultWorkspace();
+    expect(workspace.layout.type).toBe("auto");
+
+    if (workspace.layout.type !== "auto")
+      throw new Error("expected auto layout");
+
+    for (const item of workspace.layout.items) {
+      if (item.child.type !== "tabs" || item.child.panels.length !== 1)
+        throw new Error("expected one widget per card");
+      const panelId = item.child.panels[0]!;
+      const panel = workspace.panels[panelId];
+      const min = widgetMin.get(panel?.widgetType ?? "");
+
+      expect(min).toBeDefined();
+      // Height clears the widget minimum + tab-strip chrome (28px).
+      expect(item.height).toBeGreaterThanOrEqual(min!.minHeight + 28);
+      // Width: span 3/2 on 360px columns (span 2 ≈ 728px, span 3 ≈ 1096px)
+      // covers every home widget except Closed Positions (1250px) — the
+      // auto renderer floors that card's rendered span via `minAutoSpan`,
+      // so it still renders at or above its minimum without warnings.
+      expect(item.span).toBeGreaterThanOrEqual(2);
+    }
   });
 
   it("returns fresh copies on every call", () => {
@@ -79,7 +135,8 @@ describe("home seed upgrade", () => {
     "grid:3x4:balance,bot-status,candle-chart,closed-positions,open-positions,profit,ticker-tape";
 
   const workspaceWithFingerprint = (fingerprint: string): Workspace => {
-    const [shape = "", types = ""] = fingerprint.split(/:(?=[a-z])/);
+    const [template = "", types = ""] = fingerprint.split(/:(?=[a-z])/);
+
     const panelList = types
       .split(",")
       .filter((t) => t.length > 0)
@@ -88,9 +145,11 @@ describe("home seed upgrade", () => {
         widgetType,
         widgetConfig: {},
       }));
-    const [layoutType, dims] = shape.split(":");
+
+    const [layoutType, dims] = template.split(":");
     const [cols, rows] = (dims ?? "1x1").split("x").map(Number);
-    return {
+
+    return decodeWorkspace({
       id: "page-home",
       name: "Home",
       schemaVersion: 1,
@@ -107,13 +166,13 @@ describe("home seed upgrade", () => {
           : { type: "tabs", id: "tabs-root", panels: [], activePanelId: null },
       panels: Object.fromEntries(panelList.map((p) => [p.id, p])),
       activePanelId: null,
-    } as unknown as Workspace;
+    });
   };
 
-  it("fingerprint describes grid shape plus widget multiset", () => {
+  it("fingerprint describes auto shape plus widget multiset", () => {
     const workspace = buildDefaultWorkspace();
     expect(homeFingerprint(workspace)).toBe(
-      "grid:2x3:closed-positions,cumulative-profit,daily-profit,fleet-overview,open-positions,wallet-history",
+      "auto:6:closed-positions,cumulative-profit,daily-profit,fleet-overview,open-positions,wallet-history",
     );
   });
 
@@ -121,15 +180,14 @@ describe("home seed upgrade", () => {
     const stored = workspaceWithFingerprint(v1Fingerprint);
     const upgraded = maybeUpgradeStoredHome(stored);
     expect(upgraded).not.toBeNull();
-    expect(upgraded?.panels["panel-wallet"]?.widgetType).toBe(
-      "wallet-history",
-    );
+    expect(upgraded?.panels["panel-wallet"]?.widgetType).toBe("wallet-history");
   });
 
   it("keeps customized homes", () => {
     const customized = workspaceWithFingerprint(
       "grid:3x4:balance,bot-status,candle-chart,closed-positions,open-positions,profit",
     );
+
     expect(maybeUpgradeStoredHome(customized)).toBeNull();
     expect(
       maybeUpgradeStoredHome(workspaceWithFingerprint("tabs:")),

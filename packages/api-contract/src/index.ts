@@ -8,7 +8,7 @@ import {
   HttpApiGroup,
   HttpApiSchema,
 } from "@effect/platform";
-import { Effect, Schema } from "effect";
+import { Effect, Either, Schema } from "effect";
 
 /**
  * @nfi/api-contract
@@ -31,6 +31,7 @@ import { Effect, Schema } from "effect";
 // ---------------------------------------------------------------------------
 
 export const HealthStatus = Schema.Literal("ok");
+
 export type HealthStatus = typeof HealthStatus.Type;
 
 export const FreqtradeReachability = Schema.Literal(
@@ -38,6 +39,7 @@ export const FreqtradeReachability = Schema.Literal(
   "unreachable",
   "unknown",
 );
+
 export type FreqtradeReachability = typeof FreqtradeReachability.Type;
 
 export const HealthResponse = Schema.Struct({
@@ -45,6 +47,7 @@ export const HealthResponse = Schema.Struct({
   freqtrade: FreqtradeReachability,
   timestamp: Schema.String,
 });
+
 export type HealthResponse = typeof HealthResponse.Type;
 
 export const BackendConfigResponse = Schema.Struct({
@@ -58,6 +61,7 @@ export const BackendConfigResponse = Schema.Struct({
    */
   defaultInstanceConfigured: Schema.Boolean,
 });
+
 export type BackendConfigResponse = typeof BackendConfigResponse.Type;
 
 // ---------------------------------------------------------------------------
@@ -72,6 +76,7 @@ export const BotStatus = Schema.Struct({
   dryRun: Schema.optional(Schema.Boolean),
   tradingMode: Schema.optional(Schema.String),
 });
+
 export type BotStatus = typeof BotStatus.Type;
 
 export const CurrencyBalance = Schema.Struct({
@@ -80,6 +85,7 @@ export const CurrencyBalance = Schema.Struct({
   used: Schema.Number,
   total: Schema.Number,
 });
+
 export type CurrencyBalance = typeof CurrencyBalance.Type;
 
 export const BalanceResponse = Schema.Struct({
@@ -91,6 +97,7 @@ export const BalanceResponse = Schema.Struct({
   /** Raw freqtrade note field, kept for display only. */
   note: Schema.optional(Schema.String),
 });
+
 export type BalanceResponse = typeof BalanceResponse.Type;
 
 /** Units: `*Percent` fields are percentages (12.5 = 12.5%), coins are stake-currency amounts. */
@@ -108,6 +115,7 @@ export const ProfitSummary = Schema.Struct({
   stakeCurrency: Schema.String,
   fiatCurrency: Schema.String,
 });
+
 export type ProfitSummary = typeof ProfitSummary.Type;
 
 export const OpenTrade = Schema.Struct({
@@ -125,11 +133,13 @@ export const OpenTrade = Schema.Struct({
   strategy: Schema.optional(Schema.String),
   timeframe: Schema.optional(Schema.String),
 });
+
 export type OpenTrade = typeof OpenTrade.Type;
 
 export const OpenTradesResponse = Schema.Struct({
   trades: Schema.Array(OpenTrade),
 });
+
 export type OpenTradesResponse = typeof OpenTradesResponse.Type;
 
 // --- Position detail (open + closed) with sub-orders ------------------------
@@ -150,6 +160,7 @@ export const TradeOrder = Schema.Struct({
   timestamp: Schema.optional(Schema.Number),
   filledTimestamp: Schema.optional(Schema.Number),
 });
+
 export type TradeOrder = typeof TradeOrder.Type;
 
 export const OpenPosition = Schema.Struct({
@@ -180,11 +191,13 @@ export const OpenPosition = Schema.Struct({
   hasOpenOrders: Schema.optional(Schema.Boolean),
   orders: Schema.optional(Schema.Array(TradeOrder)),
 });
+
 export type OpenPosition = typeof OpenPosition.Type;
 
 export const OpenPositionsResponse = Schema.Struct({
   positions: Schema.Array(OpenPosition),
 });
+
 export type OpenPositionsResponse = typeof OpenPositionsResponse.Type;
 
 export const ClosedPosition = Schema.Struct({
@@ -215,6 +228,7 @@ export const ClosedPosition = Schema.Struct({
   nrOfExits: Schema.optional(Schema.Number),
   orders: Schema.optional(Schema.Array(TradeOrder)),
 });
+
 export type ClosedPosition = typeof ClosedPosition.Type;
 
 export const ClosedPositionsResponse = Schema.Struct({
@@ -223,6 +237,7 @@ export const ClosedPositionsResponse = Schema.Struct({
   totalTrades: Schema.optional(Schema.Number),
   offset: Schema.optional(Schema.Number),
 });
+
 export type ClosedPositionsResponse = typeof ClosedPositionsResponse.Type;
 
 // --- Freqtrade instances (multi-bot support) ---------------------------------
@@ -231,6 +246,7 @@ export const FreqtradeInstanceId = Schema.String.pipe(
   Schema.minLength(1),
   Schema.brand("FreqtradeInstanceId"),
 );
+
 export type FreqtradeInstanceId = typeof FreqtradeInstanceId.Type;
 
 export const FreqtradeInstance = Schema.Struct({
@@ -240,14 +256,22 @@ export const FreqtradeInstance = Schema.Struct({
   username: Schema.String,
   /** Never expose the password — only whether one is stored. */
   hasPassword: Schema.Boolean,
+  /**
+   * Custom per-instance color (`#rrggbb`, lowercase). Absent = the UI's
+   * automatic list-position assignment — the same hue everywhere the
+   * instance's data appears.
+   */
+  color: Schema.optional(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
+
 export type FreqtradeInstance = typeof FreqtradeInstance.Type;
 
 export const ListInstancesResponse = Schema.Struct({
   instances: Schema.Array(FreqtradeInstance),
 });
+
 export type ListInstancesResponse = typeof ListInstancesResponse.Type;
 
 export const CreateInstanceRequest = Schema.Struct({
@@ -255,12 +279,15 @@ export const CreateInstanceRequest = Schema.Struct({
   baseUrl: Schema.String.pipe(Schema.minLength(1)),
   username: Schema.String,
   password: Schema.String,
+  color: Schema.optional(Schema.String),
 });
+
 export type CreateInstanceRequest = typeof CreateInstanceRequest.Type;
 
 export const CreateInstanceResponse = Schema.Struct({
   instance: FreqtradeInstance,
 });
+
 export type CreateInstanceResponse = typeof CreateInstanceResponse.Type;
 
 export const UpdateInstanceRequest = Schema.Struct({
@@ -269,17 +296,22 @@ export const UpdateInstanceRequest = Schema.Struct({
   username: Schema.optional(Schema.String),
   /** Omitted/empty = keep the stored password. */
   password: Schema.optional(Schema.String),
+  /** Omitted = keep; null = back to automatic; string = custom `#rrggbb`. */
+  color: Schema.optional(Schema.NullOr(Schema.String)),
 });
+
 export type UpdateInstanceRequest = typeof UpdateInstanceRequest.Type;
 
 export const UpdateInstanceResponse = Schema.Struct({
   instance: FreqtradeInstance,
 });
+
 export type UpdateInstanceResponse = typeof UpdateInstanceResponse.Type;
 
 export const DeleteInstanceResponse = Schema.Struct({
   id: Schema.String,
 });
+
 export type DeleteInstanceResponse = typeof DeleteInstanceResponse.Type;
 
 export const InstanceHealthResponse = Schema.Struct({
@@ -289,23 +321,55 @@ export const InstanceHealthResponse = Schema.Struct({
   state: Schema.optional(Schema.String),
   botName: Schema.optional(Schema.String),
 });
+
 export type InstanceHealthResponse = typeof InstanceHealthResponse.Type;
 
 export const ClosedPositionsQuery = Schema.Struct({
   limit: Schema.optional(Schema.String),
   offset: Schema.optional(Schema.String),
+  /**
+   * Free-text filter applied server-side BEFORE limit/offset slicing, so
+   * matches outside the requested window still surface (client-side
+   * filtering of the fetched window would silently drop them).
+   */
+  search: Schema.optional(Schema.String),
 });
+
 export type ClosedPositionsQuery = typeof ClosedPositionsQuery.Type;
 
+/**
+ * Server-side free-text filter for full-list reads (open positions,
+ * whitelists, blacklists): same before-slicing guarantee as
+ * `ClosedPositionsQuery.search`.
+ */
+export const SearchQuery = Schema.Struct({
+  search: Schema.optional(Schema.String),
+});
+
+export type SearchQuery = typeof SearchQuery.Type;
+
 /** Snapshot-history window size, shared by the fleet balance-history reads. */
+/**
+ * Time bucket for aggregated balance-history reads: one point per bucket
+ * carrying the LAST sample inside it (a balance is a level, not a flow) —
+ * daily/weekly curves span weeks of per-minute snapshots.
+ */
+export const BalanceHistoryBucket = Schema.Literal("6h", "day", "week");
+
+export type BalanceHistoryBucket = typeof BalanceHistoryBucket.Type;
+
 export const BalanceHistoryQuery = Schema.Struct({
   limit: Schema.optional(Schema.String),
+  /** Aggregation bucket; absent = raw newest samples (no aggregation). */
+  bucket: Schema.optional(BalanceHistoryBucket),
 });
+
 export type BalanceHistoryQuery = typeof BalanceHistoryQuery.Type;
 
 // --- NFI tag performance (aggregated closed-trade stats per tag) -------------
 
 export const TagGroupBy = Schema.Literal("enter", "exit");
+
 export type TagGroupBy = typeof TagGroupBy.Type;
 
 export const TagPerformanceRow = Schema.Struct({
@@ -321,6 +385,7 @@ export const TagPerformanceRow = Schema.Struct({
   /** Mean of close profit percent. */
   profitPctAvg: Schema.Number,
 });
+
 export type TagPerformanceRow = typeof TagPerformanceRow.Type;
 
 export const TagPerformanceResponse = Schema.Struct({
@@ -330,12 +395,14 @@ export const TagPerformanceResponse = Schema.Struct({
   aggregatedTrades: Schema.Number,
   totalTrades: Schema.optional(Schema.Number),
 });
+
 export type TagPerformanceResponse = typeof TagPerformanceResponse.Type;
 
 export const TagPerformanceQuery = Schema.Struct({
   limit: Schema.optional(Schema.String),
   groupBy: Schema.optional(Schema.String),
 });
+
 export type TagPerformanceQuery = typeof TagPerformanceQuery.Type;
 
 // --- Market / candle data (OHLCV, normalized by the backend) -----------------
@@ -349,6 +416,7 @@ export const Candle = Schema.Struct({
   close: Schema.Number,
   volume: Schema.Number,
 });
+
 export type Candle = typeof Candle.Type;
 
 export const CandlesResponse = Schema.Struct({
@@ -356,6 +424,7 @@ export const CandlesResponse = Schema.Struct({
   timeframe: Schema.String,
   candles: Schema.Array(Candle),
 });
+
 export type CandlesResponse = typeof CandlesResponse.Type;
 
 export const CandlesQuery = Schema.Struct({
@@ -366,6 +435,7 @@ export const CandlesQuery = Schema.Struct({
   /** Last N candles. Defaults to 200, capped server-side. */
   limit: Schema.optional(Schema.String),
 });
+
 export type CandlesQuery = typeof CandlesQuery.Type;
 
 export const AvailablePairsResponse = Schema.Struct({
@@ -373,12 +443,14 @@ export const AvailablePairsResponse = Schema.Struct({
   length: Schema.optional(Schema.Number),
   stakeCurrency: Schema.optional(Schema.String),
 });
+
 export type AvailablePairsResponse = typeof AvailablePairsResponse.Type;
 
 export const AvailablePairsQuery = Schema.Struct({
   timeframe: Schema.optional(Schema.String),
   stakeCurrency: Schema.optional(Schema.String),
 });
+
 export type AvailablePairsQuery = typeof AvailablePairsQuery.Type;
 
 /**
@@ -397,11 +469,13 @@ export const PlotConfigResponse = Schema.Struct({
     value: Schema.Array(Schema.String),
   }),
 });
+
 export type PlotConfigResponse = typeof PlotConfigResponse.Type;
 
 export const PlotConfigQuery = Schema.Struct({
   strategy: Schema.optional(Schema.String),
 });
+
 export type PlotConfigQuery = typeof PlotConfigQuery.Type;
 
 export const BotConfigSummary = Schema.Struct({
@@ -413,6 +487,7 @@ export const BotConfigSummary = Schema.Struct({
   dryRun: Schema.optional(Schema.Boolean),
   tradingMode: Schema.optional(Schema.String),
 });
+
 export type BotConfigSummary = typeof BotConfigSummary.Type;
 
 // --- Instance extras: pair locks, whitelist/blacklist, trade capacity ---------
@@ -427,17 +502,20 @@ export const PairLock = Schema.Struct({
   active: Schema.Boolean,
   side: Schema.optional(Schema.String),
 });
+
 export type PairLock = typeof PairLock.Type;
 
 export const LocksResponse = Schema.Struct({
   locks: Schema.Array(PairLock),
 });
+
 export type LocksResponse = typeof LocksResponse.Type;
 
 export const BlacklistedPair = Schema.Struct({
   pair: Schema.String,
   reason: Schema.optional(Schema.String),
 });
+
 export type BlacklistedPair = typeof BlacklistedPair.Type;
 
 export const BlacklistResponse = Schema.Struct({
@@ -445,24 +523,78 @@ export const BlacklistResponse = Schema.Struct({
   /** Total blacklist length as reported by freqtrade (may exceed `pairs`). */
   length: Schema.Number,
 });
+
 export type BlacklistResponse = typeof BlacklistResponse.Type;
 
 export const WhitelistResponse = Schema.Struct({
   pairs: Schema.Array(Schema.String),
   length: Schema.Number,
 });
+
 export type WhitelistResponse = typeof WhitelistResponse.Type;
+
+/** One instance's pair lock, tagged with its source instance (fleet views). */
+export const TaggedPairLock = Schema.Struct({
+  ...PairLock.fields,
+  instanceId: Schema.String,
+  instanceName: Schema.String,
+});
+
+export type TaggedPairLock = typeof TaggedPairLock.Type;
+
+export const FleetLocksResponse = Schema.Struct({
+  locks: Schema.Array(TaggedPairLock),
+});
+
+export type FleetLocksResponse = typeof FleetLocksResponse.Type;
+
+/** One instance's blacklist entry, tagged with its source instance. */
+export const TaggedBlacklistedPair = Schema.Struct({
+  ...BlacklistedPair.fields,
+  instanceId: Schema.String,
+  instanceName: Schema.String,
+});
+
+export type TaggedBlacklistedPair = typeof TaggedBlacklistedPair.Type;
+
+export const FleetBlacklistResponse = Schema.Struct({
+  pairs: Schema.Array(TaggedBlacklistedPair),
+  length: Schema.Number,
+});
+
+export type FleetBlacklistResponse = typeof FleetBlacklistResponse.Type;
+
+/** One instance's whitelist inside the fleet response. */
+export const FleetWhitelistInstance = Schema.Struct({
+  instanceId: Schema.String,
+  instanceName: Schema.String,
+  pairs: Schema.Array(Schema.String),
+  length: Schema.Number,
+});
+
+export type FleetWhitelistInstance = typeof FleetWhitelistInstance.Type;
+
+export const FleetWhitelistResponse = Schema.Struct({
+  instances: Schema.Array(FleetWhitelistInstance),
+  /** Union of every instance's whitelist, sorted. */
+  pairs: Schema.Array(Schema.String),
+  length: Schema.Number,
+});
+
+export type FleetWhitelistResponse = typeof FleetWhitelistResponse.Type;
 
 /** Open-trade capacity (`GET /api/v1/count`). `max` is null when unlimited. */
 export const TradeCountResponse = Schema.Struct({
   current: Schema.Number,
   max: Schema.optional(Schema.Number),
 });
+
 export type TradeCountResponse = typeof TradeCountResponse.Type;
 
 // --- Profit buckets (daily / weekly / monthly, `GET /api/v1/{daily,…}`) -------
 
 export const ProfitBucketKind = Schema.Literal("daily", "weekly", "monthly");
+
 export type ProfitBucketKind = typeof ProfitBucketKind.Type;
 
 export const ProfitBucket = Schema.Struct({
@@ -475,12 +607,14 @@ export const ProfitBucket = Schema.Struct({
   profitFiat: Schema.Number,
   trades: Schema.Number,
 });
+
 export type ProfitBucket = typeof ProfitBucket.Type;
 
 export const ProfitBucketsResponse = Schema.Struct({
   bucket: ProfitBucketKind,
   buckets: Schema.Array(ProfitBucket),
 });
+
 export type ProfitBucketsResponse = typeof ProfitBucketsResponse.Type;
 
 export const ProfitDailyQuery = Schema.Struct({
@@ -488,6 +622,7 @@ export const ProfitDailyQuery = Schema.Struct({
   /** Timescale (number of buckets). Default 30, capped server-side. */
   days: Schema.optional(Schema.String),
 });
+
 export type ProfitDailyQuery = typeof ProfitDailyQuery.Type;
 
 // --- Fleet (all configured instances at once) ---------------------------------
@@ -518,6 +653,7 @@ export const FleetInstanceSummary = Schema.Struct({
   /** Per-instance fetch failure — the rest of the fleet still resolves. */
   error: Schema.optional(Schema.String),
 });
+
 export type FleetInstanceSummary = typeof FleetInstanceSummary.Type;
 
 export const FleetOverviewResponse = Schema.Struct({
@@ -535,6 +671,7 @@ export const FleetOverviewResponse = Schema.Struct({
     stakeCurrency: Schema.optional(Schema.String),
   }),
 });
+
 export type FleetOverviewResponse = typeof FleetOverviewResponse.Type;
 
 /** One instance's open position, tagged with the instance it came from. */
@@ -543,11 +680,13 @@ export const TaggedOpenPosition = Schema.Struct({
   instanceId: Schema.String,
   instanceName: Schema.String,
 });
+
 export type TaggedOpenPosition = typeof TaggedOpenPosition.Type;
 
 export const FleetOpenPositionsResponse = Schema.Struct({
   positions: Schema.Array(TaggedOpenPosition),
 });
+
 export type FleetOpenPositionsResponse = typeof FleetOpenPositionsResponse.Type;
 
 /** One instance's closed position, tagged with the instance it came from. */
@@ -556,12 +695,16 @@ export const TaggedClosedPosition = Schema.Struct({
   instanceId: Schema.String,
   instanceName: Schema.String,
 });
+
 export type TaggedClosedPosition = typeof TaggedClosedPosition.Type;
 
 export const FleetClosedPositionsResponse = Schema.Struct({
   positions: Schema.Array(TaggedClosedPosition),
   tradesCount: Schema.optional(Schema.Number),
+  /** Closed trades on record across the fleet (drives load-more in the UI). */
+  totalTrades: Schema.optional(Schema.Number),
 });
+
 export type FleetClosedPositionsResponse =
   typeof FleetClosedPositionsResponse.Type;
 
@@ -574,11 +717,13 @@ export const ProfitPoint = Schema.Struct({
   tradeCount: Schema.Number,
   stakeCurrency: Schema.String,
 });
+
 export type ProfitPoint = typeof ProfitPoint.Type;
 
 export const ProfitHistoryResponse = Schema.Struct({
   points: Schema.Array(ProfitPoint),
 });
+
 export type ProfitHistoryResponse = typeof ProfitHistoryResponse.Type;
 
 export const BalancePoint = Schema.Struct({
@@ -586,11 +731,13 @@ export const BalancePoint = Schema.Struct({
   totalStake: Schema.Number,
   stakeCurrency: Schema.String,
 });
+
 export type BalancePoint = typeof BalancePoint.Type;
 
 export const BalanceHistoryResponse = Schema.Struct({
   points: Schema.Array(BalancePoint),
 });
+
 export type BalanceHistoryResponse = typeof BalanceHistoryResponse.Type;
 
 /** One instance's wallet history inside the fleet balance-history response. */
@@ -604,6 +751,7 @@ export const FleetBalanceInstance = Schema.Struct({
   /** Per-instance fetch failure — the rest of the fleet still resolves. */
   error: Schema.optional(Schema.String),
 });
+
 export type FleetBalanceInstance = typeof FleetBalanceInstance.Type;
 
 export const FleetBalanceHistoryResponse = Schema.Struct({
@@ -611,7 +759,74 @@ export const FleetBalanceHistoryResponse = Schema.Struct({
   /** Common stake currency when every instance agrees (e.g. `USDT`). */
   stakeCurrency: Schema.optional(Schema.String),
 });
-export type FleetBalanceHistoryResponse = typeof FleetBalanceHistoryResponse.Type;
+
+export type FleetBalanceHistoryResponse =
+  typeof FleetBalanceHistoryResponse.Type;
+
+// --- Macro / Fed funds rate (scraped public sources, no freqtrade) ---------------
+//
+// Current Federal Reserve policy stance scraped server-side from free public
+// sources (no API key): the NY Fed Markets API (primary — EFFR + target
+// range + SOFR/OBFR in one call) with FRED public CSVs as fallback
+// (`DFF`, `DFEDTARU`, `DFEDTARL`, `SOFR`, `OBFR`). Field names stay in
+// rate-domain (`rate`, `target`, `effective`, `sofr`, ...) so the default
+// sensitivity policy keeps this capability non-sensitive (public macro data,
+// like candles — no balances, no PnL, no stake sizes).
+
+/** One daily observation of the effective rate + target range. */
+export const FedRatePoint = Schema.Struct({
+  /** Observation date (`YYYY-MM-DD`, NY Fed `effectiveDate`). */
+  date: Schema.String,
+  /** Effective Federal Funds Rate for the day (percent, e.g. 3.88). */
+  effective: Schema.optional(Schema.Number),
+  /** Lower bound of the FOMC target range (percent). */
+  targetLower: Schema.optional(Schema.Number),
+  /** Upper bound of the FOMC target range (percent). */
+  targetUpper: Schema.optional(Schema.Number),
+  /** Secured Overnight Financing Rate (percent). */
+  sofr: Schema.optional(Schema.Number),
+});
+
+export type FedRatePoint = typeof FedRatePoint.Type;
+
+/** Per-source fetch status (which upstream scrape fed this snapshot). */
+export const FedRateSource = Schema.Struct({
+  name: Schema.String,
+  /** Link to the upstream endpoint (named `href`, not `url`, so the
+   * sensitivity audit never mistakes public source links for infra
+   * location — see the registry test's location-shaped-field walk). */
+  href: Schema.String,
+  ok: Schema.Boolean,
+});
+
+export type FedRateSource = typeof FedRateSource.Type;
+
+export const FedRateResponse = Schema.Struct({
+  /** Lower bound of the current FOMC target range (percent). */
+  targetLower: Schema.Number,
+  /** Upper bound of the current FOMC target range (percent). */
+  targetUpper: Schema.Number,
+  /** Latest Effective Federal Funds Rate (percent). */
+  effective: Schema.optional(Schema.Number),
+  /** Observation date of `effective` (`YYYY-MM-DD`). */
+  effectiveDate: Schema.optional(Schema.String),
+  /** Latest Secured Overnight Financing Rate (percent). */
+  sofr: Schema.optional(Schema.Number),
+  /** Latest Overnight Bank Funding Rate (percent). */
+  obfr: Schema.optional(Schema.Number),
+  /** Overnight volume behind the EFFR print (billions USD). */
+  volumeBillions: Schema.optional(Schema.Number),
+  /** Day-over-day change of the effective rate (percentage points). */
+  effectiveChange: Schema.optional(Schema.Number),
+  /** Recent daily history (oldest first, capped server-side). */
+  history: Schema.Array(FedRatePoint),
+  /** Which upstream scrapes fed this snapshot (NY Fed + FRED). */
+  sources: Schema.Array(FedRateSource),
+  /** Snapshot time (ISO). */
+  updatedAt: Schema.String,
+});
+
+export type FedRateResponse = typeof FedRateResponse.Type;
 
 // --- Relative (public-shareable) mirrors ------------------------------------
 //
@@ -635,12 +850,14 @@ export const RelativeCurrencyWeight = Schema.Struct({
   freeWeight: Schema.Number,
   usedWeight: Schema.Number,
 });
+
 export type RelativeCurrencyWeight = typeof RelativeCurrencyWeight.Type;
 
 export const RelativeBalance = Schema.Struct({
   stakeCurrency: Schema.String,
   currencies: Schema.Array(RelativeCurrencyWeight),
 });
+
 export type RelativeBalance = typeof RelativeBalance.Type;
 
 export const RelativeProfit = Schema.Struct({
@@ -652,6 +869,7 @@ export const RelativeProfit = Schema.Struct({
   stakeCurrency: Schema.String,
   fiatCurrency: Schema.String,
 });
+
 export type RelativeProfit = typeof RelativeProfit.Type;
 
 export const RelativeTrade = Schema.Struct({
@@ -663,11 +881,13 @@ export const RelativeTrade = Schema.Struct({
   strategy: Schema.optional(Schema.String),
   timeframe: Schema.optional(Schema.String),
 });
+
 export type RelativeTrade = typeof RelativeTrade.Type;
 
 export const RelativeTradesResponse = Schema.Struct({
   trades: Schema.Array(RelativeTrade),
 });
+
 export type RelativeTradesResponse = typeof RelativeTradesResponse.Type;
 
 export const RelativeProfitPoint = Schema.Struct({
@@ -676,24 +896,47 @@ export const RelativeProfitPoint = Schema.Struct({
   profitClosedIndex: Schema.Number,
   profitAllIndex: Schema.Number,
 });
+
 export type RelativeProfitPoint = typeof RelativeProfitPoint.Type;
 
 export const RelativeProfitHistoryResponse = Schema.Struct({
   points: Schema.Array(RelativeProfitPoint),
 });
+
 export type RelativeProfitHistoryResponse =
   typeof RelativeProfitHistoryResponse.Type;
+
+/** One instance's rebased profit index inside the fleet relative response. */
+export const RelativeFleetProfitInstance = Schema.Struct({
+  instanceId: Schema.String,
+  instanceName: Schema.String,
+  points: Schema.Array(RelativeProfitPoint),
+  /** Per-instance fetch failure — the rest of the fleet still resolves. */
+  error: Schema.optional(Schema.String),
+});
+
+export type RelativeFleetProfitInstance =
+  typeof RelativeFleetProfitInstance.Type;
+
+export const RelativeFleetProfitHistoryResponse = Schema.Struct({
+  instances: Schema.Array(RelativeFleetProfitInstance),
+});
+
+export type RelativeFleetProfitHistoryResponse =
+  typeof RelativeFleetProfitHistoryResponse.Type;
 
 export const RelativeBalancePoint = Schema.Struct({
   recordedAt: Schema.String,
   /** Rebased index: the first point of the returned window is exactly 100. */
   balanceIndex: Schema.Number,
 });
+
 export type RelativeBalancePoint = typeof RelativeBalancePoint.Type;
 
 export const RelativeBalanceHistoryResponse = Schema.Struct({
   points: Schema.Array(RelativeBalancePoint),
 });
+
 export type RelativeBalanceHistoryResponse =
   typeof RelativeBalanceHistoryResponse.Type;
 
@@ -704,12 +947,14 @@ export const RelativeFleetBalanceInstance = Schema.Struct({
   points: Schema.Array(RelativeBalancePoint),
   error: Schema.optional(Schema.String),
 });
+
 export type RelativeFleetBalanceInstance =
   typeof RelativeFleetBalanceInstance.Type;
 
 export const RelativeFleetBalanceHistoryResponse = Schema.Struct({
   instances: Schema.Array(RelativeFleetBalanceInstance),
 });
+
 export type RelativeFleetBalanceHistoryResponse =
   typeof RelativeFleetBalanceHistoryResponse.Type;
 
@@ -720,6 +965,7 @@ export const RelativeOrder = Schema.Struct({
   isEntry: Schema.optional(Schema.Boolean),
   tag: Schema.optional(Schema.String),
 });
+
 export type RelativeOrder = typeof RelativeOrder.Type;
 
 export const RelativeOpenPosition = Schema.Struct({
@@ -738,11 +984,13 @@ export const RelativeOpenPosition = Schema.Struct({
   leverage: Schema.optional(Schema.Number),
   orders: Schema.optional(Schema.Array(RelativeOrder)),
 });
+
 export type RelativeOpenPosition = typeof RelativeOpenPosition.Type;
 
 export const RelativeOpenPositionsResponse = Schema.Struct({
   positions: Schema.Array(RelativeOpenPosition),
 });
+
 export type RelativeOpenPositionsResponse =
   typeof RelativeOpenPositionsResponse.Type;
 
@@ -763,6 +1011,7 @@ export const RelativeClosedPosition = Schema.Struct({
   leverage: Schema.optional(Schema.Number),
   orders: Schema.optional(Schema.Array(RelativeOrder)),
 });
+
 export type RelativeClosedPosition = typeof RelativeClosedPosition.Type;
 
 export const RelativeClosedPositionsResponse = Schema.Struct({
@@ -771,6 +1020,7 @@ export const RelativeClosedPositionsResponse = Schema.Struct({
   totalTrades: Schema.optional(Schema.Number),
   offset: Schema.optional(Schema.Number),
 });
+
 export type RelativeClosedPositionsResponse =
   typeof RelativeClosedPositionsResponse.Type;
 
@@ -784,6 +1034,7 @@ export const RelativeTagPerformanceRow = Schema.Struct({
   /** Mean of close profit percent. No absolute profit — see `TagPerformanceRow`. */
   profitPctAvg: Schema.Number,
 });
+
 export type RelativeTagPerformanceRow = typeof RelativeTagPerformanceRow.Type;
 
 export const RelativeTagPerformanceResponse = Schema.Struct({
@@ -792,6 +1043,7 @@ export const RelativeTagPerformanceResponse = Schema.Struct({
   aggregatedTrades: Schema.Number,
   totalTrades: Schema.optional(Schema.Number),
 });
+
 export type RelativeTagPerformanceResponse =
   typeof RelativeTagPerformanceResponse.Type;
 
@@ -817,24 +1069,28 @@ export const CURRENT_WORKSPACE_SCHEMA_VERSION = 1 as const;
 export const WorkspaceSchemaVersion = Schema.Literal(
   CURRENT_WORKSPACE_SCHEMA_VERSION,
 );
+
 export type WorkspaceSchemaVersion = typeof WorkspaceSchemaVersion.Type;
 
 export const WorkspaceId = Schema.String.pipe(
   Schema.minLength(1),
   Schema.brand("WorkspaceId"),
 );
+
 export type WorkspaceId = typeof WorkspaceId.Type;
 
 export const PanelId = Schema.String.pipe(
   Schema.minLength(1),
   Schema.brand("PanelId"),
 );
+
 export type PanelId = typeof PanelId.Type;
 
 export const LayoutNodeId = Schema.String.pipe(
   Schema.minLength(1),
   Schema.brand("LayoutNodeId"),
 );
+
 export type LayoutNodeId = typeof LayoutNodeId.Type;
 
 /** Stable widget type identifier (e.g. `development.inspector`). Never a component. */
@@ -842,9 +1098,11 @@ export const WidgetType = Schema.String.pipe(
   Schema.minLength(1),
   Schema.brand("WidgetType"),
 );
+
 export type WidgetType = typeof WidgetType.Type;
 
 export const SplitDirection = Schema.Literal("horizontal", "vertical");
+
 export type SplitDirection = typeof SplitDirection.Type;
 
 /**
@@ -909,8 +1167,125 @@ export interface GridLayoutNode {
   readonly items: ReadonlyArray<GridItemLayoutNode>;
 }
 
+/**
+ * One resizable card inside a flow container: an explicit pixel box
+ * (`width` × `height`) hosting any child subtree (`tabs`, nested `grid` /
+ * `flow` or a bare `panel`). Sizes persist so every tab keeps the exact
+ * dimensions the user dragged it to; the renderer clamps them to the
+ * child's content minimums and wraps overflowing cards onto the next row
+ * (flex-wrap), so no measuring of siblings is ever needed.
+ */
+export interface FlowItemLayoutNode {
+  readonly type: "flow-item";
+  readonly id: LayoutNodeId;
+  /** Desired outer width in px (persisted, clamped to content minimums). */
+  readonly width: number;
+  /** Desired outer height in px (persisted, clamped to content minimums). */
+  readonly height: number;
+  readonly child: LayoutNode;
+}
+
+/**
+ * Freeform wrapping container: ordered resizable cards (`flow-item`) laid
+ * out with flex-wrap and a fixed gap. Cards that do not fit the current
+ * row automatically wrap onto the next one — the persisted sizes never
+ * change, only the row breaks (render-only, like grid stacking). A flow
+ * with a single item unwraps to its child (see `normalizeFlowLayout`).
+ */
+export interface FlowLayoutNode {
+  readonly type: "flow";
+  readonly id: LayoutNodeId;
+  readonly items: ReadonlyArray<FlowItemLayoutNode>;
+}
+
+/**
+ * One card inside a masonry container: a flexible height (persisted px,
+ * clamped to the child's content minimums) hosting any child subtree. Width
+ * is column-span driven — a card occupies `span` adjacent columns (columns
+ * themselves stay uniform and stretch to fill the row), so the persisted
+ * tree stays responsive: spans clamp to the live column count at render
+ * time.
+ */
+export interface MasonryItemLayoutNode {
+  readonly type: "masonry-item";
+  readonly id: LayoutNodeId;
+  /** Desired outer height in px (persisted, clamped to content minimums). */
+  readonly height: number;
+  /**
+   * How many adjacent columns this card spans (persisted, ≥ 1; clamped to
+   * the container's live column count when rendered).
+   */
+  readonly span: number;
+  readonly child: LayoutNode;
+}
+
+/**
+ * Column-packing container (`masonry`): ordered cards placed into the
+ * currently shortest column so vertical gaps are always filled, while the
+ * column count adapts to the container width. `columnWidth` is the TARGET
+ * column density in px — the renderer derives the real count from the
+ * container and stretches columns to fill the row. A masonry with a single
+ * item unwraps to its child (see `normalizeMasonryLayout`).
+ */
+export interface MasonryLayoutNode {
+  readonly type: "masonry";
+  readonly id: LayoutNodeId;
+  /** Target column width in px (persisted; actual columns adapt). */
+  readonly columnWidth: number;
+  readonly items: ReadonlyArray<MasonryItemLayoutNode>;
+}
+
+/**
+ * One card inside an auto container: same two-number geometry as a masonry
+ * item — a flexible height (persisted px, clamped to the child's content
+ * minimums) and a column `span` that may be fractional (stepless pointer
+ * drags persist fractions of a column, ≥ 1) — but the container packs ROWS
+ * (see `AutoLayoutNode`). Every card renders its exact persisted size
+ * (width = span × step − gap, height = own px); rows left-align and members
+ * bottom-align, so a resize release re-renders pixel-identical.
+ */
+export interface AutoItemLayoutNode {
+  readonly type: "auto-item";
+  readonly id: LayoutNodeId;
+  /** Desired outer height in px (persisted, clamped to content minimums). */
+  readonly height: number;
+  /**
+   * Requested column span (persisted, finite ≥ 1, fractions welcome;
+   * clamped to the container's live column count when packed, then possibly
+   * grown by row justification).
+   */
+  readonly span: number;
+  readonly child: LayoutNode;
+}
+
+/**
+ * Row-packing container (`auto`, the bento layout): ordered cards packed
+ * greedily into rows — no coordinates, no placement. Card array order IS
+ * layout order (drag-to-reorder rewrites it); every card keeps its exact
+ * persisted size, rows left-align (short rows leave trailing whitespace)
+ * and members top-align within the row (the row advances by its tallest
+ * member, so the next row slides up with no top gaps). `columnWidth` is
+ * the TARGET column density in px, exactly like
+ * masonry. Unlike flow/masonry, an auto keeps zero- and single-card shapes:
+ * the bento mode is a page mode, and cards come and go freely (see
+ * `normalizeAutoLayout`).
+ */
+export interface AutoLayoutNode {
+  readonly type: "auto";
+  readonly id: LayoutNodeId;
+  /** Target column width in px (persisted; actual columns adapt). */
+  readonly columnWidth: number;
+  readonly items: ReadonlyArray<AutoItemLayoutNode>;
+}
+
 export type LayoutNode =
-  SplitLayoutNode | TabsLayoutNode | PanelLayoutNode | GridLayoutNode;
+  | SplitLayoutNode
+  | TabsLayoutNode
+  | PanelLayoutNode
+  | GridLayoutNode
+  | FlowLayoutNode
+  | MasonryLayoutNode
+  | AutoLayoutNode;
 
 // NOTE: struct schemas are annotated `Schema<X, any>` because branded ids
 // (PanelId/WorkspaceId/…) differ between Type (branded) and Encoded (plain
@@ -957,8 +1332,69 @@ const GridLayoutNodeSchema: Schema.Schema<GridLayoutNode, any> = Schema.Struct({
   items: Schema.Array(GridItemLayoutNodeSchema),
 });
 
+const FlowItemLayoutNodeSchema: Schema.Schema<FlowItemLayoutNode, any> =
+  Schema.Struct({
+    type: Schema.Literal("flow-item"),
+    id: LayoutNodeId,
+    width: Schema.Number.pipe(Schema.greaterThan(0)),
+    height: Schema.Number.pipe(Schema.greaterThan(0)),
+    child: Schema.suspend((): Schema.Schema<LayoutNode> => LayoutNode),
+  });
+
+const FlowLayoutNodeSchema: Schema.Schema<FlowLayoutNode, any> = Schema.Struct({
+  type: Schema.Literal("flow"),
+  id: LayoutNodeId,
+  items: Schema.Array(FlowItemLayoutNodeSchema),
+});
+
+const MasonryItemLayoutNodeSchema: Schema.Schema<MasonryItemLayoutNode, any> =
+  Schema.Struct({
+    type: Schema.Literal("masonry-item"),
+    id: LayoutNodeId,
+    height: Schema.Number.pipe(Schema.greaterThan(0)),
+    // Optional on the encoded side so pre-span documents decode with the
+    // default; the decoded (Type-side) tree always carries an integer ≥ 1.
+    span: Schema.optionalWith(
+      Schema.Number.pipe(Schema.int(), Schema.greaterThan(0)),
+      { default: () => 1 },
+    ),
+    child: Schema.suspend((): Schema.Schema<LayoutNode> => LayoutNode),
+  });
+
+const MasonryLayoutNodeSchema: Schema.Schema<MasonryLayoutNode, any> =
+  Schema.Struct({
+    type: Schema.Literal("masonry"),
+    id: LayoutNodeId,
+    columnWidth: Schema.Number.pipe(Schema.greaterThan(0)),
+    items: Schema.Array(MasonryItemLayoutNodeSchema),
+  });
+
+const AutoItemLayoutNodeSchema: Schema.Schema<AutoItemLayoutNode, any> =
+  Schema.Struct({
+    type: Schema.Literal("auto-item"),
+    id: LayoutNodeId,
+    height: Schema.Number.pipe(Schema.greaterThan(0)),
+    // Same forward-compat pattern as the masonry span: optional on the
+    // encoded side, always finite ≥ 1 after decode (fractions welcome —
+    // stepless drags persist them; masonry stays integer-only).
+    span: Schema.optionalWith(Schema.Number.pipe(Schema.greaterThan(0)), {
+      default: () => 1,
+    }),
+    child: Schema.suspend((): Schema.Schema<LayoutNode> => LayoutNode),
+  });
+
+const AutoLayoutNodeSchema: Schema.Schema<AutoLayoutNode, any> = Schema.Struct({
+  type: Schema.Literal("auto"),
+  id: LayoutNodeId,
+  columnWidth: Schema.Number.pipe(Schema.greaterThan(0)),
+  items: Schema.Array(AutoItemLayoutNodeSchema),
+});
+
 export const LayoutNode: Schema.Schema<LayoutNode, any> = Schema.suspend(() =>
   Schema.Union(
+    AutoLayoutNodeSchema,
+    FlowLayoutNodeSchema,
+    MasonryLayoutNodeSchema,
     GridLayoutNodeSchema,
     TabsLayoutNodeSchema,
     PanelLayoutNodeSchema,
@@ -966,6 +1402,7 @@ export const LayoutNode: Schema.Schema<LayoutNode, any> = Schema.suspend(() =>
     SplitLayoutNodeSchema,
   ),
 );
+
 export type LayoutNodeType = typeof LayoutNode.Type;
 
 /** A widget placed in the workspace: type + opaque validated config payload. */
@@ -980,6 +1417,7 @@ export const PanelInstance = Schema.Struct({
    */
   title: Schema.optional(Schema.String.pipe(Schema.minLength(1))),
 });
+
 export type PanelInstance = typeof PanelInstance.Type;
 
 export const Workspace = Schema.Struct({
@@ -1005,6 +1443,7 @@ export const Workspace = Schema.Struct({
    */
   origin: Schema.optional(Schema.Literal("user")),
 });
+
 export type Workspace = typeof Workspace.Type;
 
 export const WorkspaceSummary = Schema.Struct({
@@ -1012,42 +1451,50 @@ export const WorkspaceSummary = Schema.Struct({
   name: Schema.String,
   updatedAt: Schema.String,
 });
+
 export type WorkspaceSummary = typeof WorkspaceSummary.Type;
 
 export const ListWorkspacesResponse = Schema.Struct({
   workspaces: Schema.Array(WorkspaceSummary),
 });
+
 export type ListWorkspacesResponse = typeof ListWorkspacesResponse.Type;
 
 export const LoadWorkspaceResponse = Schema.Struct({
   workspace: Workspace,
 });
+
 export type LoadWorkspaceResponse = typeof LoadWorkspaceResponse.Type;
 
 export const SaveWorkspaceRequest = Schema.Struct({
   workspace: Workspace,
 });
+
 export type SaveWorkspaceRequest = typeof SaveWorkspaceRequest.Type;
 
 export const SaveWorkspaceResponse = Schema.Struct({
   workspace: Workspace,
 });
+
 export type SaveWorkspaceResponse = typeof SaveWorkspaceResponse.Type;
 
 export const CreateWorkspaceRequest = Schema.Struct({
   name: Schema.optional(Schema.String),
   workspace: Schema.optional(Workspace),
 });
+
 export type CreateWorkspaceRequest = typeof CreateWorkspaceRequest.Type;
 
 export const CreateWorkspaceResponse = Schema.Struct({
   workspace: Workspace,
 });
+
 export type CreateWorkspaceResponse = typeof CreateWorkspaceResponse.Type;
 
 export const DeleteWorkspaceResponse = Schema.Struct({
   id: WorkspaceId,
 });
+
 export type DeleteWorkspaceResponse = typeof DeleteWorkspaceResponse.Type;
 
 /** Strict decode for anything crossing the RPC/persistence boundary. */
@@ -1089,36 +1536,46 @@ const tryColumnMerge = (
 ): GridLayoutNode | null => {
   const item = grid.items[itemIndex]!;
   const child = asGrid(item.child);
+
   if (child === undefined || item.colSpan !== 1) return null;
+
   if (!isSingleRowBand(child) || child.columns.length < 2) return null;
   const c = item.col;
   const n = child.columns.length;
   const scale = grid.columns[c - 1] ?? 1;
+
   const columns = [
     ...grid.columns.slice(0, c - 1),
     ...child.columns.map((f) => f * scale),
     ...grid.columns.slice(c),
   ];
+
   const items: GridItemLayoutNode[] = [];
+
   for (const other of grid.items) {
     if (other === item) {
       for (const ci of child.items) {
         items.push({ ...ci, col: ci.col + c - 1, row: ci.row + item.row - 1 });
       }
+
       continue;
     }
+
     if (other.col > c) {
       items.push({ ...other, col: other.col + n - 1 });
       continue;
     }
+
     if (other.col === c) {
       items.push({ ...other, colSpan: other.colSpan + n - 1 });
       continue;
     }
+
     // other.col < c: crossing the spliced column would need a split span.
     if (other.col + Math.max(1, other.colSpan) - 1 >= c) return null;
     items.push(other);
   }
+
   return { ...grid, columns, items };
 };
 
@@ -1129,35 +1586,45 @@ const tryRowMerge = (
 ): GridLayoutNode | null => {
   const item = grid.items[itemIndex]!;
   const child = asGrid(item.child);
+
   if (child === undefined || item.rowSpan !== 1) return null;
+
   if (!isSingleColumnBand(child) || child.rows.length < 2) return null;
   const r = item.row;
   const n = child.rows.length;
   const scale = grid.rows[r - 1] ?? 1;
+
   const rows = [
     ...grid.rows.slice(0, r - 1),
     ...child.rows.map((f) => f * scale),
     ...grid.rows.slice(r),
   ];
+
   const items: GridItemLayoutNode[] = [];
+
   for (const other of grid.items) {
     if (other === item) {
       for (const ci of child.items) {
         items.push({ ...ci, col: ci.col + item.col - 1, row: ci.row + r - 1 });
       }
+
       continue;
     }
+
     if (other.row > r) {
       items.push({ ...other, row: other.row + n - 1 });
       continue;
     }
+
     if (other.row === r) {
       items.push({ ...other, rowSpan: other.rowSpan + n - 1 });
       continue;
     }
+
     if (other.row + Math.max(1, other.rowSpan) - 1 >= r) return null;
     items.push(other);
   }
+
   return { ...grid, rows, items };
 };
 
@@ -1165,18 +1632,30 @@ const tryRowMerge = (
 const coalesceGrid = (grid: GridLayoutNode): GridLayoutNode => {
   let current = grid;
   let merged = true;
+
   while (merged) {
     merged = false;
+
     for (let i = 0; i < current.items.length && !merged; i++) {
       const next = tryColumnMerge(current, i) ?? tryRowMerge(current, i);
+
       if (next !== null) {
         current = next;
         merged = true;
       }
     }
   }
+
   return current;
 };
+
+/**
+ * Derive a child id (`"<parent>-first"` / `"<parent>-second"`) from a parent
+ * node id. The brand comes from decoding `LayoutNodeId`, which also re-proves
+ * the non-empty invariant the parent id already carries — no blind assertion.
+ */
+const derivedNodeId = (parentId: LayoutNodeId, suffix: string): LayoutNodeId =>
+  Schema.decodeSync(LayoutNodeId)(`${parentId}${suffix}`);
 
 /** Convert legacy binary splits into (flattened) grids. Idempotent. */
 export function migrateLegacyLayout(node: LayoutNode): LayoutNode {
@@ -1186,14 +1665,45 @@ export function migrateLegacyLayout(node: LayoutNode): LayoutNode {
         ...item,
         child: migrateLegacyLayout(item.child),
       }));
+
       return coalesceGrid({ ...node, items });
     }
+
+    if (node.type === "flow") {
+      const items = node.items.map((item) => ({
+        ...item,
+        child: migrateLegacyLayout(item.child),
+      }));
+
+      return { ...node, items };
+    }
+
+    if (node.type === "masonry") {
+      const items = node.items.map((item) => ({
+        ...item,
+        child: migrateLegacyLayout(item.child),
+      }));
+
+      return { ...node, items };
+    }
+
+    if (node.type === "auto") {
+      const items = node.items.map((item) => ({
+        ...item,
+        child: migrateLegacyLayout(item.child),
+      }));
+
+      return { ...node, items };
+    }
+
     return node;
   }
+
   const horizontal = node.direction === "horizontal";
   const ratio = node.ratio;
   const first = migrateLegacyLayout(node.first);
   const second = migrateLegacyLayout(node.second);
+
   const grid: GridLayoutNode = {
     type: "grid",
     id: node.id,
@@ -1202,7 +1712,7 @@ export function migrateLegacyLayout(node: LayoutNode): LayoutNode {
     items: [
       {
         type: "item",
-        id: `${node.id}-first` as LayoutNodeId,
+        id: derivedNodeId(node.id, "-first"),
         col: 1,
         row: 1,
         colSpan: 1,
@@ -1211,7 +1721,7 @@ export function migrateLegacyLayout(node: LayoutNode): LayoutNode {
       },
       {
         type: "item",
-        id: `${node.id}-second` as LayoutNodeId,
+        id: derivedNodeId(node.id, "-second"),
         col: horizontal ? 2 : 1,
         row: horizontal ? 1 : 2,
         colSpan: 1,
@@ -1220,15 +1730,32 @@ export function migrateLegacyLayout(node: LayoutNode): LayoutNode {
       },
     ],
   };
+
   return coalesceGrid(grid);
 }
 
 /** Whole-workspace migration: converts any legacy splits in the layout. */
 export function migrateWorkspace(workspace: Workspace): Workspace {
   const layout = migrateLegacyLayout(workspace.layout);
+
   if (layout === workspace.layout) return workspace;
+
   return { ...workspace, layout };
 }
+
+/**
+ * Persisted JSON document `decodePersistedWorkspace` accepts: the workspace
+ * wire shape with a not-yet-validated numeric `schemaVersion` — the version
+ * gate inside names the supported literal. Nothing is trusted until decoded.
+ */
+export type PersistedWorkspaceDocument = Omit<
+  typeof Workspace.Encoded,
+  "schemaVersion"
+> & { readonly schemaVersion: number };
+
+const decodePersistedVersion = Schema.decodeUnknownEither(
+  Schema.Struct({ schemaVersion: WorkspaceSchemaVersion }),
+);
 
 /**
  * Decode persisted documents with an explicit schema-version gate FIRST, so
@@ -1236,16 +1763,16 @@ export function migrateWorkspace(workspace: Workspace): Workspace {
  * migrations will hook in) rather than a generic literal mismatch. Legacy
  * split trees are migrated to grids on the way through.
  */
-export const decodePersistedWorkspace = (value: unknown): Workspace => {
-  if (typeof value === "object" && value !== null) {
-    const version = (value as Record<string, unknown>)["schemaVersion"];
-    if (version !== CURRENT_WORKSPACE_SCHEMA_VERSION) {
-      throw new Error(
-        `Unsupported workspace schema version: ${String(version)} (expected ${CURRENT_WORKSPACE_SCHEMA_VERSION})`,
-      );
-    }
+export const decodePersistedWorkspace = (
+  document: PersistedWorkspaceDocument,
+): Workspace => {
+  if (Either.isLeft(decodePersistedVersion(document))) {
+    throw new Error(
+      `Unsupported workspace schema version: ${String(document.schemaVersion)} (expected ${CURRENT_WORKSPACE_SCHEMA_VERSION})`,
+    );
   }
-  return migrateWorkspace(decodeWorkspace(value));
+
+  return migrateWorkspace(decodeWorkspace(document));
 };
 
 // ---------------------------------------------------------------------------
@@ -1318,6 +1845,9 @@ export const decodePersistedWorkspace = (value: unknown): Workspace => {
 export const Capability = Schema.Literal(
   "system.health",
   "system.backend-config",
+  "system.page-defaults",
+  "system.page-defaults.update",
+  "macro.fed-rate",
   "bot.status",
   "bot.balance",
   "bot.profit",
@@ -1346,6 +1876,7 @@ export const Capability = Schema.Literal(
   "instances.open-positions",
   "instances.closed-positions",
   "instances.tag-performance",
+  "instances.tag-performance-all",
   "instances.pairs",
   "instances.candles",
   "instances.plot-config",
@@ -1358,27 +1889,36 @@ export const Capability = Schema.Literal(
   "instances.locks",
   "instances.blacklist",
   "instances.whitelist",
+  "instances.locks-all",
+  "instances.blacklist-all",
+  "instances.whitelist-all",
   "instances.trade-count",
   "instances.profit-daily",
   "instances.profit-history",
+  "instances.profit-history-all",
   "instances.overview",
   "instances.positions-all",
   "instances.closed-all",
   "instances.profit-daily-all",
   "instances.balance-history",
   "instances.balance-history.relative",
+  "instances.profit-history-all.relative",
   "users.list",
   "users.create",
   "users.update",
   "users.remove",
   "auth.capabilities",
 );
+
 export type Capability = typeof Capability.Type;
 
 /** Open-mode grant: every known capability. Auth-disabled servers return this. */
 export const ALL_CAPABILITIES: ReadonlyArray<Capability> = [
   "system.health",
   "system.backend-config",
+  "system.page-defaults",
+  "system.page-defaults.update",
+  "macro.fed-rate",
   "bot.status",
   "bot.balance",
   "bot.profit",
@@ -1407,6 +1947,7 @@ export const ALL_CAPABILITIES: ReadonlyArray<Capability> = [
   "instances.open-positions",
   "instances.closed-positions",
   "instances.tag-performance",
+  "instances.tag-performance-all",
   "instances.pairs",
   "instances.candles",
   "instances.plot-config",
@@ -1419,15 +1960,20 @@ export const ALL_CAPABILITIES: ReadonlyArray<Capability> = [
   "instances.locks",
   "instances.blacklist",
   "instances.whitelist",
+  "instances.locks-all",
+  "instances.blacklist-all",
+  "instances.whitelist-all",
   "instances.trade-count",
   "instances.profit-daily",
   "instances.profit-history",
+  "instances.profit-history-all",
   "instances.overview",
   "instances.positions-all",
   "instances.closed-all",
   "instances.profit-daily-all",
   "instances.balance-history",
   "instances.balance-history.relative",
+  "instances.profit-history-all.relative",
   "users.list",
   "users.create",
   "users.update",
@@ -1445,6 +1991,8 @@ export const ALL_CAPABILITIES: ReadonlyArray<Capability> = [
  */
 export const NON_SENSITIVE_CAPABILITIES: ReadonlyArray<Capability> = [
   "system.health",
+  "system.page-defaults",
+  "macro.fed-rate",
   "bot.status",
   "bot.balance.relative",
   "bot.profit.relative",
@@ -1462,8 +2010,12 @@ export const NON_SENSITIVE_CAPABILITIES: ReadonlyArray<Capability> = [
   "instances.locks",
   "instances.blacklist",
   "instances.whitelist",
+  "instances.locks-all",
+  "instances.blacklist-all",
+  "instances.whitelist-all",
   "instances.trade-count",
   "instances.balance-history.relative",
+  "instances.profit-history-all.relative",
   "auth.capabilities",
 ];
 
@@ -1507,6 +2059,7 @@ export const InfoKind = Schema.Literal(
   "bot-state",
   "session-identity",
 );
+
 export type InfoKind = typeof InfoKind.Type;
 
 /**
@@ -1542,15 +2095,79 @@ export const SensitivitySettingsResponse = Schema.Struct({
   sensitiveKinds: Schema.Array(InfoKind),
   defaults: Schema.Array(InfoKind),
 });
-export type SensitivitySettingsResponse = typeof SensitivitySettingsResponse.Type;
+
+export type SensitivitySettingsResponse =
+  typeof SensitivitySettingsResponse.Type;
 
 export const UpdateSensitivityRequest = Schema.Struct({
   /** New set of sensitive kinds (empty = nothing is sensitive). */
   sensitiveKinds: Schema.Array(InfoKind),
 });
+
 export type UpdateSensitivityRequest = typeof UpdateSensitivityRequest.Type;
 
+// ---------------------------------------------------------------------------
+// Page defaults (per-user landing page + visible pages + default tabs)
+// ---------------------------------------------------------------------------
+//
+// Who lands where: `globalDefaultPageId` is the deployment-wide landing page
+// (null/absent = Home). A per-user entry overrides it for one user id or the
+// `anonymous` role: `defaultPageId` (null = follow the global), `visiblePageIds`
+// (null = every page) and `defaultPanels` (page id -> panel id activated on
+// landing). Page/panel ids are opaque UI strings — no balances, stakes or
+// locations — so the read capability stays non-sensitive (`session-identity`).
+// (Named `defaultPanels`, not `defaultTabs`: the registry audit flags any
+// result field containing `abs` — as in "tabs" — as amount-shaped.)
+
+export const PageDefaultsConfig = Schema.Struct({
+  /** Landing page for the entry (null = follow the global default). */
+  defaultPageId: Schema.NullOr(Schema.String),
+  /** Pages shown in the header (null = every page). */
+  visiblePageIds: Schema.NullOr(Schema.Array(Schema.String)),
+  /** Preferred active tab per page (page id -> panel id). */
+  defaultPanels: Schema.Record({ key: Schema.String, value: Schema.String }),
+});
+
+export type PageDefaultsConfig = typeof PageDefaultsConfig.Type;
+
+export const GetPageDefaultsRequest = Schema.Struct({
+  /** Identity to read (defaults to the caller: user id or `anonymous`). */
+  userId: Schema.optional(Schema.String.pipe(Schema.minLength(1))),
+});
+
+export type GetPageDefaultsRequest = typeof GetPageDefaultsRequest.Type;
+
+export const GetPageDefaultsResponse = Schema.Struct({
+  /** Resolved identity (`anonymous` for visitors, `root`, or `usr-*`). */
+  userId: Schema.String,
+  /** Deployment-wide landing page (null = Home). */
+  globalDefaultPageId: Schema.NullOr(Schema.String),
+  /** Per-identity override (null = follow the global default). */
+  defaults: Schema.NullOr(PageDefaultsConfig),
+});
+
+export type GetPageDefaultsResponse = typeof GetPageDefaultsResponse.Type;
+
+export const UpdatePageDefaultsRequest = Schema.Struct({
+  /** Patch the global landing page (undefined = no change, null = Home). */
+  globalDefaultPageId: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Identity to patch (`anonymous`, `root`, or `usr-*`). */
+  userId: Schema.optional(Schema.String.pipe(Schema.minLength(1))),
+  /**
+   * Replace the identity's override (undefined = no per-user change,
+   * null = clear the entry back to global-following).
+   */
+  defaults: Schema.optional(Schema.NullOr(PageDefaultsConfig)),
+});
+
+export type UpdatePageDefaultsRequest = typeof UpdatePageDefaultsRequest.Type;
+
+export const UpdatePageDefaultsResponse = GetPageDefaultsResponse;
+
+export type UpdatePageDefaultsResponse = typeof UpdatePageDefaultsResponse.Type;
+
 export const UserRole = Schema.Literal("root", "user", "anonymous");
+
 export type UserRole = typeof UserRole.Type;
 
 export const CapabilitiesResponse = Schema.Struct({
@@ -1570,27 +2187,18 @@ export const CapabilitiesResponse = Schema.Struct({
    */
   rootProvisioned: Schema.optional(Schema.Boolean),
 });
+
 export type CapabilitiesResponse = typeof CapabilitiesResponse.Type;
 
 export type ApiGroupName =
-  | "System"
-  | "Bot"
-  | "Workspace"
-  | "Instances"
-  | "Users"
-  | "Auth";
+  "System" | "Macro" | "Bot" | "Workspace" | "Instances" | "Users" | "Auth";
+
 export type ApiEndpointName = string;
 
-/**
- * Backend endpoint -> required capability (one function per id).
- * `capabilitiesForEndpoint` is the single reader so widgets never hardcode
- * endpoint strings.
- */
-export const ENDPOINT_CAPABILITIES: Readonly<
-  Record<string, ReadonlyArray<Capability>>
-> = {
+const ENDPOINT_CAPABILITY_TABLE = {
   "System.health": ["system.health"],
   "System.backendConfig": ["system.backend-config"],
+  "Macro.fedRate": ["macro.fed-rate"],
   // Not capabilities: readable by everyone, root-guarded in the handler.
   "System.sensitivity": [],
   "System.sensitivityUpdate": [],
@@ -1634,6 +2242,9 @@ export const ENDPOINT_CAPABILITIES: Readonly<
   "Instances.locks": ["instances.locks"],
   "Instances.blacklist": ["instances.blacklist"],
   "Instances.whitelist": ["instances.whitelist"],
+  "Instances.locksAll": ["instances.locks-all"],
+  "Instances.blacklistAll": ["instances.blacklist-all"],
+  "Instances.whitelistAll": ["instances.whitelist-all"],
   "Instances.tradeCount": ["instances.trade-count"],
   "Instances.profitDaily": ["instances.profit-daily"],
   "Instances.profitHistory": ["instances.profit-history"],
@@ -1643,21 +2254,44 @@ export const ENDPOINT_CAPABILITIES: Readonly<
   "Instances.profitDailyAll": ["instances.profit-daily-all"],
   "Instances.balanceHistoryAll": ["instances.balance-history"],
   "Instances.balanceHistoryAllRelative": ["instances.balance-history.relative"],
+  "Instances.profitHistoryAllRelative": [
+    "instances.profit-history-all.relative",
+  ],
+  "Instances.profitHistoryAll": ["instances.profit-history-all"],
+  "Instances.tagPerformanceAll": ["instances.tag-performance-all"],
   "Users.list": ["users.list"],
   "Users.create": ["users.create"],
   "Users.update": ["users.update"],
   "Users.remove": ["users.remove"],
+  "System.pageDefaults": ["system.page-defaults"],
+  "System.pageDefaultsUpdate": ["system.page-defaults.update"],
   "Auth.capabilities": [],
   "Auth.login": [],
   "Auth.setupRoot": [],
   "Auth.logout": [],
-};
+} as const satisfies Record<string, ReadonlyArray<Capability>>;
+
+/** `"<Group>.<endpoint>"` id of every endpoint declared in `NfiApi`. */
+export type EndpointId = keyof typeof ENDPOINT_CAPABILITY_TABLE;
+
+/**
+ * Backend endpoint -> required capability (one function per id).
+ * `capabilitiesForEndpoint` is the single reader so widgets never hardcode
+ * endpoint strings.
+ */
+export const ENDPOINT_CAPABILITIES: Readonly<
+  Record<EndpointId, ReadonlyArray<Capability>>
+> = ENDPOINT_CAPABILITY_TABLE;
+
+const endpointCapabilities = new Map<string, ReadonlyArray<Capability>>(
+  Object.entries(ENDPOINT_CAPABILITY_TABLE),
+);
 
 export function capabilitiesForEndpoint(
   group: string,
   endpoint: string,
 ): ReadonlyArray<Capability> {
-  return ENDPOINT_CAPABILITIES[`${group}.${endpoint}`] ?? [];
+  return endpointCapabilities.get(`${group}.${endpoint}`) ?? [];
 }
 
 export const BackendError = Schema.Struct({
@@ -1665,6 +2299,7 @@ export const BackendError = Schema.Struct({
   error: Schema.String,
   detail: Schema.optional(Schema.String),
 });
+
 export type BackendError = typeof BackendError.Type;
 
 /**
@@ -1677,6 +2312,7 @@ export const ForbiddenError = Schema.Struct({
   error: Schema.String,
   detail: Schema.optional(Schema.String),
 });
+
 export type ForbiddenError = typeof ForbiddenError.Type;
 
 /** Login failed (unknown user or wrong password). */
@@ -1685,6 +2321,7 @@ export const UnauthorizedError = Schema.Struct({
   error: Schema.String,
   detail: Schema.optional(Schema.String),
 });
+
 export type UnauthorizedError = typeof UnauthorizedError.Type;
 
 // ---------------------------------------------------------------------------
@@ -1714,11 +2351,13 @@ export const ManagedUser = Schema.Struct({
   createdAt: Schema.optional(Schema.String),
   updatedAt: Schema.optional(Schema.String),
 });
+
 export type ManagedUser = typeof ManagedUser.Type;
 
 export const ListUsersResponse = Schema.Struct({
   users: Schema.Array(ManagedUser),
 });
+
 export type ListUsersResponse = typeof ListUsersResponse.Type;
 
 export const CreateUserRequest = Schema.Struct({
@@ -1726,11 +2365,13 @@ export const CreateUserRequest = Schema.Struct({
   password: Schema.String.pipe(Schema.minLength(1)),
   capabilities: Schema.Array(Capability),
 });
+
 export type CreateUserRequest = typeof CreateUserRequest.Type;
 
 export const CreateUserResponse = Schema.Struct({
   user: ManagedUser,
 });
+
 export type CreateUserResponse = typeof CreateUserResponse.Type;
 
 export const UpdateUserRequest = Schema.Struct({
@@ -1738,22 +2379,26 @@ export const UpdateUserRequest = Schema.Struct({
   password: Schema.optional(Schema.String),
   capabilities: Schema.optional(Schema.Array(Capability)),
 });
+
 export type UpdateUserRequest = typeof UpdateUserRequest.Type;
 
 export const UpdateUserResponse = Schema.Struct({
   user: ManagedUser,
 });
+
 export type UpdateUserResponse = typeof UpdateUserResponse.Type;
 
 export const DeleteUserResponse = Schema.Struct({
   id: Schema.String,
 });
+
 export type DeleteUserResponse = typeof DeleteUserResponse.Type;
 
 export const LoginRequest = Schema.Struct({
   username: Schema.String.pipe(Schema.minLength(1)),
   password: Schema.String.pipe(Schema.minLength(1)),
 });
+
 export type LoginRequest = typeof LoginRequest.Type;
 
 /**
@@ -1767,13 +2412,14 @@ export type LoginRequest = typeof LoginRequest.Type;
  * prints to its log on first boot — required so an exposed first boot
  * cannot be claimed by a stranger on the network.
  */
-export const MIN_ROOT_PASSWORD_LENGTH = 12
+export const MIN_ROOT_PASSWORD_LENGTH = 12;
 
 export const SetupRootRequest = Schema.Struct({
   username: Schema.String.pipe(Schema.minLength(1)),
   password: Schema.String.pipe(Schema.minLength(MIN_ROOT_PASSWORD_LENGTH)),
   setupToken: Schema.optional(Schema.String),
 });
+
 export type SetupRootRequest = typeof SetupRootRequest.Type;
 
 export const LoginResponse = Schema.Struct({
@@ -1782,11 +2428,13 @@ export const LoginResponse = Schema.Struct({
   role: UserRole,
   capabilities: Schema.Array(Capability),
 });
+
 export type LoginResponse = typeof LoginResponse.Type;
 
 export const LogoutResponse = Schema.Struct({
   ok: Schema.Literal(true),
 });
+
 export type LogoutResponse = typeof LogoutResponse.Type;
 
 export const NfiApi = HttpApi.make("NfiPanelApi")
@@ -1816,6 +2464,27 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
           .addSuccess(SensitivitySettingsResponse)
           .addError(BackendError, { status: 502 })
           .setPayload(UpdateSensitivityRequest),
+      )
+      .add(
+        HttpApiEndpoint.get("pageDefaults", "/api/system/page-defaults")
+          .setUrlParams(GetPageDefaultsRequest)
+          .addSuccess(GetPageDefaultsResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.put("pageDefaultsUpdate", "/api/system/page-defaults")
+          .setPayload(UpdatePageDefaultsRequest)
+          .addSuccess(UpdatePageDefaultsResponse)
+          .addError(BackendError, { status: 502 }),
+      ),
+  )
+  .add(
+    HttpApiGroup.make("Macro")
+      .addError(ForbiddenError, { status: 403 })
+      .add(
+        HttpApiEndpoint.get("fedRate", "/api/macro/fed-rate")
+          .addSuccess(FedRateResponse)
+          .addError(BackendError, { status: 502 }),
       ),
   )
   .add(
@@ -2046,6 +2715,7 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
         HttpApiEndpoint.get(
           "openPositions",
         )`/api/instances/${HttpApiSchema.param("id", Schema.String)}/positions/open`
+          .setUrlParams(SearchQuery)
           .addSuccess(OpenPositionsResponse)
           .addError(BackendError, { status: 502 }),
       )
@@ -2107,6 +2777,7 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
         HttpApiEndpoint.get(
           "openPositionsRelative",
         )`/api/instances/${HttpApiSchema.param("id", Schema.String)}/positions/open/relative`
+          .setUrlParams(SearchQuery)
           .addSuccess(RelativeOpenPositionsResponse)
           .addError(BackendError, { status: 502 }),
       )
@@ -2144,6 +2815,7 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
         HttpApiEndpoint.get(
           "blacklist",
         )`/api/instances/${HttpApiSchema.param("id", Schema.String)}/blacklist`
+          .setUrlParams(SearchQuery)
           .addSuccess(BlacklistResponse)
           .addError(BackendError, { status: 502 }),
       )
@@ -2151,7 +2823,25 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
         HttpApiEndpoint.get(
           "whitelist",
         )`/api/instances/${HttpApiSchema.param("id", Schema.String)}/whitelist`
+          .setUrlParams(SearchQuery)
           .addSuccess(WhitelistResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get("locksAll", "/api/instances/locks/all")
+          .addSuccess(FleetLocksResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get("blacklistAll", "/api/instances/blacklist/all")
+          .setUrlParams(SearchQuery)
+          .addSuccess(FleetBlacklistResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get("whitelistAll", "/api/instances/whitelist/all")
+          .setUrlParams(SearchQuery)
+          .addSuccess(FleetWhitelistResponse)
           .addError(BackendError, { status: 502 }),
       )
       .add(
@@ -2184,6 +2874,7 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
       )
       .add(
         HttpApiEndpoint.get("positionsAll", "/api/instances/positions/open-all")
+          .setUrlParams(SearchQuery)
           .addSuccess(FleetOpenPositionsResponse)
           .addError(BackendError, { status: 502 }),
       )
@@ -2216,23 +2907,57 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
           .setUrlParams(BalanceHistoryQuery)
           .addSuccess(RelativeFleetBalanceHistoryResponse)
           .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get(
+          "profitHistoryAllRelative",
+          "/api/instances/profit-history/relative",
+        )
+          .setUrlParams(BalanceHistoryQuery)
+          .addSuccess(RelativeFleetProfitHistoryResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get(
+          "profitHistoryAll",
+          "/api/instances/profit-history/all",
+        )
+          .setUrlParams(BalanceHistoryQuery)
+          .addSuccess(ProfitHistoryResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get(
+          "tagPerformanceAll",
+          "/api/instances/tags/performance-all",
+        )
+          .setUrlParams(TagPerformanceQuery)
+          .addSuccess(TagPerformanceResponse)
+          .addError(BackendError, { status: 502 }),
       ),
   );
 
 /** Client handle type derived from the contract — no hand-written fetch types. */
 const makeNfiClient = (baseUrl?: string) =>
   HttpApiClient.make(NfiApi, { baseUrl });
+
 export type NfiApiClient = Effect.Effect.Success<
   ReturnType<typeof makeNfiClient>
 >;
 
 /** Decode helpers so shells fail loudly on contract drift. */
 export const decodeHealth = Schema.decodeUnknownSync(HealthResponse);
+
 export const decodeBotStatus = Schema.decodeUnknownSync(BotStatus);
+
 export const decodeBalance = Schema.decodeUnknownSync(BalanceResponse);
+
 export const decodeProfit = Schema.decodeUnknownSync(ProfitSummary);
+
 export const decodeOpenTrades = Schema.decodeUnknownSync(OpenTradesResponse);
+
 export const decodeBotConfig = Schema.decodeUnknownSync(BotConfigSummary);
+
 export const decodeBackendConfig = Schema.decodeUnknownSync(
   BackendConfigResponse,
 );
@@ -2241,61 +2966,89 @@ export const decodeBackendConfig = Schema.decodeUnknownSync(
 // Error formatting (shared by server-adjacent packages and the web shell)
 // ---------------------------------------------------------------------------
 
-/** Pull a `{ error, ... }` contract body out of a string (or Error message). */
-const asContractError = (value: unknown): Record<string, unknown> | null => {
-  if (typeof value !== "string" || value.length === 0) return null
-  const trimmed = value.trim()
-  if (!trimmed.startsWith("{")) return null
+/** `{ error, detail? }` body carried by this contract's failed responses. */
+const ContractErrorBody = Schema.Struct({
+  error: Schema.String,
+  detail: Schema.optional(Schema.String),
+});
+
+type ContractErrorBody = typeof ContractErrorBody.Type;
+
+/** Error-shaped objects whose `message` may itself hide a contract body. */
+const MessageBody = Schema.Struct({ message: Schema.String });
+
+const decodeContractErrorBody = Schema.decodeUnknownEither(ContractErrorBody);
+
+const decodeMessageBody = Schema.decodeUnknownEither(MessageBody);
+
+const decodeTextMessage = Schema.decodeUnknownEither(Schema.String);
+
+/**
+ * Pull a `{ error, ... }` contract body out of a string (or Error message):
+ * `null` unless the string is JSON with a string `error` field.
+ */
+const asContractError = (message: string): ContractErrorBody | null => {
+  const trimmed = message.trim();
+
+  if (!trimmed.startsWith("{")) return null;
+
   try {
-    const parsed: unknown = JSON.parse(trimmed)
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      typeof (parsed as Record<string, unknown>)["error"] === "string"
-    ) {
-      return parsed as Record<string, unknown>
-    }
+    const parsed: unknown = JSON.parse(trimmed);
+    const decoded = decodeContractErrorBody(parsed);
+
+    return Either.isRight(decoded) ? decoded.right : null;
   } catch {
     // Not JSON — fall through.
   }
-  return null
-}
+
+  return null;
+};
 
 const sentenceCase = (text: string): string =>
-  text.length > 0 ? text.charAt(0).toUpperCase() + text.slice(1) : text
+  text.length > 0 ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+
+/** Render a decoded contract body (`Error[: detail]`). */
+const formatContractBody = (body: ContractErrorBody): string => {
+  const detail =
+    body.detail !== undefined && body.detail.length > 0
+      ? `: ${body.detail}`
+      : "";
+
+  return `${sentenceCase(body.error)}${detail}`;
+};
+
+/** Format a message: a nested contract body when present, else the text. */
+const formatMessage = (message: string): string => {
+  const body = asContractError(message);
+
+  return body === null ? message : formatContractBody(body);
+};
 
 /**
  * Human-readable message for contract / transport failures: understands the
  * `BackendError` shape (`{ error, detail }`), JSON-encoded bodies inside
  * Error messages, and plain strings/objects. Returns null for nullish input.
  */
-export function formatQueryError(error: unknown): string | null {
-  if (error == null) return null
-  if (error instanceof Error) {
-    const fromMessage = asContractError(error.message)
-    if (fromMessage) return formatQueryError(fromMessage)
-    return error.message
+export function formatQueryError(cause: unknown): string | null {
+  if (cause === null || cause === undefined) return null;
+
+  if (cause instanceof Error) {
+    return formatMessage(cause.message);
   }
-  if (typeof error === "string") {
-    const fromJson = asContractError(error)
-    if (fromJson) return formatQueryError(fromJson)
-    return error
+
+  const body = decodeContractErrorBody(cause);
+
+  if (Either.isRight(body)) return formatContractBody(body.right);
+
+  const messageBody = decodeMessageBody(cause);
+
+  if (Either.isRight(messageBody)) {
+    return formatMessage(messageBody.right.message);
   }
-  if (typeof error === "object") {
-    const record = error as Record<string, unknown>
-    // `BackendError` shape from this contract (`{ error, detail }`).
-    if (typeof record["error"] === "string") {
-      const detail =
-        typeof record["detail"] === "string" && record["detail"].length > 0
-          ? `: ${record["detail"]}`
-          : ""
-      return `${sentenceCase(record["error"])}${detail}`
-    }
-    if (typeof record["message"] === "string") {
-      const fromMessage = asContractError(record["message"])
-      if (fromMessage) return formatQueryError(fromMessage)
-      return record["message"]
-    }
-  }
-  return String(error)
+
+  const text = decodeTextMessage(cause);
+
+  if (Either.isRight(text)) return formatMessage(text.right);
+
+  return String(cause);
 }

@@ -23,6 +23,7 @@ export const BOT_STATUS_CAPABILITIES: ReadonlyArray<Capability> = [
 export const BotStatusConfigSchema = Schema.Struct({
   instanceId: InstanceIdField,
 });
+
 export type BotStatusConfig = typeof BotStatusConfigSchema.Type;
 
 export const BOT_STATUS_DEFAULTS: BotStatusConfig = Schema.decodeUnknownSync(
@@ -34,11 +35,14 @@ export function BotStatusWidget({
   panelId,
 }: WidgetProps<BotStatusConfig>) {
   const cfg = config;
+
   const { data, error, isLoading } = useCapability("instances.status", {
     id: cfg.instanceId,
   });
+
   const state = queryState(error, isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<BotStatusConfig>) =>
     applyWidgetSettings(panelId, "bot-status", cfg, p);
 
@@ -57,39 +61,41 @@ export function BotStatusWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Bot Status"
-      isLoading={state.isLoading}
-      error={state.error}
-    >
-      {data ? (
-        <div className="nfi-stat-grid nfi-stat-grid--fill">
-          <Stat
-            label="State"
-            value={data.state}
-            sub={
-              data.dryRun === undefined
-                ? undefined
-                : data.dryRun
-                  ? "dry-run"
-                  : "live trading"
-            }
-            tone={data.state === "running" ? "positive" : "neutral"}
+        title="Bot Status"
+        isLoading={state.isLoading}
+        error={state.error}
+      >
+        {data ? (
+          <div className="nfi-stat-grid nfi-stat-grid--fill">
+            <Stat
+              label="State"
+              value={data.state}
+              sub={
+                data.dryRun === undefined
+                  ? undefined
+                  : data.dryRun
+                    ? "dry-run"
+                    : "live trading"
+              }
+              tone={data.state === "running" ? "positive" : "neutral"}
+            />
+            <Stat label="Strategy" value={data.strategy ?? "—"} />
+            <Stat label="Exchange" value={data.exchange ?? "—"} />
+            <Stat
+              label="Mode"
+              value={data.tradingMode ?? "—"}
+              sub={
+                data.stakeCurrency ? `stake ${data.stakeCurrency}` : undefined
+              }
+            />
+          </div>
+        ) : (
+          <EmptyState
+            title="No status"
+            hint="Is the backend connected to freqtrade?"
           />
-          <Stat label="Strategy" value={data.strategy ?? "—"} />
-          <Stat label="Exchange" value={data.exchange ?? "—"} />
-          <Stat
-            label="Mode"
-            value={data.tradingMode ?? "—"}
-            sub={data.stakeCurrency ? `stake ${data.stakeCurrency}` : undefined}
-          />
-        </div>
-      ) : (
-        <EmptyState
-          title="No status"
-          hint="Is the backend connected to freqtrade?"
-        />
-      )}
-    </WidgetFrame>
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -104,6 +110,8 @@ export const BotStatusWidgetDef = defineWidget({
   defaultConfig: BOT_STATUS_DEFAULTS,
   component: BotStatusWidget,
   capabilities: [...BOT_STATUS_CAPABILITIES],
-  minWidth: 240,
-  minHeight: 100,
+  minWidth: 1050,
+  minHeight: 130,
+  defaultWidth: 480,
+  defaultHeight: 320,
 });

@@ -1,8 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
+import { Either, Schema } from "effect";
 import { Store } from "@tanstack/store";
-import type { CapabilityName } from "@nfi/capabilities";
+import {
+  IdOptions,
+  type CapabilityName,
+  type CapabilityOptions,
+} from "@nfi/capabilities";
 import { isFreqtradeAuthError } from "@nfi/ui";
 
 /**
@@ -31,17 +36,20 @@ export const credentialsFixStore = new Store<CredentialsFixState>({
  * bot.* widgets target the implicit default instance, whose row the user
  * can identify from the widget's status tag instead).
  */
-export function noteInstanceAuthFailure(
-  name: CapabilityName,
-  options: unknown,
+export function noteInstanceAuthFailure<N extends CapabilityName>(
+  name: N,
+  options: CapabilityOptions<N>,
   formattedError: string | null,
 ): void {
   if (formattedError === null || !isFreqtradeAuthError(formattedError)) return;
+
   if (!name.startsWith("instances.")) return;
-  const id = (options as { id?: unknown }).id;
-  if (typeof id !== "string") return;
+
+  const decoded = Schema.decodeUnknownEither(IdOptions)(options);
+
+  if (Either.isLeft(decoded)) return;
   credentialsFixStore.setState((state) => ({
-    instanceId: id,
+    instanceId: decoded.right.id,
     seq: state.seq + 1,
   }));
 }
@@ -51,14 +59,18 @@ export function noteInstanceAuthFailure(
  * work again / failure was transient). Called from the live layer's
  * success path so the editor never opens for a stale failure.
  */
-export function clearInstanceAuthFailure(
-  name: CapabilityName,
-  options: unknown,
+export function clearInstanceAuthFailure<N extends CapabilityName>(
+  name: N,
+  options: CapabilityOptions<N>,
 ): void {
   if (!name.startsWith("instances.")) return;
-  const id = (options as { id?: unknown }).id;
-  if (typeof id !== "string") return;
+
+  const decoded = Schema.decodeUnknownEither(IdOptions)(options);
+
+  if (Either.isLeft(decoded)) return;
+  const id = decoded.right.id;
   const state = credentialsFixStore.state;
+
   if (state.instanceId !== id) return;
   credentialsFixStore.setState(() => ({ instanceId: null, seq: state.seq }));
 }

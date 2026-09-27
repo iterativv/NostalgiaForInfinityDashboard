@@ -13,7 +13,7 @@ import { NumberInput } from "@carbon/react";
 import { Schema } from "effect";
 import type { Capability } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
-import { EmptyState, Stat, WidgetFrame } from "@nfi/ui";
+import { EmptyState, Stat, useDerived, WidgetFrame } from "@nfi/ui";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import { InstanceIdField, numberWithDefault } from "./shared/config";
 import { clampInt, pnlTone } from "./shared/format";
@@ -35,6 +35,7 @@ export const PerformanceStatsConfigSchema = Schema.Struct({
   instanceId: InstanceIdField,
   limit: numberWithDefault(200),
 });
+
 export type PerformanceStatsConfig = typeof PerformanceStatsConfigSchema.Type;
 
 export const PERFORMANCE_STATS_DEFAULTS: PerformanceStatsConfig =
@@ -47,38 +48,93 @@ export function PerformanceStatsWidget({
   const cfg = config;
   const limit = clampInt(cfg.limit, 200, 10, 1000);
   const access = useWidgetAccess(PERFORMANCE_STATS_CAPABILITIES);
+
   const src = useClosedPositionsSource(cfg.instanceId, limit, {
     enabled: access.allowed,
   });
+
   const state = queryState(src.error, src.isLoading);
+
   const accessError = access.allowed
     ? null
     : `Not authorized — needs ${access.missing.join(", ")}`;
+
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<PerformanceStatsConfig>) =>
     applyWidgetSettings(panelId, "performance-stats", cfg, p);
 
-  const profits = (src.data ?? []).map(
-    (p) => p.closeProfitAbs ?? p.profitAbs ?? 0,
-  );
-  const trades = profits.length;
-  const wins = profits.filter((v) => v > 0);
-  const losses = profits.filter((v) => v < 0);
-  const grossWin = wins.reduce((s, v) => s + v, 0);
-  const grossLoss = Math.abs(losses.reduce((s, v) => s + v, 0));
-  const net = grossWin - grossLoss;
-  const winrate = trades > 0 ? (wins.length / trades) * 100 : 0;
-  const profitFactor =
-    grossLoss > 0
-      ? grossWin / grossLoss
-      : wins.length > 0
-        ? Number.POSITIVE_INFINITY
-        : 0;
-  const expectancy = trades > 0 ? net / trades : 0;
-  const avgWin = wins.length > 0 ? grossWin / wins.length : 0;
-  const avgLoss = losses.length > 0 ? grossLoss / losses.length : 0;
-  const best = trades > 0 ? Math.max(...profits) : 0;
-  const worst = trades > 0 ? Math.min(...profits) : 0;
+  // Derived through a store: single-pass aggregation (no Math.max spread
+  // over up to 1000 trades) reruns only when the snapshot changes, so
+  // resize/store re-renders stay cheap.
+  const stats = useDerived(src.data, (data) => {
+    const profits = (data ?? []).map(
+      (p) => p.closeProfitAbs ?? p.profitAbs ?? 0,
+    );
+
+    const trades = profits.length;
+    let wins = 0;
+    let losses = 0;
+    let grossWin = 0;
+    let grossLoss = 0;
+    let best = 0;
+    let worst = 0;
+
+    for (let i = 0; i < profits.length; i++) {
+      const v = profits[i]!;
+
+      if (i === 0 || v > best) best = v;
+
+      if (i === 0 || v < worst) worst = v;
+
+      if (v > 0) {
+        wins += 1;
+        grossWin += v;
+      } else if (v < 0) {
+        losses += 1;
+        grossLoss += -v;
+      }
+    }
+
+    const net = grossWin - grossLoss;
+
+    return {
+      trades,
+      wins,
+      losses,
+      grossWin,
+      grossLoss,
+      net,
+      winrate: trades > 0 ? (wins / trades) * 100 : 0,
+      profitFactor:
+        grossLoss > 0
+          ? grossWin / grossLoss
+          : wins > 0
+            ? Number.POSITIVE_INFINITY
+            : 0,
+      expectancy: trades > 0 ? net / trades : 0,
+      avgWin: wins > 0 ? grossWin / wins : 0,
+      avgLoss: losses > 0 ? grossLoss / losses : 0,
+      best: trades > 0 ? best : 0,
+      worst: trades > 0 ? worst : 0,
+    };
+  });
+
+  const {
+    trades,
+    wins,
+    losses,
+    grossWin,
+    grossLoss,
+    net,
+    winrate,
+    profitFactor,
+    expectancy,
+    avgWin,
+    avgLoss,
+    best,
+    worst,
+  } = stats;
 
   return (
     <>
@@ -108,68 +164,68 @@ export function PerformanceStatsWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Performance Stats"
-      isLoading={state.isLoading}
-      error={accessError ?? state.error}
-    >
-      {trades > 0 ? (
-        <div className="nfi-stat-grid">
-          <Stat
-            label="Net profit"
-            value={`${net >= 0 ? "+" : ""}${net.toFixed(2)}`}
-            sub={`${trades} trades`}
-            tone={pnlTone(net)}
+        title="Performance Stats"
+        isLoading={state.isLoading}
+        error={accessError ?? state.error}
+      >
+        {trades > 0 ? (
+          <div className="nfi-stat-grid nfi-stat-grid--fill">
+            <Stat
+              label="Net profit"
+              value={`${net >= 0 ? "+" : ""}${net.toFixed(2)}`}
+              sub={`${trades} trades`}
+              tone={pnlTone(net)}
+            />
+            <Stat
+              label="Winrate"
+              value={`${winrate.toFixed(1)}%`}
+              sub={`${wins}W / ${losses}L`}
+            />
+            <Stat
+              label="Profit factor"
+              value={
+                Number.isFinite(profitFactor) ? profitFactor.toFixed(2) : "∞"
+              }
+              sub={`gross +${grossWin.toFixed(0)} / -${grossLoss.toFixed(0)}`}
+            />
+            <Stat
+              label="Expectancy"
+              value={`${expectancy >= 0 ? "+" : ""}${expectancy.toFixed(2)}`}
+              sub="per trade"
+              tone={pnlTone(expectancy)}
+            />
+            <Stat
+              label="Avg win"
+              value={`+${avgWin.toFixed(2)}`}
+              sub={`${wins} winners`}
+              tone="positive"
+            />
+            <Stat
+              label="Avg loss"
+              value={`-${avgLoss.toFixed(2)}`}
+              sub={`${losses} losers`}
+              tone="negative"
+            />
+            <Stat
+              label="Best"
+              value={`+${best.toFixed(2)}`}
+              sub="single trade"
+              tone="positive"
+            />
+            <Stat
+              label="Worst"
+              value={worst.toFixed(2)}
+              sub="single trade"
+              tone={pnlTone(worst)}
+            />
+          </div>
+        ) : (
+          <EmptyState
+            title="No closed trades"
+            hint="Close a trade (or widen the window in ⚙ settings)."
           />
-          <Stat
-            label="Winrate"
-            value={`${winrate.toFixed(1)}%`}
-            sub={`${wins.length}W / ${losses.length}L`}
-          />
-          <Stat
-            label="Profit factor"
-            value={
-              Number.isFinite(profitFactor) ? profitFactor.toFixed(2) : "∞"
-            }
-            sub={`gross +${grossWin.toFixed(0)} / -${grossLoss.toFixed(0)}`}
-          />
-          <Stat
-            label="Expectancy"
-            value={`${expectancy >= 0 ? "+" : ""}${expectancy.toFixed(2)}`}
-            sub="per trade"
-            tone={pnlTone(expectancy)}
-          />
-          <Stat
-            label="Avg win"
-            value={`+${avgWin.toFixed(2)}`}
-            sub={`${wins.length} winners`}
-            tone="positive"
-          />
-          <Stat
-            label="Avg loss"
-            value={`-${avgLoss.toFixed(2)}`}
-            sub={`${losses.length} losers`}
-            tone="negative"
-          />
-          <Stat
-            label="Best"
-            value={`+${best.toFixed(2)}`}
-            sub="single trade"
-            tone="positive"
-          />
-          <Stat
-            label="Worst"
-            value={worst.toFixed(2)}
-            sub="single trade"
-            tone={pnlTone(worst)}
-          />
-        </div>
-      ) : (
-        <EmptyState
-          title="No closed trades"
-          hint="Close a trade (or widen the window in ⚙ settings)."
-        />
-      )}
-    </WidgetFrame>
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -183,6 +239,8 @@ export const PerformanceStatsWidgetDef = defineWidget({
   defaultConfig: PERFORMANCE_STATS_DEFAULTS,
   component: PerformanceStatsWidget,
   capabilities: [...PERFORMANCE_STATS_CAPABILITIES],
-  minWidth: 320,
-  minHeight: 180,
+  minWidth: 370,
+  minHeight: 281,
+  defaultWidth: 480,
+  defaultHeight: 320,
 });

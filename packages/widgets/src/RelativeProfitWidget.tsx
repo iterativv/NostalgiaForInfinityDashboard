@@ -24,6 +24,7 @@ export const RELATIVE_PROFIT_CAPABILITIES: ReadonlyArray<Capability> = [
 export const RelativeProfitConfigSchema = Schema.Struct({
   instanceId: InstanceIdField,
 });
+
 export type RelativeProfitConfig = typeof RelativeProfitConfigSchema.Type;
 
 export const RELATIVE_PROFIT_DEFAULTS: RelativeProfitConfig =
@@ -39,12 +40,15 @@ export function RelativeProfitWidget({
   panelId,
 }: WidgetProps<RelativeProfitConfig>) {
   const cfg = config;
+
   const { data, error, isLoading } = useCapability(
     "instances.profit.relative",
     { id: cfg.instanceId },
   );
+
   const state = queryState(error, isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<RelativeProfitConfig>) =>
     applyWidgetSettings(panelId, "profit-relative", cfg, p);
 
@@ -63,34 +67,34 @@ export function RelativeProfitWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Profit %"
-      isLoading={state.isLoading}
-      error={state.error}
-    >
-      {data ? (
-        <div className="nfi-stat-grid nfi-stat-grid--fill">
-          <Stat
-            label="Closed profit"
-            value={`${data.profitClosedPercent.toFixed(2)}%`}
-            sub={`${data.closedTradeCount} closed`}
-            tone={pnlTone(data.profitClosedPercent)}
-          />
-          <Stat
-            label="All profit"
-            value={`${data.profitAllPercent.toFixed(2)}%`}
-            sub={`${data.tradeCount} trades`}
-            tone={pnlTone(data.profitAllPercent)}
-          />
-          <Stat
-            label="Trades"
-            value={String(data.tradeCount)}
-            sub={`${data.closedTradeCount} closed`}
-          />
-        </div>
-      ) : (
-        <EmptyState title="No profit data" />
-      )}
-    </WidgetFrame>
+        title="Profit %"
+        isLoading={state.isLoading}
+        error={state.error}
+      >
+        {data ? (
+          <div className="nfi-stat-grid nfi-stat-grid--fill">
+            <Stat
+              label="Closed profit"
+              value={`${data.profitClosedPercent.toFixed(2)}%`}
+              sub={`${data.closedTradeCount} closed`}
+              tone={pnlTone(data.profitClosedPercent)}
+            />
+            <Stat
+              label="All profit"
+              value={`${data.profitAllPercent.toFixed(2)}%`}
+              sub={`${data.tradeCount} trades`}
+              tone={pnlTone(data.profitAllPercent)}
+            />
+            <Stat
+              label="Trades"
+              value={String(data.tradeCount)}
+              sub={`${data.closedTradeCount} closed`}
+            />
+          </div>
+        ) : (
+          <EmptyState title="No profit data" />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -105,6 +109,8 @@ export const RelativeProfitWidgetDef = defineWidget({
   defaultConfig: RELATIVE_PROFIT_DEFAULTS,
   component: RelativeProfitWidget,
   capabilities: [...RELATIVE_PROFIT_CAPABILITIES],
-  minWidth: 280,
-  minHeight: 100,
+  minWidth: 470,
+  minHeight: 130,
+  defaultWidth: 360,
+  defaultHeight: 220,
 });

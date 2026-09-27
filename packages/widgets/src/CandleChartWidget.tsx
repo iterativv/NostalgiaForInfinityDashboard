@@ -14,7 +14,6 @@
  * chart — overlays stay locked with an explanation instead of failing.
  */
 
-import { useEffect, useMemo } from "react";
 import { NumberInput } from "@carbon/react";
 import { Schema } from "effect";
 import {
@@ -24,10 +23,16 @@ import {
   RSI,
   SMA,
 } from "lightweight-charts-indicators";
-import type { HistogramData, LineData, UTCTimestamp } from "lightweight-charts";
+import type { HistogramData, LineData } from "lightweight-charts";
 import type { Capability } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
-import { EmptyState, WidgetFrame } from "@nfi/ui";
+import {
+  EmptyState,
+  shallow,
+  useDerived,
+  useStoreEffect,
+  WidgetFrame,
+} from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import {
@@ -37,6 +42,7 @@ import {
 } from "./shared/config";
 import { clampInt, fmtCompact } from "./shared/format";
 import { queryState, useWidgetAccess } from "./shared/query";
+import { useNarrowMode } from "./shared/size";
 import { InstanceSelect } from "./shared/InstanceSelect";
 import { PairCombobox } from "./shared/PairCombobox";
 import { SettingsSelect } from "./shared/SettingsSelect";
@@ -49,11 +55,13 @@ import {
 import {
   CandleChart,
   orderedByTime,
+  utcSeconds,
   type TvOverlayLine,
   type TvSubplot,
 } from "./shared/CandleChart";
 
 export const CANDLE_MARKET_CAPABILITY: Capability = "instances.candles";
+
 export const CANDLE_INDICATORS_CAPABILITY: Capability = "instances.plot-config";
 
 export const CandleTimeframe = Schema.Literal(
@@ -65,9 +73,11 @@ export const CandleTimeframe = Schema.Literal(
   "4h",
   "1d",
 );
+
 export type CandleTimeframe = typeof CandleTimeframe.Type;
 
 export const CandleSubplot = Schema.Literal("none", "rsi", "macd");
+
 export type CandleSubplot = typeof CandleSubplot.Type;
 
 export const CandleChartConfigSchema = Schema.Struct({
@@ -92,6 +102,7 @@ export const CandleChartConfigSchema = Schema.Struct({
     default: (): CandleSubplot => "rsi",
   }),
 });
+
 export type CandleChartConfig = typeof CandleChartConfigSchema.Type;
 
 export const CANDLE_CHART_DEFAULTS: CandleChartConfig =
@@ -130,10 +141,17 @@ const toLineData = (
   plots: ReadonlyArray<{ time: number; value: number }> | undefined,
 ): LineData[] => {
   const out: LineData[] = [];
+
+  // Indicator libraries preserve the input bar time unit (seconds here —
+  // `bars` are already `Math.floor(ms / 1000)`). Convert with `utcSeconds`
+  // (identity for whole seconds), NOT `toSec` (ms → s) — the latter divided
+  // twice and pinned every overlay to 1970 (see screenshot: SMA/VWAP/RSI
+  // starting at 1970 while candles render at 2026).
   for (const p of plots ?? []) {
     if (Number.isFinite(p.value))
-      out.push({ time: p.time as UTCTimestamp, value: p.value });
+      out.push({ time: utcSeconds(p.time), value: p.value });
   }
+
   return out;
 };
 
@@ -141,10 +159,13 @@ const lastPlotValue = (
   plots: ReadonlyArray<{ value: number }> | undefined,
 ): number | null => {
   const list = plots ?? [];
+
   for (let i = list.length - 1; i >= 0; i--) {
     const v = list[i]?.value;
-    if (typeof v === "number" && Number.isFinite(v)) return v;
+
+    if (v !== undefined && Number.isFinite(v)) return v;
   }
+
   return null;
 };
 
@@ -161,17 +182,18 @@ const computeVwap = (
   const out: LineData[] = [];
   let pv = 0;
   let vol = 0;
+
+  // `candles` here are `bars` (time already in seconds) — see `toLineData`.
   for (const c of candles) {
     const v = c.volume ?? 0;
     pv += ((c.high + c.low + c.close) / 3) * v;
     vol += v;
-    if (vol > 0) out.push({ time: toSec(c.time), value: pv / vol });
+
+    if (vol > 0) out.push({ time: utcSeconds(c.time), value: pv / vol });
   }
+
   return out;
 };
-
-const toSec = (ms: number): UTCTimestamp =>
-  Math.floor(ms / 1000) as UTCTimestamp;
 
 export function CandleChartWidget({
   config,
@@ -181,6 +203,7 @@ export function CandleChartWidget({
   const limit = clampInt(cfg.limit, 200, 20, 1000);
   const market = useWidgetAccess([CANDLE_MARKET_CAPABILITY]);
   const indicatorsAccess = useWidgetAccess([CANDLE_INDICATORS_CAPABILITY]);
+
   const candlesQ = useCapability(
     "instances.candles",
     {
@@ -191,185 +214,233 @@ export function CandleChartWidget({
     },
     { enabled: market.allowed },
   );
+
   const pairsQ = useCapability(
     "instances.pairs",
     { id: cfg.instanceId, timeframe: cfg.timeframe },
     { enabled: market.allowed },
   );
+
   const plotQ = useCapability(
     "instances.plot-config",
     { id: cfg.instanceId },
     { enabled: indicatorsAccess.allowed },
   );
+
   const state = queryState(candlesQ.error, candlesQ.isLoading);
+
   const marketError = market.allowed
     ? null
     : `Not authorized — needs ${market.missing.join(", ")}`;
+
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<CandleChartConfig>) =>
     applyWidgetSettings(panelId, "candle-chart", cfg, p);
 
-  const candles = useMemo(() => candlesQ.data?.candles ?? [], [candlesQ.data]);
+  const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
 
   // Pair self-heal: futures exchanges whitelist `BTC/USDT:USDT` while spot
   // lists `BTC/USDT`. When the configured pair is not on the whitelist,
   // adopt its settled variant (else the same base) once, so the BTC/USDT
   // default is usable out of the box on either market type.
-  useEffect(() => {
+  useStoreEffect(() => {
     const whitelist = pairsQ.data?.pairs;
+
     if (!whitelist || whitelist.length === 0) return;
+
     if (whitelist.includes(cfg.pair)) return;
     const base = cfg.pair.split("/")[0] ?? cfg.pair;
     const settled = whitelist.find((p) => p === `${cfg.pair}:USDT`);
     const byBase = whitelist.find((p) => (p.split("/")[0] ?? "") === base);
     const next = settled ?? byBase;
+
     if (next) patch({ pair: next });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pairsQ.data, cfg.pair]);
 
   // Bars drive the indicator math and VWAP: dedupe by bar-time seconds
   // (keep the newest) so a duplicated candle from freqtrade cannot produce
   // duplicate-time indicator points either.
-  const bars = useMemo<TvBar[]>(
-    () =>
-      orderedByTime(
-        candles.map((c) => ({
-          time: Math.floor(c.time / 1000),
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-          volume: c.volume,
-        })),
-      ),
-    [candles],
+  const bars = useDerived(candles, (src): TvBar[] =>
+    orderedByTime(
+      src.map((c) => ({
+        time: Math.floor(c.time / 1000),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      })),
+    ),
   );
 
-  const overlays = useMemo<TvOverlayLine[]>(() => {
-    if (!indicatorsAccess.allowed || bars.length === 0) return [];
-    const list: TvOverlayLine[] = [];
-    if (cfg.showSma20) {
-      list.push({
-        name: "SMA 20",
-        color: "#ffab00",
-        data: toLineData(SMA.calculate(bars, { len: 20 }).plots.plot0),
-      });
-    }
-    if (cfg.showSma50) {
-      list.push({
-        name: "SMA 50",
-        color: "#3ddbd9",
-        data: toLineData(SMA.calculate(bars, { len: 50 }).plots.plot0),
-      });
-    }
-    if (cfg.showEma12) {
-      list.push({
-        name: "EMA 12",
-        color: "#ff7eb6",
-        data: toLineData(EMA.calculate(bars, { length: 12 }).plots.plot0),
-      });
-    }
-    if (cfg.showBollinger) {
-      const bb = BollingerBands.calculate(bars, { length: 20, mult: 2 });
-      list.push({
-        name: "BB upper",
-        color: "#8a3ffc",
-        data: toLineData(bb.plots.plot0),
-        dashed: true,
-      });
-      list.push({
-        name: "BB basis",
-        color: "#8a3ffc",
-        data: toLineData(bb.plots.plot1),
-        dashed: true,
-      });
-      list.push({
-        name: "BB lower",
-        color: "#8a3ffc",
-        data: toLineData(bb.plots.plot2),
-        dashed: true,
-      });
-    }
-    if (cfg.showVwap) {
-      const vwap = computeVwap(bars);
-      if (vwap.length > 0) {
-        list.push({ name: "VWAP", color: "#78a9ff", data: vwap, lineWidth: 2 });
-      }
-    }
-    return list;
-  }, [
-    bars,
-    cfg.showSma20,
-    cfg.showSma50,
-    cfg.showEma12,
-    cfg.showBollinger,
-    cfg.showVwap,
-    indicatorsAccess.allowed,
-  ]);
+  const overlays = useDerived(
+    [
+      bars,
+      cfg.showSma20,
+      cfg.showSma50,
+      cfg.showEma12,
+      cfg.showBollinger,
+      cfg.showVwap,
+      indicatorsAccess.allowed,
+    ] as const,
+    ([
+      bars,
+      showSma20,
+      showSma50,
+      showEma12,
+      showBollinger,
+      showVwap,
+      allowed,
+    ]): TvOverlayLine[] => {
+      if (!allowed || bars.length === 0) return [];
+      const list: TvOverlayLine[] = [];
 
-  const rsiPlots = useMemo(
-    () =>
-      indicatorsAccess.allowed && bars.length > 0 && cfg.subplot === "rsi"
+      if (showSma20) {
+        list.push({
+          name: "SMA 20",
+          color: "#ffab00",
+          data: toLineData(SMA.calculate(bars, { len: 20 }).plots.plot0),
+        });
+      }
+
+      if (showSma50) {
+        list.push({
+          name: "SMA 50",
+          color: "#3ddbd9",
+          data: toLineData(SMA.calculate(bars, { len: 50 }).plots.plot0),
+        });
+      }
+
+      if (showEma12) {
+        list.push({
+          name: "EMA 12",
+          color: "#ff7eb6",
+          data: toLineData(EMA.calculate(bars, { length: 12 }).plots.plot0),
+        });
+      }
+
+      if (showBollinger) {
+        const bb = BollingerBands.calculate(bars, { length: 20, mult: 2 });
+        list.push({
+          name: "BB upper",
+          color: "#8a3ffc",
+          data: toLineData(bb.plots.plot0),
+          dashed: true,
+        });
+        list.push({
+          name: "BB basis",
+          color: "#8a3ffc",
+          data: toLineData(bb.plots.plot1),
+          dashed: true,
+        });
+        list.push({
+          name: "BB lower",
+          color: "#8a3ffc",
+          data: toLineData(bb.plots.plot2),
+          dashed: true,
+        });
+      }
+
+      if (showVwap) {
+        const vwap = computeVwap(bars);
+
+        if (vwap.length > 0) {
+          list.push({
+            name: "VWAP",
+            color: "#78a9ff",
+            data: vwap,
+            lineWidth: 2,
+          });
+        }
+      }
+
+      return list;
+    },
+    { inputs: shallow },
+  );
+
+  const rsiPlots = useDerived(
+    [bars, cfg.subplot, indicatorsAccess.allowed] as const,
+    ([bars, subplot, allowed]) =>
+      allowed && bars.length > 0 && subplot === "rsi"
         ? RSI.calculate(bars, { length: 14 }).plots.plot0
         : [],
-    [bars, cfg.subplot, indicatorsAccess.allowed],
+    { inputs: shallow },
   );
 
-  const macdPlots = useMemo(
-    () =>
-      indicatorsAccess.allowed && bars.length > 0 && cfg.subplot === "macd"
+  const macdPlots = useDerived(
+    [bars, cfg.subplot, indicatorsAccess.allowed] as const,
+    ([bars, subplot, allowed]) =>
+      allowed && bars.length > 0 && subplot === "macd"
         ? MACD.calculate(bars, {
             fastLength: 12,
             slowLength: 26,
             signalLength: 9,
           }).plots
         : null,
-    [bars, cfg.subplot, indicatorsAccess.allowed],
+    { inputs: shallow },
   );
 
-  const subplot = useMemo<TvSubplot | null>(() => {
-    if (!indicatorsAccess.allowed || cfg.subplot === "none") return null;
-    if (cfg.subplot === "rsi") {
+  const subplot = useDerived(
+    [cfg.subplot, indicatorsAccess.allowed, rsiPlots, macdPlots] as const,
+    ([subplot, allowed, rsiPlots, macdPlots]): TvSubplot | null => {
+      if (!allowed || subplot === "none") return null;
+
+      if (subplot === "rsi") {
+        return {
+          lines: [
+            { name: "RSI 14", color: "#3ddbd9", data: toLineData(rsiPlots) },
+          ],
+          levels: [
+            { price: 70, title: "70" },
+            { price: 50, title: "50" },
+            { price: 30, title: "30" },
+          ],
+        };
+      }
+
+      if (!macdPlots) return null;
+      const histogram: HistogramData[] = [];
+
+      for (const p of macdPlots?.plot2 ?? []) {
+        if (Number.isFinite(p.value)) {
+          histogram.push({
+            time: utcSeconds(p.time),
+            value: p.value,
+            color:
+              p.value >= 0
+                ? "rgba(38, 166, 154, 0.6)"
+                : "rgba(239, 83, 80, 0.6)",
+          });
+        }
+      }
+
       return {
         lines: [
-          { name: "RSI 14", color: "#3ddbd9", data: toLineData(rsiPlots) },
+          {
+            name: "MACD",
+            color: "#ff7eb6",
+            data: toLineData(macdPlots?.plot0),
+          },
+          {
+            name: "Signal",
+            color: "#ffab00",
+            data: toLineData(macdPlots?.plot1),
+          },
         ],
-        levels: [
-          { price: 70, title: "70" },
-          { price: 50, title: "50" },
-          { price: 30, title: "30" },
-        ],
+        histogram,
+        levels: [{ price: 0, title: "0" }],
       };
-    }
-    if (!macdPlots) return null;
-    const histogram: HistogramData[] = [];
-    for (const p of macdPlots?.plot2 ?? []) {
-      if (Number.isFinite(p.value)) {
-        histogram.push({
-          time: p.time as UTCTimestamp,
-          value: p.value,
-          color:
-            p.value >= 0 ? "rgba(38, 166, 154, 0.6)" : "rgba(239, 83, 80, 0.6)",
-        });
-      }
-    }
-    return {
-      lines: [
-        { name: "MACD", color: "#ff7eb6", data: toLineData(macdPlots?.plot0) },
-        {
-          name: "Signal",
-          color: "#ffab00",
-          data: toLineData(macdPlots?.plot1),
-        },
-      ],
-      histogram,
-      levels: [{ price: 0, title: "0" }],
-    };
-  }, [cfg.subplot, indicatorsAccess.allowed, rsiPlots, macdPlots]);
+    },
+    { inputs: shallow },
+  );
 
   const lastRsi = cfg.subplot === "rsi" ? lastPlotValue(rsiPlots) : null;
+  const narrow = useNarrowMode(420);
   const availablePairs = pairsQ.data?.pairs ?? [];
   const strategyPlots = plotQ.data;
+
   const strategyHints = strategyPlots
     ? [
         ...strategyPlots.mainPlot,
@@ -379,32 +450,58 @@ export function CandleChartWidget({
       ]
     : [];
 
-  // Window stats for the toolbar quote strip (over deduped, sorted bars).
-  const lastBar = bars[bars.length - 1];
-  const prevBar = bars[bars.length - 2];
-  const lastClose =
-    lastBar && Number.isFinite(lastBar.close) ? lastBar.close : null;
-  const windowChange =
-    lastClose !== null &&
-    prevBar !== undefined &&
-    prevBar.close !== 0 &&
-    Number.isFinite(prevBar.close)
-      ? ((lastClose - prevBar.close) / Math.abs(prevBar.close)) * 100
-      : 0;
-  let windowHigh: number | null = null;
-  let windowLow: number | null = null;
-  let windowVolume = 0;
-  for (const b of bars) {
-    if (windowHigh === null || b.high > windowHigh) windowHigh = b.high;
-    if (windowLow === null || b.low < windowLow) windowLow = b.low;
-    windowVolume += b.volume ?? 0;
-  }
-  const chartPrecision = (() => {
-    if (lastClose === null || lastClose <= 0) return 4;
-    if (lastClose >= 100) return 2;
-    if (lastClose >= 1) return 4;
-    return 6;
-  })();
+  // Window stats for the toolbar quote strip (over deduped, sorted
+  // bars) — derived single pass so resize re-renders don't rescan up to
+  // 1000 bars per frame.
+  const windowStats = useDerived(bars, (src) => {
+    const lastBar = src[src.length - 1];
+    const prevBar = src[src.length - 2];
+
+    const lastClose =
+      lastBar && Number.isFinite(lastBar.close) ? lastBar.close : null;
+
+    let windowHigh: number | null = null;
+    let windowLow: number | null = null;
+    let windowVolume = 0;
+
+    for (const b of src) {
+      if (windowHigh === null || b.high > windowHigh) windowHigh = b.high;
+
+      if (windowLow === null || b.low < windowLow) windowLow = b.low;
+      windowVolume += b.volume ?? 0;
+    }
+
+    return {
+      lastClose,
+      windowChange:
+        lastClose !== null &&
+        prevBar !== undefined &&
+        prevBar.close !== 0 &&
+        Number.isFinite(prevBar.close)
+          ? ((lastClose - prevBar.close) / Math.abs(prevBar.close)) * 100
+          : 0,
+      windowHigh,
+      windowLow,
+      windowVolume,
+      chartPrecision:
+        lastClose === null || lastClose <= 0
+          ? 4
+          : lastClose >= 100
+            ? 2
+            : lastClose >= 1
+              ? 4
+              : 6,
+    };
+  });
+
+  const {
+    lastClose,
+    windowChange,
+    windowHigh,
+    windowLow,
+    windowVolume,
+    chartPrecision,
+  } = windowStats;
 
   return (
     <>
@@ -431,7 +528,9 @@ export function CandleChartWidget({
           label="Timeframe"
           items={TIMEFRAME_ITEMS.map((i) => ({ ...i }))}
           value={cfg.timeframe}
-          onChange={(id) => patch({ timeframe: id as CandleTimeframe })}
+          onChange={(id) =>
+            patch({ timeframe: Schema.decodeUnknownSync(CandleTimeframe)(id) })
+          }
         />
         <NumberInput
           id={`candle-limit-${panelId}`}
@@ -447,13 +546,7 @@ export function CandleChartWidget({
         />
         {indicatorsAccess.allowed ? (
           <>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: "0 0.75rem",
-              }}
-            >
+            <div className="nfi-settings-toggles">
               <SettingsToggle
                 id={`candle-sma20-${panelId}`}
                 label="SMA 20"
@@ -496,7 +589,9 @@ export function CandleChartWidget({
               label="Subplot"
               items={SUBPLOT_ITEMS.map((i) => ({ ...i }))}
               value={cfg.subplot}
-              onChange={(id) => patch({ subplot: id as CandleSubplot })}
+              onChange={(id) =>
+                patch({ subplot: Schema.decodeUnknownSync(CandleSubplot)(id) })
+              }
             />
           </>
         ) : (
@@ -508,118 +603,131 @@ export function CandleChartWidget({
         )}
       </WidgetSettingsModal>
       <WidgetFrame
-      title={`Candles · ${cfg.pair} · ${cfg.timeframe}`}
-      isLoading={state.isLoading}
-      error={marketError ?? state.error}
-    >
-      {candles.length >= 2 ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.375rem",
-            flex: "1 1 auto",
-            minHeight: 240,
-          }}
-        >
-          <div className="nfi-candle-toolbar">
-            {availablePairs.length > 0 ? (
-              <span title={`${candles.length} candles loaded`}>
-                <PairCombobox
-                  id={`candle-pair-${panelId}`}
-                  value={cfg.pair}
-                  pairs={availablePairs}
-                  onChange={(pair) => patch({ pair })}
-                />
-              </span>
-            ) : (
-              <span
-                className="nfi-candle-pair"
-                title={`${candles.length} candles loaded`}
-              >
-                {cfg.pair}
-              </span>
-            )}
-            <div className="nfi-tf-group" role="group" aria-label="Timeframe">
-              {TIMEFRAME_ITEMS.map((tf) => (
-                <button
-                  key={tf.id}
-                  type="button"
-                  className={
-                    cfg.timeframe === tf.id
-                      ? "nfi-tf-btn nfi-tf-active"
-                      : "nfi-tf-btn"
-                  }
-                  onClick={() => patch({ timeframe: tf.id as CandleTimeframe })}
-                  aria-pressed={cfg.timeframe === tf.id}
+        title={`Candles · ${cfg.pair} · ${cfg.timeframe}`}
+        isLoading={state.isLoading}
+        error={marketError ?? state.error}
+      >
+        {candles.length >= 2 ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.375rem",
+              flex: "1 1 auto",
+              minHeight: 0,
+              minWidth: 0,
+              width: "100%",
+              maxWidth: "100%",
+              overflow: "hidden",
+            }}
+          >
+            <div className="nfi-candle-toolbar">
+              {availablePairs.length > 0 ? (
+                <span title={`${candles.length} candles loaded`}>
+                  <PairCombobox
+                    id={`candle-pair-${panelId}`}
+                    value={cfg.pair}
+                    pairs={availablePairs}
+                    onChange={(pair) => patch({ pair })}
+                  />
+                </span>
+              ) : (
+                <span
+                  className="nfi-candle-pair"
+                  title={`${candles.length} candles loaded`}
                 >
-                  {tf.text}
-                </button>
-              ))}
-            </div>
-            <span className="nfi-candle-quote">
-              <span
-                className={
-                  windowChange >= 0 ? "nfi-pnl-positive" : "nfi-pnl-negative"
-                }
-                style={{ fontWeight: 600 }}
-              >
-                {lastClose !== null ? lastClose.toFixed(chartPrecision) : "—"}
-              </span>
-              <span
-                className={
-                  windowChange >= 0 ? "nfi-pnl-positive" : "nfi-pnl-negative"
-                }
-              >
-                {windowChange >= 0 ? "+" : ""}
-                {windowChange.toFixed(2)}%
-              </span>
-              <span className="nfi-candle-range">
-                H{" "}
-                {windowHigh !== null ? windowHigh.toFixed(chartPrecision) : "—"}{" "}
-                L {windowLow !== null ? windowLow.toFixed(chartPrecision) : "—"}
-              </span>
-              <span className="nfi-candle-range">
-                ΣV {fmtCompact(windowVolume)}
-              </span>
-              {lastRsi !== null ? (
+                  {cfg.pair}
+                </span>
+              )}
+              <div className="nfi-tf-group" role="group" aria-label="Timeframe">
+                {TIMEFRAME_ITEMS.map((tf) => (
+                  <button
+                    key={tf.id}
+                    type="button"
+                    className={
+                      cfg.timeframe === tf.id
+                        ? "nfi-tf-btn nfi-tf-active"
+                        : "nfi-tf-btn"
+                    }
+                    onClick={() => patch({ timeframe: tf.id })}
+                    aria-pressed={cfg.timeframe === tf.id}
+                  >
+                    {tf.text}
+                  </button>
+                ))}
+              </div>
+              <span className="nfi-candle-quote">
                 <span
                   className={
-                    lastRsi > 70
-                      ? "nfi-pnl-negative"
-                      : lastRsi < 30
-                        ? "nfi-pnl-positive"
-                        : undefined
+                    windowChange >= 0 ? "nfi-pnl-positive" : "nfi-pnl-negative"
+                  }
+                  style={{ fontWeight: 600 }}
+                >
+                  {lastClose !== null ? lastClose.toFixed(chartPrecision) : "—"}
+                </span>
+                <span
+                  className={
+                    windowChange >= 0 ? "nfi-pnl-positive" : "nfi-pnl-negative"
                   }
                 >
-                  RSI {lastRsi.toFixed(1)}
+                  {windowChange >= 0 ? "+" : ""}
+                  {windowChange.toFixed(2)}%
                 </span>
-              ) : null}
-            </span>
-          </div>
-          {strategyHints.length > 0 ? (
-            <div
-              className="nfi-candle-strategy"
-              title={strategyHints.join(", ")}
-            >
-              strategy plots: {strategyHints.slice(0, 6).join(" · ")}
-              {strategyHints.length > 6 ? "…" : ""}
+                {narrow ? null : (
+                  <>
+                    <span className="nfi-candle-range">
+                      H{" "}
+                      {windowHigh !== null
+                        ? windowHigh.toFixed(chartPrecision)
+                        : "—"}{" "}
+                      L{" "}
+                      {windowLow !== null
+                        ? windowLow.toFixed(chartPrecision)
+                        : "—"}
+                    </span>
+                    <span className="nfi-candle-range">
+                      ΣV {fmtCompact(windowVolume)}
+                    </span>
+                  </>
+                )}
+                {lastRsi !== null && !narrow ? (
+                  <span
+                    className={
+                      lastRsi > 70
+                        ? "nfi-pnl-negative"
+                        : lastRsi < 30
+                          ? "nfi-pnl-positive"
+                          : undefined
+                    }
+                  >
+                    RSI {lastRsi.toFixed(1)}
+                  </span>
+                ) : null}
+              </span>
             </div>
-          ) : null}
-          <CandleChart
-            candles={candles}
-            overlays={overlays}
-            showVolume={cfg.showVolume}
-            subplot={subplot}
+            {strategyHints.length > 0 && !narrow ? (
+              <div
+                className="nfi-candle-strategy"
+                title={strategyHints.join(", ")}
+              >
+                strategy plots: {strategyHints.slice(0, 6).join(" · ")}
+                {strategyHints.length > 6 ? "…" : ""}
+              </div>
+            ) : null}
+            <CandleChart
+              candles={candles}
+              overlays={overlays}
+              showVolume={cfg.showVolume}
+              subplot={subplot}
+            />
+          </div>
+        ) : (
+          <EmptyState
+            title="No candles"
+            hint={`Freqtrade has no analyzed data for ${cfg.pair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed. Pick a listed pair and the strategy timeframe in the tab's ⋯ menu.`}
           />
-        </div>
-      ) : (
-        <EmptyState
-          title="No candles"
-          hint={`Freqtrade has no analyzed data for ${cfg.pair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed. Pick a listed pair and the strategy timeframe in the tab's ⋯ menu.`}
-        />
-      )}
-    </WidgetFrame>
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -634,6 +742,8 @@ export const CandleChartWidgetDef = defineWidget({
   defaultConfig: CANDLE_CHART_DEFAULTS,
   component: CandleChartWidget,
   capabilities: [CANDLE_MARKET_CAPABILITY, CANDLE_INDICATORS_CAPABILITY],
-  minWidth: 420,
-  minHeight: 240,
+  minWidth: 900,
+  minHeight: 420,
+  defaultWidth: 960,
+  defaultHeight: 480,
 });

@@ -24,6 +24,7 @@ export const BOT_CONFIG_CAPABILITIES: ReadonlyArray<Capability> = [
 export const BotConfigConfigSchema = Schema.Struct({
   instanceId: InstanceIdField,
 });
+
 export type BotConfigConfig = typeof BotConfigConfigSchema.Type;
 
 export const BOT_CONFIG_DEFAULTS: BotConfigConfig = Schema.decodeUnknownSync(
@@ -35,11 +36,14 @@ export function BotConfigWidget({
   panelId,
 }: WidgetProps<BotConfigConfig>) {
   const cfg = config;
+
   const { data, error, isLoading } = useCapability("instances.config", {
     id: cfg.instanceId,
   });
+
   const state = queryState(error, isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<BotConfigConfig>) =>
     applyWidgetSettings(panelId, "bot-config", cfg, p);
 
@@ -58,48 +62,48 @@ export function BotConfigWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Bot Config"
-      isLoading={state.isLoading}
-      error={state.error}
-    >
-      {data ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.75rem",
-            flex: "1 1 auto",
-            minHeight: 0,
-          }}
-        >
-          <div className="nfi-stat-grid nfi-stat-grid--fill">
-            <Stat label="Strategy" value={data.strategy ?? "—"} />
-            <Stat label="Exchange" value={data.exchange ?? "—"} />
-            <Stat
-              label="Stake"
-              value={`${String(data.stakeAmount ?? "—")} ${data.stakeCurrency ?? ""}`}
-            />
-            <Stat
-              label="Max open trades"
-              value={String(data.maxOpenTrades ?? "—")}
-            />
+        title="Bot Config"
+        isLoading={state.isLoading}
+        error={state.error}
+      >
+        {data ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+              flex: "1 1 auto",
+              minHeight: 0,
+            }}
+          >
+            <div className="nfi-stat-grid nfi-stat-grid--fill">
+              <Stat label="Strategy" value={data.strategy ?? "—"} />
+              <Stat label="Exchange" value={data.exchange ?? "—"} />
+              <Stat
+                label="Stake"
+                value={`${String(data.stakeAmount ?? "—")} ${data.stakeCurrency ?? ""}`}
+              />
+              <Stat
+                label="Max open trades"
+                value={String(data.maxOpenTrades ?? "—")}
+              />
+            </div>
+            {data.dryRun !== undefined ? (
+              // alignSelf keeps the pill content-sized — a stretched flex child
+              // would smear one word across the whole cell.
+              <Tag
+                type={data.dryRun ? "blue" : "red"}
+                size="sm"
+                style={{ alignSelf: "flex-start" }}
+              >
+                {data.dryRun ? "dry-run" : "live"}
+              </Tag>
+            ) : null}
           </div>
-          {data.dryRun !== undefined ? (
-            // alignSelf keeps the pill content-sized — a stretched flex child
-            // would smear one word across the whole cell.
-            <Tag
-              type={data.dryRun ? "blue" : "red"}
-              size="sm"
-              style={{ alignSelf: "flex-start" }}
-            >
-              {data.dryRun ? "dry-run" : "live"}
-            </Tag>
-          ) : null}
-        </div>
-      ) : (
-        <EmptyState title="No config" />
-      )}
-    </WidgetFrame>
+        ) : (
+          <EmptyState title="No config" />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -113,6 +117,8 @@ export const BotConfigWidgetDef = defineWidget({
   defaultConfig: BOT_CONFIG_DEFAULTS,
   component: BotConfigWidget,
   capabilities: [...BOT_CONFIG_CAPABILITIES],
-  minWidth: 260,
-  minHeight: 140,
+  minWidth: 1020,
+  minHeight: 130,
+  defaultWidth: 480,
+  defaultHeight: 420,
 });

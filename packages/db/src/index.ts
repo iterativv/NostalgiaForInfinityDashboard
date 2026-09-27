@@ -1,27 +1,50 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { SqliteClient as NodeSqliteClient } from "@effect/sql-sqlite-node"
-import { SqlClient, SqlError } from "@effect/sql"
-import { Config, ConfigError, Context, Effect, Layer, Schema } from "effect"
-import type { ParseError } from "effect/ParseResult"
-import { mkdir } from "node:fs/promises"
-import { dirname } from "node:path"
+import { SqliteClient as NodeSqliteClient } from "@effect/sql-sqlite-node";
+import { SqlClient, SqlError } from "@effect/sql";
+import {
+  Config,
+  ConfigError,
+  Context,
+  Effect,
+  Either,
+  Layer,
+  Schema,
+} from "effect";
+import type { ParseError } from "effect/ParseResult";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
   BalanceHistoryResponse,
   ProfitHistoryResponse,
+  type BalanceHistoryBucket,
   type BalanceResponse,
   type ProfitSummary,
-} from "@nfi/api-contract"
+} from "@nfi/api-contract";
 
-export { migrateWorkspaces, WorkspaceRepo, WorkspaceRepoLive, type WorkspaceRepoService } from "./workspaces.js"
-export { migrateInstances, InstanceRepo, InstanceRepoLive, type InstanceRepoService, type StoredInstance } from "./instances.js"
+export {
+  migrateWorkspaces,
+  WorkspaceRepo,
+  WorkspaceRepoLive,
+  type WorkspaceRepoService,
+} from "./workspaces.js";
+
+export {
+  migrateInstances,
+  InstanceRepo,
+  InstanceRepoLive,
+  type InstanceRepoService,
+  type StoredInstance,
+} from "./instances.js";
+
 export {
   migrateSettings,
   SettingsRepo,
   SettingsRepoLive,
   type SettingsRepoService,
-} from "./settings.js"
+} from "./settings.js";
+
 export {
   migrateUsers,
   UserRepo,
@@ -31,11 +54,12 @@ export {
   type StoredUser,
   type StoredUserWithHash,
   type UserRepoService,
-} from "./users.js"
-import { migrateWorkspaces } from "./workspaces.js"
-import { migrateInstances } from "./instances.js"
-import { migrateSettings } from "./settings.js"
-import { migrateUsers } from "./users.js"
+} from "./users.js";
+
+import { migrateWorkspaces } from "./workspaces.js";
+import { migrateInstances } from "./instances.js";
+import { migrateSettings } from "./settings.js";
+import { migrateUsers } from "./users.js";
 
 /**
  * @nfi/db
@@ -54,46 +78,64 @@ import { migrateUsers } from "./users.js"
 // ---------------------------------------------------------------------------
 
 export interface DbConfig {
-  readonly filename: string
+  readonly filename: string;
 }
 
-export class DbConfigTag extends Context.Tag("nfi/DbConfig")<DbConfigTag, DbConfig>() {}
-
-export const DbConfigLive: Layer.Layer<DbConfigTag, ConfigError.ConfigError> = Layer.effect(
+export class DbConfigTag extends Context.Tag("nfi/DbConfig")<
   DbConfigTag,
-  // Runtime data lives in the gitignored `<repo-root>/.data/` folder, never
-  // in the source tree. The server runs with CWD `apps/server`, so the
-  // default resolves there; `SQLITE_PATH` (absolute or CWD-relative) always
-  // wins when set.
-  Effect.map(Config.string("SQLITE_PATH").pipe(Config.withDefault("../../.data/nfi-desk.db")), (filename): DbConfig => ({
-    filename,
-  })),
-)
+  DbConfig
+>() {}
+
+export const DbConfigLive: Layer.Layer<DbConfigTag, ConfigError.ConfigError> =
+  Layer.effect(
+    DbConfigTag,
+    // Runtime data lives in the gitignored `<repo-root>/.data/` folder, never
+    // in the source tree. The server runs with CWD `apps/server`, so the
+    // default resolves there; `SQLITE_PATH` (absolute or CWD-relative) always
+    // wins when set.
+    Effect.map(
+      Config.string("SQLITE_PATH").pipe(
+        Config.withDefault("../../.data/nfi-desk.db"),
+      ),
+      (filename): DbConfig => ({
+        filename,
+      }),
+    ),
+  );
 
 export const SqliteLive = Layer.unwrapEffect(
   Effect.gen(function* () {
-    const { filename } = yield* DbConfigTag
+    const { filename } = yield* DbConfigTag;
     // better-sqlite3 creates the file but not parent directories.
-    yield* Effect.promise(() => mkdir(dirname(filename), { recursive: true }))
+    yield* Effect.promise(() => mkdir(dirname(filename), { recursive: true }));
+
     // One layer per runtime: better-sqlite3 under Node, bun:sqlite under Bun
     // (the compiled single-binary release). Both clients implement the same
     // `@effect/sql` interface, so nothing above this layer changes. The Bun
     // module must be imported lazily — Node cannot even resolve `bun:sqlite`
     // — while importing @effect/sql-sqlite-node under Bun is harmless because
     // better-sqlite3 only dlopens when a Database is constructed.
-    const SqliteClient = (globalThis as { Bun?: unknown }).Bun !== undefined
-      ? yield* Effect.promise(() => import("@effect/sql-sqlite-bun").then((m) => m.SqliteClient))
-      : NodeSqliteClient
-    return SqliteClient.layer({ filename })
+    const SqliteClient =
+      "Bun" in globalThis
+        ? yield* Effect.promise(() =>
+            import("@effect/sql-sqlite-bun").then((m) => m.SqliteClient),
+          )
+        : NodeSqliteClient;
+
+    return SqliteClient.layer({ filename });
   }),
-)
+);
 
 // ---------------------------------------------------------------------------
 // Migration (idempotent — safe to run on every boot and poller tick)
 // ---------------------------------------------------------------------------
 
-export const migrate: Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient> = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
+export const migrate: Effect.Effect<
+  void,
+  SqlError.SqlError,
+  SqlClient.SqlClient
+> = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
   yield* sql`
     CREATE TABLE IF NOT EXISTS profit_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,7 +152,7 @@ export const migrate: Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient
       fiat_currency TEXT NOT NULL,
       instance_id TEXT NOT NULL DEFAULT 'default'
     )
-  `
+  `;
   yield* sql`
     CREATE TABLE IF NOT EXISTS balance_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,70 +161,149 @@ export const migrate: Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient
       total_stake REAL NOT NULL,
       instance_id TEXT NOT NULL DEFAULT 'default'
     )
-  `
+  `;
   // Pre-existing databases predate per-instance snapshots; the default
   // instance owns every row recorded before the column existed.
   yield* sql`ALTER TABLE profit_snapshots ADD COLUMN instance_id TEXT NOT NULL DEFAULT 'default'`.pipe(
     Effect.catchIf(isDuplicateColumn, () => Effect.void),
-  )
+  );
   yield* sql`ALTER TABLE balance_snapshots ADD COLUMN instance_id TEXT NOT NULL DEFAULT 'default'`.pipe(
     Effect.catchIf(isDuplicateColumn, () => Effect.void),
-  )
-  yield* sql`CREATE INDEX IF NOT EXISTS idx_profit_recorded_at ON profit_snapshots (recorded_at)`
-  yield* sql`CREATE INDEX IF NOT EXISTS idx_balance_recorded_at ON balance_snapshots (recorded_at)`
-  yield* sql`CREATE INDEX IF NOT EXISTS idx_profit_instance_recorded ON profit_snapshots (instance_id, recorded_at)`
-  yield* sql`CREATE INDEX IF NOT EXISTS idx_balance_instance_recorded ON balance_snapshots (instance_id, recorded_at)`
-  yield* migrateWorkspaces
+  );
+  yield* sql`CREATE INDEX IF NOT EXISTS idx_profit_recorded_at ON profit_snapshots (recorded_at)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS idx_balance_recorded_at ON balance_snapshots (recorded_at)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS idx_profit_instance_recorded ON profit_snapshots (instance_id, recorded_at)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS idx_balance_instance_recorded ON balance_snapshots (instance_id, recorded_at)`;
+  yield* migrateWorkspaces;
   // Page metadata (icon, provenance) — pre-existing workspace tables predate
   // these columns; NULL means "no icon" / "not user-added" exactly like an
   // absent optional schema field.
   yield* sql`ALTER TABLE workspaces ADD COLUMN icon TEXT`.pipe(
     Effect.catchIf(isDuplicateColumn, () => Effect.void),
-  )
+  );
   yield* sql`ALTER TABLE workspaces ADD COLUMN origin TEXT`.pipe(
     Effect.catchIf(isDuplicateColumn, () => Effect.void),
-  )
+  );
   // Panel renames (user tab titles) — NULL = the widget's registry title.
   yield* sql`ALTER TABLE workspace_panels ADD COLUMN title TEXT`.pipe(
     Effect.catchIf(isDuplicateColumn, () => Effect.void),
-  )
-  yield* migrateInstances
-  yield* migrateSettings
-  yield* migrateUsers
-}).pipe(Effect.asVoid)
+  );
+  yield* migrateInstances;
+  yield* migrateSettings;
+  yield* migrateUsers;
+}).pipe(Effect.asVoid);
+
+/** One link of a driver error's `cause` chain: an optional message plus the next link. */
+const ErrorCauseLink = Schema.Struct({
+  message: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Unknown),
+});
 
 /** SQLite has no `ADD COLUMN IF NOT EXISTS` — tolerate a rerun. */
 const isDuplicateColumn = (cause: unknown): boolean => {
-  let node: unknown = cause
-  while (typeof node === "object" && node !== null) {
-    const record = node as Record<string, unknown>
-    if (typeof record["message"] === "string" && /duplicate column/i.test(record["message"])) return true
-    node = record["cause"]
-  }
-  return false
-}
+  const link = Schema.decodeUnknownEither(ErrorCauseLink)(cause);
+
+  if (Either.isLeft(link)) return false;
+  const { message, cause: next } = link.right;
+
+  if (message !== undefined && /duplicate column/i.test(message)) return true;
+
+  return next === undefined ? false : isDuplicateColumn(next);
+};
 
 // ---------------------------------------------------------------------------
 // Snapshot repository
 // ---------------------------------------------------------------------------
 
 export interface SnapshotRepoService {
-  readonly recordProfit: (instanceId: string, profit: ProfitSummary) => Effect.Effect<void, SqlError.SqlError>
-  readonly recordBalance: (instanceId: string, balance: BalanceResponse) => Effect.Effect<void, SqlError.SqlError>
-  readonly profitHistory: (instanceId: string, limit: number) => Effect.Effect<ProfitHistoryResponse, SqlError.SqlError | ParseError>
-  readonly balanceHistory: (instanceId: string, limit: number) => Effect.Effect<BalanceHistoryResponse, SqlError.SqlError | ParseError>
+  readonly recordProfit: (
+    instanceId: string,
+    profit: ProfitSummary,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly recordBalance: (
+    instanceId: string,
+    balance: BalanceResponse,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly profitHistory: (
+    instanceId: string,
+    limit: number,
+  ) => Effect.Effect<ProfitHistoryResponse, SqlError.SqlError | ParseError>;
+  readonly balanceHistory: (
+    instanceId: string,
+    limit: number,
+    /**
+     * Time bucket for aggregated reads: one point per bucket carrying the
+     * LAST sample inside it (a balance is a level, not a flow). Aggregates
+     * SQL-side so a daily/weekly curve spans weeks of per-minute snapshots.
+     */
+    bucket?: BalanceHistoryBucket,
+  ) => Effect.Effect<BalanceHistoryResponse, SqlError.SqlError | ParseError>;
 }
 
-export class SnapshotRepo extends Context.Tag("nfi/SnapshotRepo")<SnapshotRepo, SnapshotRepoService>() {}
+export class SnapshotRepo extends Context.Tag("nfi/SnapshotRepo")<
+  SnapshotRepo,
+  SnapshotRepoService
+>() {}
 
-export const SnapshotRepoLive: Layer.Layer<SnapshotRepo, never, SqlClient.SqlClient> = Layer.effect(
+export const SnapshotRepoLive: Layer.Layer<
+  SnapshotRepo,
+  never,
+  SqlClient.SqlClient
+> = Layer.effect(
   SnapshotRepo,
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
+    const sql = yield* SqlClient.SqlClient;
+
+    /**
+     * Newest raw samples scanned per bucketed read (per-minute snapshots →
+     * roughly three weeks of depth; enough for readable daily/weekly runs
+     * without shipping the whole table through the GROUP BY).
+     */
+    const BUCKET_RAW_WINDOW = 30_000;
+
+    // One static statement per bucket (no dynamic SQL fragments): GROUP BY
+    // the bucket key, MAX(recorded_at) picks each bucket's last sample —
+    // SQLite's documented bare-column behavior carries that row's
+    // total_stake / stake_currency along.
+    /**
+     * GROUP BY expression per bucket — static, trusted SQL text (never
+     * caller input). Weeks anchor on Monday (`%w`: 0=Sun → days-since-Mon).
+     */
+    const BUCKET_GROUP_BY: Record<BalanceHistoryBucket, string> = {
+      "6h": "strftime('%Y-%m-%dT', recorded_at) || printf('%02d', (CAST(strftime('%H', recorded_at) AS INTEGER) / 6) * 6)",
+      day: "strftime('%Y-%m-%dT00:00:00', recorded_at)",
+      week: "date(recorded_at, '-' || ((CAST(strftime('%w', recorded_at) AS INTEGER) + 6) % 7) || ' days')",
+    };
+
+    const bucketedBalanceRows = (
+      instanceId: string,
+      limit: number,
+      bucket: BalanceHistoryBucket,
+    ) => {
+      const groupBy = sql.literal(BUCKET_GROUP_BY[bucket]);
+
+      return sql`
+        SELECT
+          MAX(recorded_at) AS recordedAt,
+          total_stake AS totalStake,
+          stake_currency AS stakeCurrency
+        FROM (
+          SELECT recorded_at, total_stake, stake_currency
+          FROM balance_snapshots
+          WHERE instance_id = ${instanceId}
+          ORDER BY recorded_at DESC
+          LIMIT ${BUCKET_RAW_WINDOW}
+        )
+        GROUP BY ${groupBy}
+        ORDER BY recordedAt DESC
+        LIMIT ${limit}
+      `;
+    };
+
     return {
       recordProfit: (instanceId, profit) =>
         Effect.gen(function* () {
-          const now = new Date().toISOString()
+          const now = new Date().toISOString();
           yield* sql`
             INSERT INTO profit_snapshots (
               recorded_at, profit_closed_coin, profit_closed_percent, profit_closed_fiat,
@@ -194,16 +315,16 @@ export const SnapshotRepoLive: Layer.Layer<SnapshotRepo, never, SqlClient.SqlCli
               ${profit.tradeCount}, ${profit.closedTradeCount}, ${profit.stakeCurrency}, ${profit.fiatCurrency},
               ${instanceId}
             )
-          `
+          `;
         }).pipe(Effect.asVoid),
 
       recordBalance: (instanceId, balance) =>
         Effect.gen(function* () {
-          const now = new Date().toISOString()
+          const now = new Date().toISOString();
           yield* sql`
             INSERT INTO balance_snapshots (recorded_at, stake_currency, total_stake, instance_id)
             VALUES (${now}, ${balance.stakeCurrency}, ${balance.totalStake}, ${instanceId})
-          `
+          `;
         }).pipe(Effect.asVoid),
 
       profitHistory: (instanceId, limit) =>
@@ -220,30 +341,41 @@ export const SnapshotRepoLive: Layer.Layer<SnapshotRepo, never, SqlClient.SqlCli
             WHERE instance_id = ${instanceId}
             ORDER BY recorded_at DESC
             LIMIT ${limit}
-          `
-          const ascending = [...(rows as ReadonlyArray<unknown>)].reverse()
+          `;
+
+          const ascending = [...rows].reverse();
+
           return yield* Schema.decodeUnknown(ProfitHistoryResponse)({
             points: ascending,
-          })
+          });
         }),
 
-      balanceHistory: (instanceId, limit) =>
+      balanceHistory: (instanceId, limit, bucket) =>
         Effect.gen(function* () {
-          const rows = yield* sql`
-            SELECT
-              recorded_at AS recordedAt,
-              total_stake AS totalStake,
-              stake_currency AS stakeCurrency
-            FROM balance_snapshots
-            WHERE instance_id = ${instanceId}
-            ORDER BY recorded_at DESC
-            LIMIT ${limit}
-          `
-          const ascending = [...(rows as ReadonlyArray<unknown>)].reverse()
+          // Bucketed reads: newest raw samples, grouped per bucket with
+          // SQLite's MAX() bare-column semantics (total_stake and
+          // stake_currency come from the row carrying the bucket's latest
+          // recorded_at — the last balance seen in the bucket). The raw
+          // window stays bounded so decade-old tables still aggregate fast.
+          const rows = bucket
+            ? yield* bucketedBalanceRows(instanceId, limit, bucket)
+            : yield* sql`
+              SELECT
+                recorded_at AS recordedAt,
+                total_stake AS totalStake,
+                stake_currency AS stakeCurrency
+              FROM balance_snapshots
+              WHERE instance_id = ${instanceId}
+              ORDER BY recorded_at DESC
+              LIMIT ${limit}
+            `;
+
+          const ascending = [...rows].reverse();
+
           return yield* Schema.decodeUnknown(BalanceHistoryResponse)({
             points: ascending,
-          })
+          });
         }),
-    } satisfies SnapshotRepoService
+    } satisfies SnapshotRepoService;
   }),
-)
+);

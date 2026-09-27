@@ -17,6 +17,7 @@
     "SNAPSHOT_INTERVAL_MS",
     "STATIC_DIR",
     "OPEN_BROWSER",
+    "LOG_LEVEL",
     "VITE_API_URL"
   ],
   "tasks": {

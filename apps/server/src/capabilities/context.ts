@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { HttpServerRequest } from "@effect/platform"
-import { HttpClient } from "@effect/platform"
-import { Effect } from "effect"
-import { BackendError, FreqtradeInstance, ForbiddenError } from "@nfi/api-contract"
+import { HttpServerRequest } from "@effect/platform";
+import { HttpClient } from "@effect/platform";
+import { Effect } from "effect";
+import {
+  BackendError,
+  FreqtradeInstance,
+  ForbiddenError,
+} from "@nfi/api-contract";
 import {
   asBackendError,
   DEFAULT_INSTANCE_ID,
@@ -17,16 +21,20 @@ import {
   type CapabilityOptions,
   type CapabilityResult,
   type Principal,
-} from "@nfi/capabilities"
-import { InstanceRepo, SnapshotRepo, UserRepo, WorkspaceRepo } from "@nfi/db"
-import { FreqtradeClient, makeFreqtradeService } from "@nfi/freqtrade-client"
+} from "@nfi/capabilities";
+import { InstanceRepo, SettingsRepo, SnapshotRepo, UserRepo, WorkspaceRepo } from "@nfi/db";
+import { FreqtradeClient, makeFreqtradeService } from "@nfi/freqtrade-client";
 import {
   loadServerConfig,
   maskFreqtradeHost,
   readDefaultInstanceConfigured,
   readDefaultInstanceUrlConfigured,
-} from "../config.js"
-import { readEnvRootCredentials, resolveRootIdentity, SessionAuth } from "../auth/session.js"
+} from "../config.js";
+import {
+  readEnvRootCredentials,
+  resolveRootIdentity,
+  SessionAuth,
+} from "../auth/session.js";
 
 /**
  * Server capability wiring (one hub + one poller for ALL capabilities).
@@ -41,7 +49,7 @@ import { readEnvRootCredentials, resolveRootIdentity, SessionAuth } from "../aut
  * system principal (backend <-> freqtrade traffic, no user involved).
  */
 
-const systemPrincipal: Principal = { kind: "system" }
+const systemPrincipal: Principal = { kind: "system" };
 
 export const makeCapabilityContext = (
   principal: Principal = systemPrincipal,
@@ -54,41 +62,64 @@ export const makeCapabilityContext = (
   | InstanceRepo
   | SnapshotRepo
   | UserRepo
+  | SettingsRepo
 > =>
   Effect.gen(function* () {
-    const defaultService = yield* FreqtradeClient
-    const http = yield* HttpClient.HttpClient
-    const workspaces = yield* WorkspaceRepo
-    const instances = yield* InstanceRepo
-    const snapshots = yield* SnapshotRepo
-    const users = yield* UserRepo
+    const defaultService = yield* FreqtradeClient;
+    const http = yield* HttpClient.HttpClient;
+    const workspaces = yield* WorkspaceRepo;
+    const instances = yield* InstanceRepo;
+    const snapshots = yield* SnapshotRepo;
+    const users = yield* UserRepo;
+    const settings = yield* SettingsRepo;
+
     const { freqtradeBaseUrl } = yield* loadServerConfig.pipe(
-      Effect.mapError((cause) => BackendError.make({ error: "backend misconfigured", detail: String(cause) })),
-    )
+      Effect.mapError((cause) =>
+        BackendError.make({
+          error: "backend misconfigured",
+          detail: String(cause),
+        }),
+      ),
+    );
+
     // Root identity: env credentials win, else the first-run provisioned
     // row, else the literal `root` is reserved while root is unprovisioned.
-    const envRoot = readEnvRootCredentials()
+    const envRoot = readEnvRootCredentials();
+
     const { rootUsername, rootProvisioned } = envRoot
       ? { rootUsername: envRoot.rootUsername, rootProvisioned: true }
-      : yield* resolveRootIdentity(users)
+      : yield* resolveRootIdentity(users);
 
     const resolveInstance = (id: string) =>
       Effect.gen(function* () {
-        if (id === DEFAULT_INSTANCE_ID) return defaultInstanceService
+        if (id === DEFAULT_INSTANCE_ID) return defaultInstanceService;
+
         const stored = yield* instances
           .getInstance(id)
-          .pipe(Effect.mapError((cause) => asBackendError("instance resolve", cause)))
-        if (!stored) return yield* Effect.fail(notFoundError("instance", id))
+          .pipe(
+            Effect.mapError((cause) =>
+              asBackendError("instance resolve", cause),
+            ),
+          );
+
+        if (!stored) return yield* Effect.fail(notFoundError("instance", id));
+
         return yield* makeFreqtradeService(
-          { baseUrl: stored.baseUrl, username: stored.username, password: stored.password },
+          {
+            baseUrl: stored.baseUrl,
+            username: stored.username,
+            password: stored.password,
+          },
           http,
-        )
-      })
+        );
+      });
 
     const getStoredInstance = (id: string) =>
       instances
         .getInstance(id)
-        .pipe(Effect.mapError((cause) => asBackendError("instance resolve", cause)))
+        .pipe(
+          Effect.mapError((cause) => asBackendError("instance resolve", cause)),
+        );
 
     // Effective `default` instance: the env credentials when configured
     // (explicit FREQTRADE_URL or a password), else the FIRST stored instance
@@ -97,17 +128,21 @@ export const makeCapabilityContext = (
     // a dead localhost URL. Best-effort: a storage failure keeps the env
     // service rather than failing every capability.
     const envDefaultConfigured =
-      readDefaultInstanceConfigured() || readDefaultInstanceUrlConfigured()
-    const storedRows = yield* instances.listInstances().pipe(
-      Effect.orElseSucceed(() => [] as ReadonlyArray<FreqtradeInstance>),
-    )
-    const firstStored = storedRows[0]
+      readDefaultInstanceConfigured() || readDefaultInstanceUrlConfigured();
+
+    const storedRows = yield* instances
+      .listInstances()
+      .pipe(Effect.orElseSucceed((): ReadonlyArray<FreqtradeInstance> => []));
+
+    const firstStored = storedRows[0];
+
     const fallbackInstance =
       envDefaultConfigured || !firstStored
         ? null
-        : (yield* getStoredInstance(firstStored.id).pipe(
+        : yield* getStoredInstance(firstStored.id).pipe(
             Effect.orElseSucceed(() => null),
-          ))
+          );
+
     const defaultInstanceService = fallbackInstance
       ? yield* makeFreqtradeService(
           {
@@ -117,7 +152,7 @@ export const makeCapabilityContext = (
           },
           http,
         )
-      : defaultService
+      : defaultService;
 
     return {
       defaultService: defaultInstanceService,
@@ -128,6 +163,7 @@ export const makeCapabilityContext = (
       instances,
       snapshots,
       users,
+      settings,
       principal,
       rootUsername,
       rootProvisioned,
@@ -145,15 +181,21 @@ export const makeCapabilityContext = (
         defaultInstanceConfigured: readDefaultInstanceConfigured(),
       },
       defaultInstanceBaseUrl: fallbackInstance?.baseUrl ?? freqtradeBaseUrl,
-    } satisfies CapabilityContext
-  })
+    } satisfies CapabilityContext;
+  });
 
 /** Kept for the poller's snapshot reads (system principal, no HTTP caller). */
 export const buildCapabilityContext: Effect.Effect<
   CapabilityContext,
   BackendError,
-  FreqtradeClient | HttpClient.HttpClient | WorkspaceRepo | InstanceRepo | SnapshotRepo | UserRepo
-> = makeCapabilityContext()
+  | FreqtradeClient
+  | HttpClient.HttpClient
+  | WorkspaceRepo
+  | InstanceRepo
+  | SnapshotRepo
+  | UserRepo
+  | SettingsRepo
+> = makeCapabilityContext();
 
 /** Type-safe dispatch of any hard-coded capability (no authorization). */
 export const runCapabilityEffect = <N extends CapabilityName>(
@@ -169,14 +211,32 @@ export const runCapabilityEffect = <N extends CapabilityName>(
   | InstanceRepo
   | SnapshotRepo
   | UserRepo
+  | SettingsRepo
 > =>
-  Effect.flatMap(makeCapabilityContext(principal), (ctx) => runCapability(name, options, ctx))
+  Effect.flatMap(makeCapabilityContext(principal), (ctx) =>
+    runCapability(name, options, ctx),
+  );
 
 /**
  * The REST authorization choke point: resolve the caller from the session
- * cookie, enforce the capability grant, then run. `auth.capabilities` is the
- * single exemption — it is the bootstrap that tells callers their own grant
- * and only ever reflects it.
+ * cookie, enforce the capability grant, then run. Three exemptions:
+ * - `auth.capabilities` — the bootstrap that tells callers their own grant
+ *   and only ever reflects it.
+ * - `system.page-defaults` — the landing-page read. Every visitor (including
+ *   grants predating this capability) must resolve where to land; the
+ *   response carries only opaque UI ids (page/panel) plus the global
+ *   landing — no balances, stakes or locations — and user enumeration still
+ *   requires `users.list`. The write twin (`system.page-defaults.update`)
+ *   stays fully gated.
+ * - `workspace.load` for `page-home` — the shared Home layout. Home is the
+ *   deployment's landing dashboard: its layout (widget types + configs,
+ *   never balances or credentials) must resolve for signed-out visitors or
+ *   every incognito window falls back to the baked-in default while the
+ *   admin's edited Home stays trapped in one browser's localStorage. Data
+ *   inside each widget is still gated per-widget (anonymous sees forbidden
+ *   states unless granted the widget's capability), and every other
+ *   workspace id plus all writes (`save`/`create`/`remove`) stay fully
+ *   gated.
  *
  * The request is read with `serviceOption` (not as a required service):
  * inside an HTTP handler the fiber context always carries
@@ -196,16 +256,37 @@ export const runCapabilityForHttp = <N extends CapabilityName>(
   | InstanceRepo
   | SnapshotRepo
   | UserRepo
+  | SettingsRepo
   | SessionAuth
 > =>
   Effect.gen(function* () {
-    const auth = yield* SessionAuth
-    const requestOption = yield* Effect.serviceOption(HttpServerRequest.HttpServerRequest)
+    const auth = yield* SessionAuth;
+
+    const requestOption = yield* Effect.serviceOption(
+      HttpServerRequest.HttpServerRequest,
+    );
+
     const principal = yield* Effect.matchEffect(requestOption, {
       onSuccess: (request) => auth.principalFromRequest(request),
       onFailure: () => Effect.succeed<Principal>(systemPrincipal),
-    })
-    if (name !== "auth.capabilities" && !principalCanUse(principal, name)) {
+    });
+
+    // Public Home layout: anyone (including anonymous) may read the shared
+    // `page-home` document — see the choke-point doc above. The id is stable
+    // (frontend `HOME_PAGE_ID`) so the check is a plain string compare.
+    // SAFETY: `options` is the union of every capability's option type; the
+    // members that carry an `id` all type it `string`, so widening to an
+    // optional-`id` view only reads `workspace.load`'s field.
+    const optionsId = (options as { readonly id?: string }).id;
+
+    const isPublicHomeLoad = name === "workspace.load" && optionsId === "page-home";
+
+    if (
+      name !== "auth.capabilities" &&
+      name !== "system.page-defaults" &&
+      !isPublicHomeLoad &&
+      !principalCanUse(principal, name)
+    ) {
       return yield* Effect.fail(
         ForbiddenError.make({
           error: `not authorized for ${name}`,
@@ -214,7 +295,8 @@ export const runCapabilityForHttp = <N extends CapabilityName>(
               ? "sign in, or ask an admin to add the capability to the anonymous grant"
               : "ask an admin to grant this capability to your user",
         }),
-      )
+      );
     }
-    return yield* runCapabilityEffect(name, options, principal)
-  })
+
+    return yield* runCapabilityEffect(name, options, principal);
+  });

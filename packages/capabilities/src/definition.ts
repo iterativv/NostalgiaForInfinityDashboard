@@ -1,17 +1,23 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Effect, Schema } from "effect"
-import type { HttpClient } from "@effect/platform"
-import type { BackendError, Capability, ForbiddenError, InfoKind } from "@nfi/api-contract"
+import { Effect, Schema } from "effect";
+import type { HttpClient } from "@effect/platform";
+import type {
+  BackendError,
+  Capability,
+  ForbiddenError,
+  InfoKind,
+} from "@nfi/api-contract";
 import type {
   InstanceRepoService,
+  SettingsRepoService,
   SnapshotRepoService,
   StoredInstance,
   UserRepoService,
   WorkspaceRepoService,
-} from "@nfi/db"
-import type { FreqtradeClientService } from "@nfi/freqtrade-client"
+} from "@nfi/db";
+import type { FreqtradeClientService } from "@nfi/freqtrade-client";
 
 /**
  * Core capability model: ONE file per capability in this package.
@@ -33,25 +39,25 @@ import type { FreqtradeClientService } from "@nfi/freqtrade-client"
  */
 
 /** Failure channel shared by every capability run. */
-export type CapabilityError = BackendError | ForbiddenError
+export type CapabilityError = BackendError | ForbiddenError;
 
 export interface CapabilityDef<Name extends string, Options, Result> {
   /** Hard-coded literal id (e.g. `"bot.balance"`). Never constructed dynamically. */
-  readonly name: Name
+  readonly name: Name;
   /** Options the client may pass. Decoded at every trust boundary. */
-  readonly optionsSchema: Schema.Schema<Options, any>
+  readonly optionsSchema: Schema.Schema<Options, any>;
   /** Result the backend returns. Always encoded through this schema. */
-  readonly resultSchema: Schema.Schema<Result, any>
+  readonly resultSchema: Schema.Schema<Result, any>;
   /** Human description for registries / public-page listings. */
-  readonly description: string
+  readonly description: string;
   /** Whether the live stream (`GET /api/stream`) pushes this capability. */
-  readonly streamable: boolean
+  readonly streamable: boolean;
   /**
    * Backend <-> freqtrade refresh cadence in ms. The ONLY polling in the
    * system lives here (server-side poller); the frontend holds no interval —
    * it renders pushed snapshots from a TanStack Store.
    */
-  readonly pollMs: number
+  readonly pollMs: number;
   /**
    * Kinds of information this capability can expose (`InfoKind` in
    * `@nfi/api-contract`). Deliberately not a sensitivity verdict — what
@@ -59,17 +65,17 @@ export interface CapabilityDef<Name extends string, Options, Result> {
    * `System.sensitivity`): this capability is sensitive iff at least one
    * exposed kind is in the configured sensitive set.
    */
-  readonly exposes: ReadonlyArray<InfoKind>
+  readonly exposes: ReadonlyArray<InfoKind>;
   /** Server implementation: options + injected services -> result. */
   readonly run: (
     options: Options,
     ctx: CapabilityContext,
-  ) => Effect.Effect<Result, CapabilityError>
+  ) => Effect.Effect<Result, CapabilityError>;
 }
 
 export const defineCapability = <const Name extends string, Options, Result>(
   def: CapabilityDef<Name, Options, Result>,
-): CapabilityDef<Name, Options, Result> => def
+): CapabilityDef<Name, Options, Result> => def;
 
 /**
  * Who is calling a capability. Resolved by the server at every trust
@@ -85,29 +91,32 @@ export const defineCapability = <const Name extends string, Options, Result>(
  */
 export type Principal =
   | {
-      readonly kind: "user"
-      readonly userId: string
-      readonly username: string
-      readonly role: "root" | "user"
-      readonly granted: ReadonlyArray<Capability>
+      readonly kind: "user";
+      readonly userId: string;
+      readonly username: string;
+      readonly role: "root" | "user";
+      readonly granted: ReadonlyArray<Capability>;
     }
   | {
-      readonly kind: "anonymous"
-      readonly granted: ReadonlyArray<Capability>
+      readonly kind: "anonymous";
+      readonly granted: ReadonlyArray<Capability>;
     }
-  | { readonly kind: "system" }
+  | { readonly kind: "system" };
 
 /**
  * The single authorization predicate shared by both server choke points
  * (REST dispatch + SSE stream subscribe): `system` and `root` are
  * unrestricted by definition; everyone else is limited to their grant.
  */
-export const principalCanUse = (principal: Principal, name: Capability): boolean =>
+export const principalCanUse = (
+  principal: Principal,
+  name: Capability,
+): boolean =>
   principal.kind === "system"
     ? true
     : principal.kind === "user" && principal.role === "root"
       ? true
-      : principal.granted.includes(name)
+      : principal.granted.includes(name);
 
 /**
  * Services a capability implementation may use. Built per request by the
@@ -121,78 +130,148 @@ export interface CapabilityContext {
    * deployment that connected its bot through the UI gets a live terminal
    * without env config).
    */
-  readonly defaultService: FreqtradeClientService
+  readonly defaultService: FreqtradeClientService;
   /**
    * True when `defaultService` follows a stored instance because the env
    * default is unconfigured — the fleet then lists only the stored rows
    * (listing `default` too would duplicate the same bot).
    */
-  readonly defaultFollowsStoredInstance: boolean
+  readonly defaultFollowsStoredInstance: boolean;
   /**
    * True when the env default is explicitly configured (`FREQTRADE_URL` set
    * or `FREQTRADE_PASSWORD` set). When false, `default` is an EMPTY SLOT:
    * it follows the first stored instance — or nothing exists at all, and a
    * fresh install has zero instances (no fleet row, no phantom `default`).
    */
-  readonly defaultEnvConfigured: boolean
+  readonly defaultEnvConfigured: boolean;
   /**
    * Resolve any instance id: `"default"` -> the effective default service
    * (see `defaultService`), otherwise the SQLite-backed service (own JWT
    * cache). Fails with `BackendError` (`instance not found`) for unknown ids.
    */
-  readonly resolveInstance: (id: string) => Effect.Effect<FreqtradeClientService, BackendError>
-  readonly workspaces: WorkspaceRepoService
-  readonly instances: InstanceRepoService
-  readonly snapshots: SnapshotRepoService
+  readonly resolveInstance: (
+    id: string,
+  ) => Effect.Effect<FreqtradeClientService, BackendError>;
+  readonly workspaces: WorkspaceRepoService;
+  readonly instances: InstanceRepoService;
+  readonly snapshots: SnapshotRepoService;
   /** User + anonymous-grant storage (users.* capabilities). */
-  readonly users: UserRepoService
+  readonly users: UserRepoService;
+  /** App settings (page defaults, sensitivity criteria). */
+  readonly settings: SettingsRepoService;
   /** Who is calling. `system` for the poller; real principal per HTTP request. */
-  readonly principal: Principal
+  readonly principal: Principal;
   /**
    * Username of the root user (reserved, cannot be created): env-configured,
    * else the username chosen at first-run setup, else the literal `root`
    * while root is still unprovisioned.
    */
-  readonly rootUsername: string
+  readonly rootUsername: string;
   /** Whether an always-privileged root account exists (env or stored). */
-  readonly rootProvisioned: boolean
+  readonly rootProvisioned: boolean;
   /** Raw HTTP client for per-instance freqtrade services. */
-  readonly http: HttpClient.HttpClient
+  readonly http: HttpClient.HttpClient;
   /** Stored instance row (with password) for internal use. Never serialized. */
-  readonly getStoredInstance: (id: string) => Effect.Effect<StoredInstance | null, BackendError>
+  readonly getStoredInstance: (
+    id: string,
+  ) => Effect.Effect<StoredInstance | null, BackendError>;
   /** Masked backend config (safe for browsers) for `system.backend-config`. */
   readonly backendConfig: {
-    readonly freqtradeHost: string
-    readonly freqtradeConfigured: boolean
+    readonly freqtradeHost: string;
+    readonly freqtradeConfigured: boolean;
     /** True when `FREQTRADE_PASSWORD` is set (real default-instance creds). */
-    readonly defaultInstanceConfigured: boolean
-  }
+    readonly defaultInstanceConfigured: boolean;
+  };
   /**
    * Base URL the implicit `default` instance entry presents: the effective
    * default's URL (env or the stored instance it follows).
    */
-  readonly defaultInstanceBaseUrl: string
+  readonly defaultInstanceBaseUrl: string;
 }
 
 /** Reserved id of the implicit env-backed instance (read-only, never stored). */
-export const DEFAULT_INSTANCE_ID = "default"
+export const DEFAULT_INSTANCE_ID = "default";
+
+/**
+ * JSON-compatible value — the domain of everything that crosses a wire:
+ * option/result schemas decode payloads into (subsets of) it, and every
+ * `JSON.parse` / `JSON.stringify` round-trip stays inside it. Branching on
+ * decoded values happens through the schema guards below, not `typeof`.
+ */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ReadonlyArray<JsonValue>
+  | { readonly [key: string]: JsonValue };
+
+export const jsonValueSchema: Schema.Schema<JsonValue> = Schema.Union(
+  Schema.String,
+  Schema.Number,
+  Schema.Boolean,
+  Schema.Null,
+  Schema.Array(Schema.suspend((): Schema.Schema<JsonValue> => jsonValueSchema)),
+  Schema.Record({
+    key: Schema.String,
+    value: Schema.suspend((): Schema.Schema<JsonValue> => jsonValueSchema),
+  }),
+);
+
+/** Decode a raw string as a validated JSON value (throws on invalid JSON). */
+export const decodeJsonValue = Schema.decodeSync(
+  Schema.parseJson(jsonValueSchema),
+);
+
+/** Runtime guard for the object member of `JsonValue` (schema-validated). */
+export const isJsonObject = Schema.is(
+  Schema.Record({ key: Schema.String, value: jsonValueSchema }),
+);
 
 /** Empty options `{}` shared by capabilities that take no options. */
-export const NoOptions = Schema.Struct({})
-export type NoOptions = typeof NoOptions.Type
+export const NoOptions = Schema.Struct({});
+
+export type NoOptions = typeof NoOptions.Type;
 
 /** `{ id }` options shared by single-resource capabilities. */
-export const IdOptions = Schema.Struct({ id: Schema.String.pipe(Schema.minLength(1)) })
-export type IdOptions = typeof IdOptions.Type
+export const IdOptions = Schema.Struct({
+  id: Schema.String.pipe(Schema.minLength(1)),
+});
+
+export type IdOptions = typeof IdOptions.Type;
 
 /**
  * Clamp a wire `limit`/`offset` string option the same way on every
  * capability: unparseable or negative values fall back, values above `max`
  * are capped — callers cannot force unbounded freqtrade reads.
  */
-export const parseLimitParam = (raw: string | undefined, fallback: number, max: number): number => {
-  if (raw === undefined) return fallback
-  const n = Number.parseInt(raw, 10)
-  if (!Number.isFinite(n) || n < 0) return fallback
-  return Math.min(n, max)
-}
+export const parseLimitParam = (
+  raw: string | undefined,
+  fallback: number,
+  max: number,
+): number => {
+  if (raw === undefined) return fallback;
+  const n = Number.parseInt(raw, 10);
+
+  if (!Number.isFinite(n) || n < 0) return fallback;
+
+  return Math.min(n, max);
+};
+
+/** Custom instance colors are normalized lowercase `#rrggbb`, nothing else. */
+const INSTANCE_COLOR_PATTERN = /^#[0-9a-f]{6}$/;
+
+/**
+ * Validate (and normalize to lowercase) a custom instance color the same
+ * way on create and update. Returns the normalized color, or a failure
+ * description for the caller to turn into its BackendError.
+ */
+export const normalizeInstanceColor = (
+  color: string,
+): { ok: true; color: string } | { ok: false; reason: string } => {
+  const normalized = color.trim().toLowerCase();
+
+  return INSTANCE_COLOR_PATTERN.test(normalized)
+    ? { ok: true, color: normalized }
+    : { ok: false, reason: "use a #rrggbb hex color" };
+};

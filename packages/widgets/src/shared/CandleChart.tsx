@@ -17,8 +17,17 @@
  * indicators legend showing the hovered bar (falling back to the last bar).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { Schema } from "effect";
 import {
+  useDerived,
+  useElementStore,
+  useLocalStore,
+  useStore,
+  useStoreEffect,
+} from "@nfi/ui";
+import { formatDateTime, timeFormatPreset, useTimeFormat } from "./timeFormat";
+import {
+  MouseEventParams,
   CandlestickSeries,
   ColorType,
   CrosshairMode,
@@ -31,31 +40,44 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type Time,
   type UTCTimestamp,
-} from "lightweight-charts"
-import type { Candle } from "@nfi/api-contract"
+} from "lightweight-charts";
+import { format } from "date-fns";
+import type { Candle } from "@nfi/api-contract";
 
 export interface TvOverlayLine {
-  readonly name: string
-  readonly color: string
-  readonly data: LineData[]
-  readonly lineWidth?: number
-  readonly dashed?: boolean
+  readonly name: string;
+  readonly color: string;
+  readonly data: LineData[];
+  readonly lineWidth?: number;
+  readonly dashed?: boolean;
 }
 
 export interface TvSubplot {
   /** Lines drawn in the subplot pane (e.g. RSI, or MACD + signal). */
-  readonly lines: TvOverlayLine[]
+  readonly lines: TvOverlayLine[];
   /** Optional histogram (e.g. MACD hist, colored by sign by the caller). */
-  readonly histogram?: HistogramData[]
+  readonly histogram?: HistogramData[];
   /** Dashed reference levels via price lines (e.g. RSI 70/50/30). */
-  readonly levels?: ReadonlyArray<{ price: number; title?: string }>
+  readonly levels?: ReadonlyArray<{ price: number; title?: string }>;
 }
 
-const UP = "#26a69a"
-const DOWN = "#ef5350"
+const UP = "#26a69a";
 
-const toSec = (ms: number): UTCTimestamp => Math.floor(ms / 1000) as UTCTimestamp
+const DOWN = "#ef5350";
+
+export const utcSeconds = (seconds: number): UTCTimestamp => {
+  // SAFETY: `UTCTimestamp` brands a `number` of whole seconds for
+  // lightweight-charts; the floor below produces exactly that.
+  return Math.floor(seconds) as UTCTimestamp;
+};
+
+export const toSec = (ms: number): UTCTimestamp => utcSeconds(ms / 1000);
+
+/** lightweight-charts accepts only whole line widths 1–4. */
+const lineWidthOf = (width: number | undefined): 1 | 2 | 3 | 4 =>
+  width === 2 || width === 3 || width === 4 ? width : 1;
 
 /**
  * Sanitize a time series for lightweight-charts: it asserts strictly
@@ -67,36 +89,98 @@ const toSec = (ms: number): UTCTimestamp => Math.floor(ms / 1000) as UTCTimestam
 export function orderedByTime<T extends { time: unknown }>(
   points: ReadonlyArray<T>,
 ): T[] {
-  const byTime = new Map<number, T>()
-  for (const point of points) byTime.set(Number(point.time), point)
+  const byTime = new Map<number, T>();
+
+  for (const point of points) byTime.set(Number(point.time), point);
+
   return [...byTime.entries()]
     .sort(([a], [b]) => a - b)
-    .map(([, point]) => point)
+    .map(([, point]) => point);
 }
 
+/** Tick decimals from the last close — compact for whole-number prices. */
+const precisionOf = (candles: ReadonlyArray<Candle>): number => {
+  const last = candles[candles.length - 1]?.close ?? 0;
+
+  if (!Number.isFinite(last) || last <= 0) return 4;
+
+  if (last >= 100) return 2;
+
+  if (last >= 1) return 4;
+
+  return 6;
+};
+
+/**
+ * Structural identity of a subplot: line styles + levels + histogram
+ * presence — everything except the per-tick data arrays.
+ */
+const subplotKeyOf = (subplot: TvSubplot | null): string => {
+  if (!subplot) return "none";
+
+  const lines = subplot.lines
+    .map((l) => `${l.name}|${l.color}|${l.lineWidth ?? 1}|${l.dashed ? 1 : 0}`)
+    .join(";");
+
+  const levels = (subplot.levels ?? [])
+    .map((l) => `${l.price}|${l.title ?? ""}`)
+    .join(";");
+
+  return `${lines}#hist=${subplot.histogram ? 1 : 0}#levels=${levels}`;
+};
+
 interface LegendBar {
-  readonly time: number
-  readonly open: number
-  readonly high: number
-  readonly low: number
-  readonly close: number
-  readonly volume?: number
-  readonly prevClose?: number
+  readonly time: number;
+  readonly open: number;
+  readonly high: number;
+  readonly low: number;
+  readonly close: number;
+  readonly volume?: number;
+  readonly prevClose?: number;
 }
 
 interface LegendOverlay {
-  readonly name: string
-  readonly color: string
-  readonly value: number
+  readonly name: string;
+  readonly color: string;
+  readonly value: number;
 }
 
 const fmtVolumeLegend = (value: number | undefined): string => {
-  if (value === undefined || !Number.isFinite(value)) return "—"
-  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`
-  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`
-  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`
-  return value.toFixed(0)
+  if (value === undefined || !Number.isFinite(value)) return "—";
+
+  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+
+  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
+
+  return value.toFixed(0);
+};
+
+/**
+ * Live chart/series handles shared by the structure, data and height
+ * effects below (a store rather than effect locals because three effects
+ * read them; written only by the structure effect).
+ */
+interface LiveHandles {
+  chart: IChartApi | null;
+  subChart: IChartApi | null;
+  candles: ISeriesApi<"Candlestick"> | null;
+  volume: ISeriesApi<"Histogram"> | null;
+  overlaySeries: Array<ISeriesApi<"Line">>;
+  subSeries: Array<ISeriesApi<"Line">>;
+  subHist: ISeriesApi<"Histogram"> | null;
 }
+
+const NO_HANDLES: LiveHandles = {
+  chart: null,
+  subChart: null,
+  candles: null,
+  volume: null,
+  overlaySeries: [],
+  subSeries: [],
+  subHist: null,
+};
 
 export function CandleChart({
   candles,
@@ -104,87 +188,208 @@ export function CandleChart({
   showVolume,
   subplot,
 }: {
-  candles: ReadonlyArray<Candle>
-  overlays: ReadonlyArray<TvOverlayLine>
-  showVolume: boolean
-  subplot: TvSubplot | null
+  candles: ReadonlyArray<Candle>;
+  overlays: ReadonlyArray<TvOverlayLine>;
+  showVolume: boolean;
+  subplot: TvSubplot | null;
 }) {
-  const hostRef = useRef<HTMLDivElement>(null)
-  const priceRef = useRef<HTMLDivElement>(null)
-  const subRef = useRef<HTMLDivElement>(null)
-  const rangeRef = useRef<{ from: number; to: number } | null>(null)
-  const [legend, setLegend] = useState<LegendBar | null>(null)
-  const [legendOverlays, setLegendOverlays] = useState<readonly LegendOverlay[]>([])
+  // Element stores for the three host divs. Effects read `.state` at
+  // execution time — a live box exactly like the old refs — so effect deps
+  // stay unchanged (the element is always attached before effects run).
+  const { store: hostElStore, setElement: setHostElement } =
+    useElementStore<HTMLDivElement>();
+
+  const { store: priceElStore, setElement: setPriceElement } =
+    useElementStore<HTMLDivElement>();
+
+  const { store: subElStore, setElement: setSubElement } =
+    useElementStore<HTMLDivElement>();
+
+  // User zoom/pan range, kept across structure rebuilds (toggles).
+  const rangeStore = useLocalStore<{ from: number; to: number } | null>(null);
+
+  // Crosshair-driven legend (hovered bar + overlay readouts) — one store so
+  // a hover updates both atomically.
+  interface LegendState {
+    bar: LegendBar | null;
+    overlays: readonly LegendOverlay[];
+  }
+
+  const legendStore = useLocalStore<LegendState>({
+    bar: null,
+    overlays: [],
+  });
+
+  const legend = useStore(legendStore, (s) => s.bar);
+  const legendOverlays = useStore(legendStore, (s) => s.overlays);
+
   // Measured host height (8px steps to avoid chart churn on sub-pixel drag).
   // Charts need explicit pixel pane heights: created against a zero-height
-  // flex container they keep a blank default-sized bitmap.
-  const [boxHeight, setBoxHeight] = useState(340)
+  // flex container they keep a blank default-sized bitmap. Floors stay low
+  // (120px price pane) so short grid cells still draw instead of clipping —
+  // the parent widget adds its own toolbar/legend above this box.
+  const boxHeightStore = useLocalStore(300);
+  const boxHeight = useStore(boxHeightStore, (s) => s);
 
-  useEffect(() => {
-    const el = hostRef.current
-    if (!el || typeof ResizeObserver === "undefined") return
+  useStoreEffect(() => {
+    const el = hostElStore.state;
+
+    if (!el || typeof ResizeObserver === "undefined") return;
+
     const observer = new ResizeObserver((entries) => {
-      const h = Math.floor((entries[0]?.contentRect.height ?? 0) / 8) * 8
-      if (h > 0) setBoxHeight(h)
-    })
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [])
+      const h = Math.floor((entries[0]?.contentRect.height ?? 0) / 8) * 8;
 
-  const subHeight = subplot ? Math.max(76, Math.round(boxHeight * 0.26)) : 0
-  const priceHeight = Math.max(160, boxHeight - subHeight)
+      // Equal-value store writes are identity-compare no-ops.
+      if (h > 0) boxHeightStore.setState(() => h);
+    });
 
-  const precision = useMemo(() => {
-    const last = candles[candles.length - 1]?.close ?? 0
-    if (!Number.isFinite(last) || last <= 0) return 4
-    if (last >= 100) return 2
-    if (last >= 1) return 4
-    return 6
-  }, [candles])
+    observer.observe(el);
 
-  const candleData = useMemo<CandlestickData[]>(
-    () =>
-      orderedByTime(
-        candles.map((c) => ({
-          time: toSec(c.time),
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-        })),
+    return () => observer.disconnect();
+  }, []);
+
+  const subHeight = subplot ? Math.max(64, Math.round(boxHeight * 0.26)) : 0;
+  const priceHeight = Math.max(120, boxHeight - subHeight);
+
+  const precision = precisionOf(candles);
+
+  const candleData = useDerived(candles, (src): CandlestickData[] =>
+    orderedByTime(
+      src.map((c) => ({
+        time: toSec(c.time),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      })),
+    ),
+  );
+
+  const volumeData = useDerived(candles, (src): HistogramData[] =>
+    orderedByTime(
+      src.map((c) => ({
+        time: toSec(c.time),
+        value: c.volume,
+        color:
+          c.close >= c.open
+            ? "rgba(38, 166, 154, 0.4)"
+            : "rgba(239, 83, 80, 0.4)",
+      })),
+    ),
+  );
+
+  const volumeByTime = useDerived(
+    volumeData,
+    (src) =>
+      new Map<number, number>(
+        src.flatMap((d) =>
+          Schema.is(Schema.Number)(d.time) ? [[d.time, d.value] as const] : [],
+        ),
       ),
-    [candles],
-  )
-
-  const volumeData = useMemo<HistogramData[]>(
-    () =>
-      orderedByTime(
-        candles.map((c) => ({
-          time: toSec(c.time),
-          value: c.volume,
-          color: c.close >= c.open ? "rgba(38, 166, 154, 0.4)" : "rgba(239, 83, 80, 0.4)",
-        })),
-      ),
-    [candles],
-  )
-
-  const volumeByTime = useMemo(
-    () => new Map(volumeData.map((d) => [d.time as number, d.value])),
-    [volumeData],
-  )
+  );
 
   /** time -> previous bar's close, for the legend's Δ vs prev close. */
-  const prevCloseByTime = useMemo(() => {
-    const map = new Map<number, number>()
-    for (let i = 1; i < candleData.length; i++) {
-      map.set(candleData[i]!.time as number, candleData[i - 1]!.close)
-    }
-    return map
-  }, [candleData])
+  const prevCloseByTime = useDerived(candleData, (src) => {
+    const map = new Map<number, number>();
 
-  useEffect(() => {
-    const priceEl = priceRef.current
-    if (!priceEl || candleData.length === 0) return
+    for (let i = 1; i < src.length; i++) {
+      const at = src[i]!.time;
+      const close = src[i - 1]!.close;
+
+      if (Schema.is(Schema.Number)(at)) map.set(at, close);
+    }
+
+    return map;
+  });
+
+  // Structural identity: series layout depends on names/colors/styles,
+  // levels and toggles — NOT on per-tick data arrays. Data ticks keep the
+  // same key, so the chart is created once and updated via setData instead
+  // of destroy + rebuild (the old effect rebuilt on every SSE frame and
+  // every 8px resize step — the page-unresponsive crash). Cheap string
+  // builds, value-compared in the effect deps below.
+  const overlayStructureKey = overlays
+    .map((o) => `${o.name}|${o.color}|${o.lineWidth ?? 1}|${o.dashed ? 1 : 0}`)
+    .join(";");
+
+  const subplotStructureKey = subplotKeyOf(subplot);
+
+  const hasCandles = candleData.length > 0;
+
+  // Live chart handles — created once per structure, updated by the data
+  // effect below. Series arrays stay index-aligned with the overlays /
+  // subplot-lines props while the structure key is stable.
+  const handlesStore = useLocalStore<LiveHandles>({ ...NO_HANDLES });
+
+  // Time axis + crosshair labels follow the globally configured time format
+  // (Settings → Appearance). Applied as options on the LIVE charts, so a
+  // format change never rebuilds the panes.
+  const timeFormat = useTimeFormat();
+
+  useStoreEffect(() => {
+    const preset = timeFormatPreset(timeFormat);
+
+    const label = (time: Time): string => {
+      const d = new Date(Number(time) * 1000);
+
+      return preset.id === "locale"
+        ? d.toLocaleString(undefined, {
+            dateStyle: "short",
+            timeStyle: "short",
+          })
+        : format(d, `${preset.date} ${preset.time}`.trim());
+    };
+
+    for (const chart of [
+      handlesStore.state.chart,
+      handlesStore.state.subChart,
+    ]) {
+      chart?.applyOptions({
+        timeScale: { tickMarkFormatter: label },
+        localization: { timeFormatter: label },
+      });
+    }
+  }, [
+    timeFormat,
+    hasCandles,
+    subplot,
+    overlayStructureKey,
+    subplotStructureKey,
+  ]);
+
+  // Latest legend maps for the crosshair handler — a live box read at
+  // event time, refreshed during render when the derived maps change
+  // (equal-value store writes are no-ops, so this is render-safe).
+  const legendMapsStore = useLocalStore(() => ({
+    volumeByTime,
+    prevCloseByTime,
+  }));
+
+  if (
+    legendMapsStore.state.volumeByTime !== volumeByTime ||
+    legendMapsStore.state.prevCloseByTime !== prevCloseByTime
+  ) {
+    legendMapsStore.setState(() => ({ volumeByTime, prevCloseByTime }));
+  }
+
+  // Overlay names/colors for the crosshair legend — same live-box pattern.
+  const overlayMetaStore = useLocalStore(() => ({
+    overlays,
+    metas: overlays.map((o) => ({ name: o.name, color: o.color })),
+  }));
+
+  if (overlayMetaStore.state.overlays !== overlays) {
+    overlayMetaStore.setState(() => ({
+      overlays,
+      metas: overlays.map((o) => ({ name: o.name, color: o.color })),
+    }));
+  }
+
+  // --- Structure: create charts + series (no per-tick data) ---------------
+  useStoreEffect(() => {
+    const priceEl = priceElStore.state;
+
+    if (!priceEl || !hasCandles) return;
 
     const baseOptions = {
       layout: {
@@ -201,82 +406,114 @@ export function CandleChart({
       },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: "rgba(244, 244, 244, 0.4)", labelBackgroundColor: "#525252" },
-        horzLine: { color: "rgba(244, 244, 244, 0.4)", labelBackgroundColor: "#525252" },
+        vertLine: {
+          color: "rgba(244, 244, 244, 0.4)",
+          labelBackgroundColor: "#525252",
+        },
+        horzLine: {
+          color: "rgba(244, 244, 244, 0.4)",
+          labelBackgroundColor: "#525252",
+        },
       },
-      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.08 } },
-      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 4 },
-    } as const
+      rightPriceScale: {
+        borderVisible: false,
+        scaleMargins: { top: 0.08, bottom: 0.08 },
+      },
+      timeScale: {
+        borderVisible: false,
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 4,
+      },
+    } as const;
 
     const chart: IChartApi = createChart(priceEl, {
       ...baseOptions,
       width: priceEl.clientWidth || 600,
       height: priceHeight,
       autoSize: true,
-    })
-    const candleSeries: ISeriesApi<"Candlestick"> = chart.addSeries(CandlestickSeries, {
-      upColor: UP,
-      downColor: DOWN,
-      wickUpColor: UP,
-      wickDownColor: DOWN,
-      borderVisible: false,
-      priceFormat: { type: "price", precision, minMove: 10 ** -precision },
-    })
-    candleSeries.setData(candleData)
+    });
 
-    const volumeSeries: ISeriesApi<"Histogram"> | null = showVolume
-      ? chart.addSeries(HistogramSeries, {
-          priceScaleId: "",
-          priceFormat: { type: "volume" },
-        })
-      : null
-    if (volumeSeries) {
-      chart.priceScale("").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } })
-      volumeSeries.setData(volumeData)
+    handlesStore.setState((h) => ({ ...h, chart }));
+
+    const candleSeries: ISeriesApi<"Candlestick"> = chart.addSeries(
+      CandlestickSeries,
+      {
+        upColor: UP,
+        downColor: DOWN,
+        wickUpColor: UP,
+        wickDownColor: DOWN,
+        borderVisible: false,
+        priceFormat: { type: "price", precision, minMove: 10 ** -precision },
+      },
+    );
+
+    handlesStore.setState((h) => ({ ...h, candles: candleSeries }));
+
+    if (showVolume) {
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceScaleId: "",
+        priceFormat: { type: "volume" },
+      });
+
+      chart
+        .priceScale("")
+        .applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+      handlesStore.setState((h) => ({ ...h, volume: volumeSeries }));
+    } else {
+      handlesStore.setState((h) => ({ ...h, volume: null }));
     }
 
-    // Overlay lines, remembered by series for the crosshair legend.
-    const overlayNames = new Map<ISeriesApi<"Line">, { name: string; color: string }>()
-    for (const overlay of overlays) {
-      if (overlay.data.length === 0) continue
-      const line = chart.addSeries(LineSeries, {
+    // Overlay lines — one series per definition (data arrives via the data
+    // effect); remembered by index for the crosshair legend.
+    const overlaySeries = overlays.map((overlay) =>
+      chart.addSeries(LineSeries, {
         color: overlay.color,
-        lineWidth: (overlay.lineWidth ?? 1) as 1 | 2 | 3 | 4,
+        lineWidth: lineWidthOf(overlay.lineWidth),
         lineStyle: overlay.dashed ? LineStyle.Dashed : LineStyle.Solid,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
         priceLineVisible: false,
-      })
-      line.setData(orderedByTime(overlay.data))
-      overlayNames.set(line, { name: overlay.name, color: overlay.color })
-    }
+      }),
+    );
 
-    let subChart: IChartApi | null = null
-    const subEl = subRef.current
+    handlesStore.setState((h) => ({ ...h, overlaySeries }));
+
+    let subChart: IChartApi | null = null;
+    const subEl = subElStore.state;
+
     if (subplot && subEl) {
       subChart = createChart(subEl, {
         ...baseOptions,
         width: subEl.clientWidth || 600,
         height: subHeight,
         autoSize: true,
-      })
-      for (const lineDef of subplot.lines) {
-        if (lineDef.data.length === 0) continue
-        const line = subChart.addSeries(LineSeries, {
+      });
+      handlesStore.setState((h) => ({ ...h, subChart }));
+
+      const subSeries = subplot.lines.map((lineDef) =>
+        subChart!.addSeries(LineSeries, {
           color: lineDef.color,
-          lineWidth: (lineDef.lineWidth ?? 1) as 1 | 2 | 3 | 4,
+          lineWidth: lineWidthOf(lineDef.lineWidth),
           lineStyle: lineDef.dashed ? LineStyle.Dashed : LineStyle.Solid,
           crosshairMarkerVisible: false,
           lastValueVisible: false,
           priceLineVisible: false,
-        })
-        line.setData(orderedByTime(lineDef.data))
+        }),
+      );
+
+      handlesStore.setState((h) => ({ ...h, subSeries }));
+
+      if (subplot.histogram) {
+        const hist = subChart.addSeries(HistogramSeries, { priceScaleId: "" });
+        subChart
+          .priceScale("")
+          .applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+        handlesStore.setState((h) => ({ ...h, subHist: hist }));
+      } else {
+        handlesStore.setState((h) => ({ ...h, subHist: null }));
       }
-      if (subplot.histogram && subplot.histogram.length > 0) {
-        const hist = subChart.addSeries(HistogramSeries, { priceScaleId: "" })
-        subChart.priceScale("").applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } })
-        hist.setData(orderedByTime(subplot.histogram))
-      }
+
       // Reference levels (RSI 70/50/30…) via price lines on a hidden
       // anchor series, so they never shift the subplot's own scale.
       if (subplot.levels && subplot.levels.length > 0) {
@@ -287,7 +524,8 @@ export function CandleChart({
           lastValueVisible: false,
           priceLineVisible: false,
           visible: false,
-        })
+        });
+
         for (const level of subplot.levels) {
           anchor.createPriceLine({
             price: level.price,
@@ -296,46 +534,63 @@ export function CandleChart({
             lineStyle: LineStyle.Dashed,
             axisLabelVisible: true,
             title: level.title ?? String(level.price),
-          })
+          });
         }
       }
+
       chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
         if (range) {
-          rangeRef.current = range
-          subChart?.timeScale().setVisibleLogicalRange(range)
+          rangeStore.setState(() => range);
+          handlesStore.state.subChart
+            ?.timeScale()
+            .setVisibleLogicalRange(range);
         }
-      })
+      });
     } else {
+      handlesStore.setState((h) => ({
+        ...h,
+        subChart: null,
+        subSeries: [],
+        subHist: null,
+      }));
       chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-        if (range) rangeRef.current = range
-      })
+        if (range) rangeStore.setState(() => range);
+      });
     }
 
-    // Preserve the user's zoom/pan across data polls and toggles.
-    if (rangeRef.current) {
-      chart.timeScale().setVisibleLogicalRange(rangeRef.current)
-      subChart?.timeScale().setVisibleLogicalRange(rangeRef.current)
+    // Preserve the user's zoom/pan across structure rebuilds (toggles);
+    // per-tick data updates never touch the time scale.
+    const savedRange = rangeStore.state;
+
+    if (savedRange) {
+      chart.timeScale().setVisibleLogicalRange(savedRange);
+      subChart?.timeScale().setVisibleLogicalRange(savedRange);
     } else {
-      chart.timeScale().fitContent()
-      subChart?.timeScale().fitContent()
+      chart.timeScale().fitContent();
+      subChart?.timeScale().fitContent();
+
       // Hide the oversized fit-content range on first paint for small sets.
       if (candleData.length < 60) {
-        const to = candleData.length + 4
-        const from = Math.max(0, to - 60)
-        chart.timeScale().setVisibleLogicalRange({ from, to })
-        subChart?.timeScale().setVisibleLogicalRange({ from, to })
+        const to = candleData.length + 4;
+        const from = Math.max(0, to - 60);
+        chart.timeScale().setVisibleLogicalRange({ from, to });
+        subChart?.timeScale().setVisibleLogicalRange({ from, to });
       }
     }
 
-    const onCrosshair = (param: {
-      time?: unknown
-      seriesData?: Map<unknown, unknown>
-    }) => {
-      const raw = param.seriesData?.get(candleSeries) as
-        | { open: number; high: number; low: number; close: number }
-        | undefined
-      if (raw && typeof param.time === "number") {
-        setLegend({
+    const onCrosshair = (param: MouseEventParams) => {
+      const series = handlesStore.state.candles;
+      const { volumeByTime, prevCloseByTime } = legendMapsStore.state;
+
+      if (!series) return;
+      const raw = param.seriesData?.get(series);
+
+      if (
+        raw !== undefined &&
+        "open" in raw &&
+        Schema.is(Schema.Number)(param.time)
+      ) {
+        const nextBar: LegendBar = {
           time: param.time * 1000,
           open: raw.open,
           high: raw.high,
@@ -343,64 +598,162 @@ export function CandleChart({
           close: raw.close,
           volume: volumeByTime.get(param.time),
           prevClose: prevCloseByTime.get(param.time),
-        })
-        const atCursor: LegendOverlay[] = []
-        for (const [series, meta] of overlayNames) {
-          const point = param.seriesData?.get(series) as { value: number } | undefined
-          if (point && Number.isFinite(point.value)) {
-            atCursor.push({ name: meta.name, color: meta.color, value: point.value })
+        };
+
+        const atCursor: LegendOverlay[] = [];
+        const metas = overlayMetaStore.state.metas;
+
+        handlesStore.state.overlaySeries.forEach((line, i) => {
+          const point = param.seriesData?.get(line);
+          const meta = metas[i];
+
+          if (
+            point !== undefined &&
+            "value" in point &&
+            Number.isFinite(point.value) &&
+            meta
+          ) {
+            atCursor.push({
+              name: meta.name,
+              color: meta.color,
+              value: point.value,
+            });
           }
-        }
-        setLegendOverlays(atCursor)
+        });
+
+        legendStore.setState(() => ({ bar: nextBar, overlays: atCursor }));
       } else {
-        setLegend(null)
-        setLegendOverlays([])
+        legendStore.setState(() => ({ bar: null, overlays: [] }));
       }
-    }
-    chart.subscribeCrosshairMove(onCrosshair as Parameters<typeof chart.subscribeCrosshairMove>[0])
+    };
+
+    chart.subscribeCrosshairMove(onCrosshair);
 
     return () => {
-      chart.remove()
-      subChart?.remove()
+      chart.remove();
+      subChart?.remove();
+      handlesStore.setState(() => ({ ...NO_HANDLES }));
+    };
+    // Structure only: data arrays + pane heights are pushed via setData /
+    // applyOptions below, never rebuilt.
+  }, [
+    hasCandles,
+    showVolume,
+    precision,
+    overlayStructureKey,
+    subplotStructureKey,
+  ]);
+
+  // --- Data: push new points into the existing series ----------------------
+  useStoreEffect(() => {
+    if (!hasCandles) return;
+
+    try {
+      handlesStore.state.candles?.setData(candleData);
+    } catch {
+      // Stale frame (e.g. duplicate times mid-update) — next tick repairs.
     }
-  }, [candleData, volumeData, volumeByTime, overlays, showVolume, subplot, precision, prevCloseByTime, priceHeight, subHeight])
+
+    if (showVolume) {
+      try {
+        if (volumeData.length > 0)
+          handlesStore.state.volume?.setData(volumeData);
+      } catch {
+        // Ignore — next tick repairs.
+      }
+    }
+
+    overlays.forEach((overlay, i) => {
+      const series = handlesStore.state.overlaySeries[i];
+
+      if (!series || overlay.data.length === 0) return;
+
+      try {
+        series.setData(orderedByTime(overlay.data));
+      } catch {
+        // Ignore — next tick repairs.
+      }
+    });
+    const lines = subplot?.lines ?? [];
+    lines.forEach((lineDef, i) => {
+      const series = handlesStore.state.subSeries[i];
+
+      if (!series || lineDef.data.length === 0) return;
+
+      try {
+        series.setData(orderedByTime(lineDef.data));
+      } catch {
+        // Ignore — next tick repairs.
+      }
+    });
+    const hist = subplot?.histogram;
+
+    if (hist && hist.length > 0) {
+      try {
+        handlesStore.state.subHist?.setData(orderedByTime(hist));
+      } catch {
+        // Ignore — next tick repairs.
+      }
+    }
+  }, [candleData, volumeData, overlays, subplot, showVolume, hasCandles]);
+
+  // --- Height: pane resize without rebuild (autoSize also tracks the box;
+  // applyOptions covers the initial paint before its observer fires).
+  useStoreEffect(() => {
+    try {
+      handlesStore.state.chart?.applyOptions({ height: priceHeight });
+      handlesStore.state.subChart?.applyOptions({ height: subHeight });
+    } catch {
+      // Chart not yet created (no candles) — no-op.
+    }
+  }, [priceHeight, subHeight]);
 
   // Legend fallback: the last sanitized bar (sorted, deduped — so it is
   // genuinely the newest), with its volume and previous close.
-  const lastPoint = candleData[candleData.length - 1]
-  const prevPoint = candleData[candleData.length - 2]
+  const lastPoint = candleData[candleData.length - 1];
+  const prevPoint = candleData[candleData.length - 2];
+
   const bar: LegendBar | null = legend
     ? legend
-    : lastPoint
+    : lastPoint !== undefined && Schema.is(Schema.Number)(lastPoint.time)
       ? {
-          time: (lastPoint.time as number) * 1000,
+          time: lastPoint.time * 1000,
           open: lastPoint.open,
           high: lastPoint.high,
           low: lastPoint.low,
           close: lastPoint.close,
-          volume: volumeByTime.get(lastPoint.time as number),
+          volume: volumeByTime.get(lastPoint.time),
           prevClose: prevPoint?.close,
         }
-      : null
+      : null;
+
   const barChange =
     bar && bar.prevClose !== undefined && bar.prevClose !== 0
       ? ((bar.close - bar.prevClose) / Math.abs(bar.prevClose)) * 100
-      : null
+      : null;
 
   return (
     <div
       style={{
         width: "100%",
+        maxWidth: "100%",
+        minWidth: 0,
         display: "flex",
         flexDirection: "column",
         flex: "1 1 auto",
-        minHeight: 240,
+        minHeight: 180,
+        overflow: "hidden",
       }}
     >
       <div className="nfi-mono nfi-candle-legend" aria-live="polite">
         {bar ? (
           <>
-            <span style={{ color: bar.close >= bar.open ? UP : DOWN, fontWeight: 600 }}>
+            <span
+              style={{
+                color: bar.close >= bar.open ? UP : DOWN,
+                fontWeight: 600,
+              }}
+            >
               {bar.close.toFixed(precision)}
               {barChange !== null ? (
                 <span style={{ marginLeft: "0.375rem" }}>
@@ -414,18 +767,16 @@ export function CandleChart({
               {bar.low.toFixed(precision)} C {bar.close.toFixed(precision)}
             </span>
             {bar.volume !== undefined ? (
-              <span style={{ opacity: 0.55 }}>V {fmtVolumeLegend(bar.volume)}</span>
+              <span style={{ opacity: 0.55 }}>
+                V {fmtVolumeLegend(bar.volume)}
+              </span>
             ) : null}
             {legendOverlays.map((o) => (
               <span key={o.name} style={{ color: o.color }}>
                 {o.name} {o.value.toFixed(precision)}
               </span>
             ))}
-            <span style={{ opacity: 0.55 }}>
-              {Number.isNaN(new Date(bar.time).getTime())
-                ? ""
-                : new Date(bar.time).toISOString().slice(0, 16).replace("T", " ")}
-            </span>
+            <span style={{ opacity: 0.55 }}>{formatDateTime(bar.time)}</span>
           </>
         ) : null}
         {legend === null
@@ -443,14 +794,38 @@ export function CandleChart({
           equals measured height, so the loop converges instead of growing.
           Never put extra siblings (legend, toolbars) inside it. */}
       <div
-        ref={hostRef}
-        style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}
+        ref={setHostElement}
+        style={{
+          flex: "1 1 auto",
+          minHeight: 0,
+          minWidth: 0,
+          width: "100%",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
       >
-        <div ref={priceRef} style={{ width: "100%", flex: "0 0 auto", height: priceHeight }} />
+        <div
+          ref={setPriceElement}
+          style={{
+            width: "100%",
+            maxWidth: "100%",
+            flex: "0 0 auto",
+            height: priceHeight,
+          }}
+        />
         {subplot ? (
-          <div ref={subRef} style={{ width: "100%", flex: "0 0 auto", height: subHeight }} />
+          <div
+            ref={setSubElement}
+            style={{
+              width: "100%",
+              maxWidth: "100%",
+              flex: "0 0 auto",
+              height: subHeight,
+            }}
+          />
         ) : null}
       </div>
     </div>
-  )
+  );
 }

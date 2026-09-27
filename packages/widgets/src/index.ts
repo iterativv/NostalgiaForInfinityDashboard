@@ -17,57 +17,120 @@
  */
 
 export * from "./shared/config";
+
+
 export * from "./shared/format";
+
+export * from "./shared/timeFormat";
+
+export * from "./shared/tradeSort";
+
 export * from "./shared/query";
+
 export * from "./shared/InstanceSelect";
+
+export * from "./shared/instanceColors";
+
 export * from "./shared/sources";
+
 export * from "./shared/SettingsToggle";
+
 export * from "./shared/SettingsSelect";
+
 export * from "./shared/WidgetSettings";
+
 export * from "./shared/widgetSettingsBus";
+
 export * from "./shared/widgetGlobals";
+
 export * from "./shared/dialogs";
+
 export * from "./shared/panelConfig";
-export * from "./shared/OrderLines";
+
+export * from "./shared/SubOrdersTable";
+
+export * from "./shared/RelativeOrdersFacets";
+
 export * from "./demoWidgets";
+
 export * from "./BotStatusWidget";
+
 export * from "./ProfitWidget";
+
 export * from "./BalanceWidget";
+
 export * from "./RelativeProfitWidget";
+
 export * from "./RelativeBalanceWidget";
+
 export * from "./RelativeEquityWidget";
+
 export * from "./PercentOpenPositionsWidget";
+
 export * from "./PercentClosedTradesWidget";
+
 export * from "./PercentEntryStatsWidget";
+
 export * from "./OpenTradesWidget";
+
 export * from "./PnlChartWidget";
+
 export * from "./EquityCurveWidget";
+
 export * from "./BotConfigWidget";
+
 export * from "./ConnectionWidget";
+
 export * from "./InstanceHealthRow";
+
 export * from "./InstanceManagerWidget";
+
 export * from "./OpenPositionsWidget";
+
 export * from "./ClosedPositionsWidget";
+
 export * from "./InstancesTableWidget";
+
 export * from "./CumulativeProfitWidget";
+
 export * from "./TagPerformanceWidget";
+
 export * from "./TickerTapeWidget";
+
 export * from "./WatchlistWidget";
+
 export * from "./MarketMoversWidget";
+
 export * from "./ExposureWidget";
+
 export * from "./PerformanceStatsWidget";
+
 export * from "./StrategyBreakdownWidget";
+
 export * from "./TradeTapeWidget";
+
 export * from "./RiskMonitorWidget";
+
 export * from "./SessionClockWidget";
+
+export * from "./FedRateWidget";
+
 export * from "./CandleChartWidget";
+
 export * from "./FleetOverviewWidget";
+
 export * from "./DailyProfitWidget";
+
 export * from "./PairLocksWidget";
+
 export * from "./PairUniverseWidget";
+
 export * from "./DrawdownWidget";
+
 export * from "./PairSummaryWidget";
+
 export * from "./WalletHistoryWidget";
+
 import type { AnyWidgetDefinition } from "@nfi/widget-sdk";
 import { DEMO_WIDGETS } from "./demoWidgets";
 import { BotStatusWidgetDef } from "./BotStatusWidget";
@@ -100,6 +163,7 @@ import { StrategyBreakdownWidgetDef } from "./StrategyBreakdownWidget";
 import { TradeTapeWidgetDef } from "./TradeTapeWidget";
 import { RiskMonitorWidgetDef } from "./RiskMonitorWidget";
 import { SessionClockWidgetDef } from "./SessionClockWidget";
+import { FedRateWidgetDef } from "./FedRateWidget";
 import { FleetOverviewWidgetDef } from "./FleetOverviewWidget";
 import { DailyProfitWidgetDef } from "./DailyProfitWidget";
 import { PairLocksWidgetDef } from "./PairLocksWidget";
@@ -145,6 +209,7 @@ export const builtinWidgets: ReadonlyArray<AnyWidgetDefinition> = [
   TradeTapeWidgetDef,
   RiskMonitorWidgetDef,
   SessionClockWidgetDef,
+  FedRateWidgetDef,
   FleetOverviewWidgetDef,
   DailyProfitWidgetDef,
   PairLocksWidgetDef,

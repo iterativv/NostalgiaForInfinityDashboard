@@ -11,10 +11,14 @@
  * SSR) return false instead of throwing.
  */
 
+import type { PanelInstance } from "@nfi/api-contract";
 import { setWidgetGlobalSettings } from "./widgetGlobals";
 import { widgetSettingsStore } from "./widgetSettingsBus";
 
-type PanelConfigSink = (panelId: string, config: unknown) => boolean;
+type PanelConfigSink = (
+  panelId: string,
+  config: PanelInstance["widgetConfig"],
+) => boolean;
 
 let sink: PanelConfigSink | null = null;
 
@@ -29,7 +33,7 @@ export function setPanelConfigSink(fn: PanelConfigSink): void {
  */
 export function updatePanelConfig(
   panelId: string,
-  config: unknown,
+  config: PanelInstance["widgetConfig"],
 ): boolean {
   return sink ? sink(panelId, config) : false;
 }
@@ -54,9 +58,12 @@ export function applyWidgetSettings<T extends object>(
   patch: Partial<T>,
 ): boolean {
   const { openPanelId, scope } = widgetSettingsStore.state;
+
   if (openPanelId === panelId && scope === "global") {
-    setWidgetGlobalSettings(widgetType, patch as Record<string, unknown>);
+    setWidgetGlobalSettings(widgetType, patch);
+
     return true;
   }
+
   return updatePanelConfig(panelId, { ...current, ...patch });
 }

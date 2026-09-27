@@ -1,7 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Store } from "@tanstack/store"
+import { Either, Schema } from "effect";
+import { Store } from "@tanstack/store";
+import {
+  isJsonObject,
+  jsonValueSchema,
+  type JsonValue,
+} from "@nfi/capabilities";
 
 /**
  * Floating tabs — a localStorage-backed layer of pinned tabs that live
@@ -25,113 +31,156 @@ import { Store } from "@tanstack/store"
 
 export interface FloatingTab {
   /** Stable id of the floating window (never reused). */
-  readonly id: string
+  readonly id: string;
   /**
    * The captured panel id — kept identical to the grid tab it replaced so
    * panel-scoped subsystems (settings bus, config sink) keep addressing it.
    */
-  readonly panelId: string
-  readonly widgetType: string
-  readonly widgetConfig: Record<string, unknown>
+  readonly panelId: string;
+  readonly widgetType: string;
+  /** The captured widget config (JSON object; see `isWidgetConfig`). */
+  readonly widgetConfig: Record<string, JsonValue>;
   /** Viewport-relative position of the window (px, top-left). */
-  readonly x: number
-  readonly y: number
-  readonly width: number
-  readonly height: number
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
 }
 
-export const FLOATING_STORAGE_KEY = "nfi-floating-tabs-v1"
+export const FLOATING_STORAGE_KEY = "nfi-floating-tabs-v1";
 
 /** Hard floors — a floating window never gets smaller than this. */
-export const FLOATING_MIN_WIDTH = 260
-export const FLOATING_MIN_HEIGHT = 160
+export const FLOATING_MIN_WIDTH = 260;
 
-type FloatingState = Record<string, FloatingTab[]>
+export const FLOATING_MIN_HEIGHT = 160;
 
-export const floatingStore = new Store<FloatingState>(hydrateFloatingState())
+/** Persisted widget configs are JSON objects end to end. */
+const widgetConfigSchema = Schema.Record({
+  key: Schema.String,
+  value: jsonValueSchema,
+});
+
+/** Type guard for captured widget configs (the persisted-json contract). */
+export function isWidgetConfig(
+  value: unknown,
+): value is Record<string, JsonValue> {
+  return Schema.is(widgetConfigSchema)(value);
+}
+
+/** Number, else the recorded fallback (junk geometry heals, tabs survive). */
+const numberOr = (fallback: number): Schema.Schema<number, unknown> =>
+  Schema.Union(
+    Schema.Number,
+    Schema.Unknown.pipe(
+      Schema.transform(Schema.Number, {
+        decode: () => fallback,
+        encode: (n) => n,
+      }),
+    ),
+  );
+
+const clampedOr = (
+  min: number,
+  fallback: number,
+): Schema.Schema<number, unknown> =>
+  numberOr(fallback).pipe(
+    Schema.transform(Schema.Number, {
+      decode: (n) => clampSize(min, n),
+      encode: (n) => n,
+    }),
+  );
+
+const FloatingTabSchema = Schema.Struct({
+  id: Schema.String,
+  panelId: Schema.String,
+  widgetType: Schema.String,
+  widgetConfig: Schema.Union(
+    widgetConfigSchema,
+    Schema.Unknown.pipe(
+      Schema.transform(widgetConfigSchema, {
+        decode: () => ({}),
+        encode: (config) => config,
+      }),
+    ),
+  ),
+  x: numberOr(48),
+  y: numberOr(48),
+  width: clampedOr(FLOATING_MIN_WIDTH, 420),
+  height: clampedOr(FLOATING_MIN_HEIGHT, 300),
+});
+
+const FloatingStateSchema = Schema.Record({
+  key: Schema.String,
+  value: Schema.Array(FloatingTabSchema),
+});
+
+type FloatingState = typeof FloatingStateSchema.Type;
+
+export const floatingStore = new Store<FloatingState>(hydrateFloatingState());
 
 function readStoredState(): FloatingState {
-  if (typeof localStorage === "undefined") return {}
+  if (typeof localStorage === "undefined") return {};
+
   try {
-    const raw = localStorage.getItem(FLOATING_STORAGE_KEY)
-    if (!raw) return {}
-    return sanitizeFloatingState(JSON.parse(raw))
+    const raw = localStorage.getItem(FLOATING_STORAGE_KEY);
+
+    if (!raw) return {};
+
+    return sanitizeFloatingState(JSON.parse(raw));
   } catch {
-    return {}
+    return {};
   }
 }
 
 function hydrateFloatingState(): FloatingState {
-  return readStoredState()
+  return readStoredState();
 }
 
 function persistFloatingState(): void {
-  if (typeof localStorage === "undefined") return
+  if (typeof localStorage === "undefined") return;
+
   try {
     localStorage.setItem(
       FLOATING_STORAGE_KEY,
       JSON.stringify(floatingStore.state),
-    )
+    );
   } catch {
     // Storage full/blocked — floating tabs stay session-only.
   }
 }
 
-/** Coerce unknown parsed JSON into a valid FloatingState (drop junk entries). */
-export function sanitizeFloatingState(input: unknown): FloatingState {
-  if (typeof input !== "object" || input === null) return {}
-  const out: FloatingState = {}
-  for (const [pageId, entries] of Object.entries(
-    input as Record<string, unknown>,
-  )) {
-    if (!Array.isArray(entries)) continue
-    const clean: FloatingTab[] = []
+/** Coerce parsed storage JSON into a valid FloatingState (drop junk entries). */
+export function sanitizeFloatingState(input: JsonValue): FloatingState {
+  if (!isJsonObject(input)) return {};
+  const out: Record<string, FloatingTab[]> = {};
+
+  for (const [pageId, entries] of Object.entries(input)) {
+    if (!Array.isArray(entries)) continue;
+    const clean: FloatingTab[] = [];
+
     for (const entry of entries) {
-      const tab = sanitizeFloatingTab(entry)
-      if (tab) clean.push(tab)
+      const tab = sanitizeFloatingTab(entry);
+
+      if (tab) clean.push(tab);
     }
-    if (clean.length > 0) out[pageId] = clean
+
+    if (clean.length > 0) out[pageId] = clean;
   }
-  return out
+
+  return out;
 }
 
-function sanitizeFloatingTab(input: unknown): FloatingTab | null {
-  if (typeof input !== "object" || input === null) return null
-  const raw = input as Record<string, unknown>
-  if (
-    typeof raw.id !== "string" ||
-    typeof raw.panelId !== "string" ||
-    typeof raw.widgetType !== "string"
-  ) {
-    return null
-  }
-  const width = clampSize(
-    FLOATING_MIN_WIDTH,
-    typeof raw.width === "number" ? raw.width : 420,
-  )
-  const height = clampSize(
-    FLOATING_MIN_HEIGHT,
-    typeof raw.height === "number" ? raw.height : 300,
-  )
-  return {
-    id: raw.id,
-    panelId: raw.panelId,
-    widgetType: raw.widgetType,
-    widgetConfig:
-      typeof raw.widgetConfig === "object" && raw.widgetConfig !== null
-        ? (raw.widgetConfig as Record<string, unknown>)
-        : {},
-    x: typeof raw.x === "number" ? raw.x : 48,
-    y: typeof raw.y === "number" ? raw.y : 48,
-    width,
-    height,
-  }
+function sanitizeFloatingTab(input: JsonValue): FloatingTab | null {
+  const decoded = Schema.decodeUnknownEither(FloatingTabSchema)(input);
+
+  return Either.isRight(decoded) ? decoded.right : null;
 }
 
 /** Clamp a size to the floating minimums (and finite positives). */
 export function clampSize(min: number, value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return min
-  return Math.max(min, Math.round(value))
+  if (!Number.isFinite(value) || value <= 0) return min;
+
+  return Math.max(min, Math.round(value));
 }
 
 /**
@@ -143,10 +192,12 @@ export function clampSize(min: number, value: number): number {
  * inner element's content box instead loses the header/border chrome on
  * every write-back and made windows shrink after opening.
  */
-export function floatWindowSize(el: HTMLElement): {
+export interface FloatWindowSize {
   width: number;
   height: number;
-} {
+}
+
+export function floatWindowSize(el: HTMLElement): FloatWindowSize {
   return {
     width: Math.max(FLOATING_MIN_WIDTH, Math.round(el.offsetWidth)),
     height: Math.max(FLOATING_MIN_HEIGHT, Math.round(el.offsetHeight)),
@@ -158,24 +209,32 @@ export function floatWindowSize(el: HTMLElement): {
  * exactly: each window offsets by a fixed step, wrapping after 8 steps to
  * stay on-screen.
  */
-export function cascadePosition(index: number): { x: number; y: number } {
+export interface CascadeOffset {
+  x: number;
+  y: number;
+}
+
+export function cascadePosition(index: number): CascadeOffset {
   const step = 32;
   const steps = 8;
   const offset = (((index % steps) + steps) % steps) * step;
+
   return { x: 64 + offset, y: 64 + offset };
 }
 
 /** The active page's floating tabs (empty when none). */
-export function floatingTabsForPage(pageId: string): FloatingTab[] {
-  return floatingStore.state[pageId] ?? []
+export function floatingTabsForPage(
+  pageId: string,
+): ReadonlyArray<FloatingTab> {
+  return floatingStore.state[pageId] ?? [];
 }
 
 export function addFloatingTab(pageId: string, tab: FloatingTab): void {
   floatingStore.setState((state) => ({
     ...state,
     [pageId]: [...(state[pageId] ?? []), tab],
-  }))
-  persistFloatingState()
+  }));
+  persistFloatingState();
 }
 
 /** Patch one floating window (geometry updates); no-op when unknown. */
@@ -184,15 +243,16 @@ export function updateFloatingTab(
   id: string,
   patch: Partial<Pick<FloatingTab, "x" | "y" | "width" | "height">>,
 ): void {
-  const entries = floatingStore.state[pageId]
-  if (!entries?.some((tab) => tab.id === id)) return
+  const entries = floatingStore.state[pageId];
+
+  if (!entries?.some((tab) => tab.id === id)) return;
   floatingStore.setState((state) => ({
     ...state,
     [pageId]: (state[pageId] ?? []).map((tab) =>
       tab.id === id ? { ...tab, ...patch } : tab,
     ),
-  }))
-  persistFloatingState()
+  }));
+  persistFloatingState();
 }
 
 /**
@@ -203,9 +263,10 @@ export function updateFloatingTab(
 export function setFloatingWidgetConfig(
   pageId: string,
   panelId: string,
-  widgetConfig: Record<string, unknown>,
+  widgetConfig: Record<string, JsonValue>,
 ): boolean {
   const entries = floatingStore.state[pageId];
+
   if (!entries?.some((tab) => tab.panelId === panelId)) return false;
   floatingStore.setState((state) => ({
     ...state,
@@ -214,16 +275,19 @@ export function setFloatingWidgetConfig(
     ),
   }));
   persistFloatingState();
+
   return true;
 }
 
 /** Remove one floating window (close or dock). No-op when unknown. */
 export function removeFloatingTab(pageId: string, id: string): void {
   const entries = floatingStore.state[pageId];
+
   if (!entries?.some((tab) => tab.id === id)) return;
   const next = entries.filter((tab) => tab.id !== id);
   floatingStore.setState((state) => {
     const { [pageId]: _removed, ...rest } = state;
+
     return next.length > 0 ? { ...state, [pageId]: next } : rest;
   });
   persistFloatingState();
@@ -234,6 +298,7 @@ export function clearFloatingTabsForPage(pageId: string): void {
   if (!floatingStore.state[pageId]) return;
   floatingStore.setState((state) => {
     const { [pageId]: _cleared, ...rest } = state;
+
     return rest;
   });
   persistFloatingState();

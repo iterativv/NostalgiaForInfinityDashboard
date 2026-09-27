@@ -40,14 +40,18 @@ export const InstancesGroupLive = HttpApiBuilder.group(
       .handle("profit", ({ path }) =>
         runCapabilityForHttp("instances.profit", { id: path.id }),
       )
-      .handle("openPositions", ({ path }) =>
-        runCapabilityForHttp("instances.open-positions", { id: path.id }),
+      .handle("openPositions", ({ path, urlParams }) =>
+        runCapabilityForHttp("instances.open-positions", {
+          id: path.id,
+          search: urlParams.search,
+        }),
       )
       .handle("closedPositions", ({ path, urlParams }) =>
         runCapabilityForHttp("instances.closed-positions", {
           id: path.id,
           limit: urlParams.limit,
           offset: urlParams.offset,
+          search: urlParams.search,
         }),
       )
       .handle("tagPerformance", ({ path, urlParams }) =>
@@ -84,9 +88,10 @@ export const InstancesGroupLive = HttpApiBuilder.group(
       .handle("profitRelative", ({ path }) =>
         runCapabilityForHttp("instances.profit.relative", { id: path.id }),
       )
-      .handle("openPositionsRelative", ({ path }) =>
+      .handle("openPositionsRelative", ({ path, urlParams }) =>
         runCapabilityForHttp("instances.open-positions.relative", {
           id: path.id,
+          search: urlParams.search,
         }),
       )
       .handle("closedPositionsRelative", ({ path, urlParams }) =>
@@ -94,6 +99,7 @@ export const InstancesGroupLive = HttpApiBuilder.group(
           id: path.id,
           limit: urlParams.limit,
           offset: urlParams.offset,
+          search: urlParams.search,
         }),
       )
       .handle("tagPerformanceRelative", ({ path, urlParams }) =>
@@ -109,11 +115,17 @@ export const InstancesGroupLive = HttpApiBuilder.group(
       .handle("locks", ({ path }) =>
         runCapabilityForHttp("instances.locks", { id: path.id }),
       )
-      .handle("blacklist", ({ path }) =>
-        runCapabilityForHttp("instances.blacklist", { id: path.id }),
+      .handle("blacklist", ({ path, urlParams }) =>
+        runCapabilityForHttp("instances.blacklist", {
+          id: path.id,
+          search: urlParams.search,
+        }),
       )
-      .handle("whitelist", ({ path }) =>
-        runCapabilityForHttp("instances.whitelist", { id: path.id }),
+      .handle("whitelist", ({ path, urlParams }) =>
+        runCapabilityForHttp("instances.whitelist", {
+          id: path.id,
+          search: urlParams.search,
+        }),
       )
       .handle("tradeCount", ({ path }) =>
         runCapabilityForHttp("instances.trade-count", { id: path.id }),
@@ -132,11 +144,16 @@ export const InstancesGroupLive = HttpApiBuilder.group(
         }),
       )
       .handle("overview", () => runCapabilityForHttp("instances.overview", {}))
-      .handle("positionsAll", () =>
-        runCapabilityForHttp("instances.positions-all", {}),
+      .handle("positionsAll", ({ urlParams }) =>
+        runCapabilityForHttp("instances.positions-all", {
+          search: urlParams.search,
+        }),
       )
       .handle("closedAll", ({ urlParams }) =>
-        runCapabilityForHttp("instances.closed-all", { limit: urlParams.limit }),
+        runCapabilityForHttp("instances.closed-all", {
+          limit: urlParams.limit,
+          search: urlParams.search,
+        }),
       )
       .handle("profitDailyAll", ({ urlParams }) =>
         runCapabilityForHttp("instances.profit-daily-all", {
@@ -147,11 +164,39 @@ export const InstancesGroupLive = HttpApiBuilder.group(
       .handle("balanceHistoryAll", ({ urlParams }) =>
         runCapabilityForHttp("instances.balance-history", {
           limit: urlParams.limit,
+          bucket: urlParams.bucket,
         }),
       )
       .handle("balanceHistoryAllRelative", ({ urlParams }) =>
         runCapabilityForHttp("instances.balance-history.relative", {
           limit: urlParams.limit,
+        }),
+      )
+      .handle("profitHistoryAllRelative", ({ urlParams }) =>
+        runCapabilityForHttp("instances.profit-history-all.relative", {
+          limit: urlParams.limit,
+        }),
+      )
+      .handle("profitHistoryAll", ({ urlParams }) =>
+        runCapabilityForHttp("instances.profit-history-all", {
+          limit: urlParams.limit,
+        }),
+      )
+      .handle("tagPerformanceAll", ({ urlParams }) =>
+        runCapabilityForHttp("instances.tag-performance-all", {
+          limit: urlParams.limit,
+          groupBy: urlParams.groupBy,
+        }),
+      )
+      .handle("locksAll", () => runCapabilityForHttp("instances.locks-all", {}))
+      .handle("blacklistAll", ({ urlParams }) =>
+        runCapabilityForHttp("instances.blacklist-all", {
+          search: urlParams.search,
+        }),
+      )
+      .handle("whitelistAll", ({ urlParams }) =>
+        runCapabilityForHttp("instances.whitelist-all", {
+          search: urlParams.search,
         }),
       ),
 );

@@ -19,6 +19,7 @@ import {
   toRelativeBalance,
   toRelativeBalanceHistory,
   toRelativeClosedPositions,
+  toRelativeFleetProfitHistory,
   toRelativeOpenPositions,
   toRelativeProfit,
   toRelativeProfitHistory,
@@ -200,5 +201,22 @@ describe("relative transforms (no absolute leak for any options)", () => {
     const relative = toRelativeTagPerformance(tagPerformance)
     expect(relative.rows[0]).toEqual({ tag: "ema", trades: 10, wins: 6, losses: 4, winrate: 0.6, profitPctAvg: 1.5 })
     expect(collectKeys(relative).filter((k) => RELATIVE_BANNED_KEYS.includes(k))).toEqual([])
+  })
+
+  it("rebases every fleet instance on its own baseline", () => {
+    const fleet = toRelativeFleetProfitHistory({
+      instances: [
+        { instanceId: "default", instanceName: "default", points: profitHistory.points },
+        { instanceId: "bot-2", instanceName: "bot-2", points: [{ ...profitHistory.points[0]!, profitClosedCoin: 1000, profitAllCoin: 1200 }] },
+        { instanceId: "bot-down", instanceName: "bot-down", points: [], error: "unreachable" },
+      ],
+    })
+
+    expect(fleet.instances).toHaveLength(3)
+    // Each instance starts at exactly 100 regardless of its absolute scale.
+    expect(fleet.instances[0]?.points[0]).toMatchObject({ profitClosedIndex: 100, profitAllIndex: 100 })
+    expect(fleet.instances[1]?.points[0]).toMatchObject({ profitClosedIndex: 100, profitAllIndex: 100 })
+    expect(fleet.instances[2]?.error).toBe("unreachable")
+    expect(collectKeys(fleet).filter((k) => RELATIVE_BANNED_KEYS.includes(k))).toEqual([])
   })
 })

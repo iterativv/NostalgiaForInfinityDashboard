@@ -8,11 +8,12 @@
  * access required (public widget).
  */
 
-import { useEffect, useState } from "react";
 import { Tag } from "@carbon/react";
+import { useStore } from "@tanstack/react-store";
 import { defineWidget } from "@nfi/widget-sdk";
 import { EmptyConfigSchema } from "./shared/config";
-import { Stat, WidgetFrame } from "@nfi/ui";
+import { formatTimePrecise } from "./shared/timeFormat";
+import { Stat, useLocalStore, useStoreEffect, WidgetFrame } from "@nfi/ui";
 
 interface Session {
   readonly name: string;
@@ -29,7 +30,9 @@ const SESSIONS: ReadonlyArray<Session> = [
 
 function sessionOpen(hour: number, window: readonly [number, number]): boolean {
   const [open, close] = window;
+
   if (open <= close) return hour >= open && hour < close;
+
   return hour >= open || hour < close;
 }
 
@@ -40,30 +43,34 @@ const hoursToOpen = (
 ): number => {
   const [open] = window;
   const diff = open - hour;
+
   return diff <= 0 ? diff + 24 : diff;
 };
 
 const fmtCountdown = (hours: number): string => {
   const h = Math.floor(hours);
   const m = Math.round((hours - h) * 60);
+
   return m === 60 ? `in ${h + 1}h` : `in ${h}h ${String(m).padStart(2, "0")}m`;
 };
 
 export function SessionClockWidget() {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 1000);
+  const nowStore = useLocalStore(() => new Date());
+  const now = useStore(nowStore, (s) => s);
+  // Local 1s clock tick only — no backend fetch, no polling: this widget
+  // needs no capabilities and never touches the SSE stream.
+  useStoreEffect(() => {
+    const timer = setInterval(() => nowStore.setState(() => new Date()), 1000);
+
     return () => clearInterval(timer);
   }, []);
   const utcHour = now.getUTCHours() + now.getUTCMinutes() / 60;
   const time = now.toISOString().slice(11, 19);
   const weekday = now.toLocaleDateString(undefined, { weekday: "short" });
-  const localTime = now.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+
+  // Local clock follows the globally configured time format; UTC stays ISO —
+  // it is the terminal's reference time base, not a local preference.
+  const localTime = formatTimePrecise(now);
 
   return (
     <WidgetFrame title="Session Clock">
@@ -91,9 +98,11 @@ export function SessionClockWidget() {
         <div style={{ display: "flex", gap: "0.375rem", flexWrap: "wrap" }}>
           {SESSIONS.map((session) => {
             const open = sessionOpen(utcHour, session.window);
+
             const countdown = fmtCountdown(
               hoursToOpen(utcHour, session.window),
             );
+
             return (
               <Tag
                 key={session.short}
@@ -124,6 +133,8 @@ export const SessionClockWidgetDef = defineWidget({
   defaultConfig: {},
   component: SessionClockWidget,
   capabilities: [],
-  minWidth: 220,
-  minHeight: 100,
+  minWidth: 370,
+  minHeight: 162,
+  defaultWidth: 360,
+  defaultHeight: 220,
 });

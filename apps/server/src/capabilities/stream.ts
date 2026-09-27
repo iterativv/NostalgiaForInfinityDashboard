@@ -7,11 +7,12 @@ import {
   HttpServerResponse,
 } from "@effect/platform";
 import { toServerResponse } from "@effect/platform-node/NodeHttpServerRequest";
-import { Duration, Effect, Stream } from "effect";
+import { Duration, Either, Effect, Stream } from "effect";
 import {
   CAPABILITY_REGISTRY,
   parseStreamRequests,
-  principalCanUse,
+  principalCanUseId,
+  type JsonValue,
 } from "@nfi/capabilities";
 import { liveHub } from "./hub.js";
 import { resolvePrincipalForRequest } from "../auth/session.js";
@@ -46,7 +47,7 @@ const encoder = new TextEncoder();
 const snapshotEvent = (
   capability: string,
   key: string,
-  result: unknown,
+  result: JsonValue,
   updatedAt: string,
 ): Uint8Array =>
   encoder.encode(
@@ -54,6 +55,7 @@ const snapshotEvent = (
   );
 
 const HEARTBEAT = encoder.encode(": ping\n\n");
+
 const HEARTBEAT_MS = 25_000;
 
 /** Responses already wrapped by `hardenSseResponse` (idempotence). */
@@ -84,6 +86,7 @@ const hardenSseResponse = (
   request: HttpServerRequest.HttpServerRequest,
 ): void => {
   const raw = toServerResponse(request);
+
   if (hardenedResponses.has(raw)) return;
 
   // "Writes into this response can only throw": the socket died (client
@@ -125,9 +128,18 @@ export const streamRouteHandler = (
     // streamed or refreshed for this caller. The principal comes from the
     // session bridge (see auth/session.ts) — same identity plane as REST.
     const principal = yield* resolvePrincipalForRequest(request);
+
+    // Same public reads as the REST choke point (`runCapabilityForHttp`):
+    // `auth.capabilities` (bootstrap) and `system.page-defaults` (landing
+    // resolution carries only opaque UI ids). Non-streamable ids still fail
+    // below at the streamable check.
+    const isPublicRead = (id: string): boolean =>
+      id === "auth.capabilities" || id === "system.page-defaults";
+
     const missing = url.searchParams
       .getAll("capability")
-      .filter((id) => !principalCanUse(principal, id as never));
+      .filter((id) => !isPublicRead(id) && !principalCanUseId(principal, id));
+
     if (missing.length > 0) {
       return HttpServerResponse.text(
         `stream subscribe forbidden: missing capability ${missing.join(", ")}`,
@@ -141,14 +153,18 @@ export const streamRouteHandler = (
         url.searchParams.getAll("options"),
       ),
     );
-    if (outcome._tag === "Left") {
+
+    if (Either.isLeft(outcome)) {
       const cause = outcome.left;
+
       return HttpServerResponse.text(
         `stream subscribe failed: ${cause.error}${cause.detail ? `: ${cause.detail}` : ""}`,
         { status: 400 },
       );
     }
+
     const subscriptions = outcome.right;
+
     for (const { name } of subscriptions) {
       if (!CAPABILITY_REGISTRY[name].streamable) {
         return HttpServerResponse.text(
@@ -157,19 +173,21 @@ export const streamRouteHandler = (
         );
       }
     }
+
     const tracked = subscriptions.map(({ name, options }) => ({
       name,
       key: liveHub.track(name, options),
-    }))
+    }));
+
     // Pin every subscribed key for this connection's lifetime; the last
     // release untracks it so the poller stops refreshing (and caching)
     // options combinations nobody watches anymore.
-    for (const { key } of tracked) liveHub.retain(key)
+    for (const { key } of tracked) liveHub.retain(key);
 
     // Before the stream starts: make late writes into a gone client (and the
     // platform's post-failure error response) no-ops instead of throws —
     // see `hardenSseResponse`. Must run before any byte is flushed.
-    hardenSseResponse(request)
+    hardenSseResponse(request);
 
     const body = Stream.asyncScoped<Uint8Array>((emit) => {
       // `emit.single` returns a promise that rejects when the stream's queue
@@ -177,11 +195,11 @@ export const streamRouteHandler = (
       // backpressure). A dropped frame on a dead connection is fine; an
       // unhandled rejection kills the process (Node) or spams the log (Bun).
       const safeEmit = (frame: Uint8Array): void => {
-        void Promise.resolve(emit.single(frame)).catch(() => {})
-      }
+        void Promise.resolve(emit.single(frame)).catch(() => {});
+      };
 
       return Effect.gen(function* () {
-        const unsubscribes: Array<() => void> = []
+        const unsubscribes: Array<() => void> = [];
         yield* Effect.acquireRelease(
           Effect.sync(() => {
             for (const { name, key } of tracked) {
@@ -202,16 +220,20 @@ export const streamRouteHandler = (
           () =>
             Effect.sync(() => {
               for (const unsubscribe of unsubscribes) unsubscribe();
+
               for (const { key } of tracked) liveHub.release(key);
             }),
         );
+
         for (const { name, key } of tracked) {
           const cached = liveHub.get(key);
+
           if (cached)
             safeEmit(
               snapshotEvent(name, key, cached.result, cached.updatedAt),
             );
         }
+
         yield* Effect.forever(
           Effect.andThen(
             Effect.sync(() => safeEmit(HEARTBEAT)),
@@ -220,6 +242,7 @@ export const streamRouteHandler = (
         ).pipe(Effect.forkScoped);
       });
     });
+
     return HttpServerResponse.stream(body, {
       status: 200,
       contentType: "text/event-stream",

@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { useEffect, useState } from "react"
-import { Store } from "@tanstack/store"
-import { useStore } from "@tanstack/react-store"
-import { Modal, TextInput } from "@carbon/react"
+import { Store } from "@tanstack/store";
+import { useStore } from "@tanstack/react-store";
+import { Modal, TextInput } from "@carbon/react";
+import { useLocalStore } from "@nfi/ui";
 
 /**
  * Promise-based dialog bus — the single replacement for `window.confirm`,
@@ -17,46 +17,46 @@ import { Modal, TextInput } from "@carbon/react"
  */
 
 interface ConfirmOptions {
-  readonly title: string
-  readonly message: string
-  readonly confirmLabel: string
-  readonly danger?: boolean
+  readonly title: string;
+  readonly message: string;
+  readonly confirmLabel: string;
+  readonly danger?: boolean;
 }
 
 interface PromptOptions {
-  readonly title: string
-  readonly label: string
-  readonly initialValue?: string
-  readonly placeholder?: string
-  readonly confirmLabel: string
+  readonly title: string;
+  readonly label: string;
+  readonly initialValue?: string;
+  readonly placeholder?: string;
+  readonly confirmLabel: string;
 }
 
 type DialogRequest =
   | ({ readonly id: number; readonly kind: "confirm" } & ConfirmOptions & {
-        readonly resolve: (confirmed: boolean) => void
+        readonly resolve: (confirmed: boolean) => void;
       })
   | ({ readonly id: number; readonly kind: "prompt" } & PromptOptions & {
-        readonly resolve: (value: string | null) => void
-      })
+        readonly resolve: (value: string | null) => void;
+      });
 
 const dialogStore = new Store<{ readonly current: DialogRequest | null }>({
   current: null,
-})
+});
 
-let dialogSeq = 0
+let dialogSeq = 0;
 
 export function requestConfirm(options: ConfirmOptions): Promise<boolean> {
   return new Promise((resolve) => {
-    dialogSeq += 1
+    dialogSeq += 1;
     dialogStore.setState(() => ({
       current: { id: dialogSeq, kind: "confirm", ...options, resolve },
-    }))
-  })
+    }));
+  });
 }
 
 export function requestPrompt(options: PromptOptions): Promise<string | null> {
   return new Promise((resolve) => {
-    dialogSeq += 1
+    dialogSeq += 1;
     dialogStore.setState(() => ({
       current: {
         id: dialogSeq,
@@ -65,24 +65,30 @@ export function requestPrompt(options: PromptOptions): Promise<string | null> {
         ...options,
         resolve,
       },
-    }))
-  })
+    }));
+  });
 }
 
 function dismiss(): void {
-  dialogStore.setState(() => ({ current: null }))
+  dialogStore.setState(() => ({ current: null }));
 }
 
 export function DialogHost() {
-  const current = useStore(dialogStore, (s) => s.current)
-  const [value, setValue] = useState("")
+  const current = useStore(dialogStore, (s) => s.current);
+  // Prompt input draft, re-seeded per request id (identity-compare store:
+  // the write only fires when a new dialog actually opened).
+  const draftStore = useLocalStore({ id: 0, value: "" });
 
-  // Reset the prompt input for every new request.
-  useEffect(() => {
-    if (current?.kind === "prompt") setValue(current.initialValue ?? "")
-  }, [current])
+  if (current !== null && draftStore.state.id !== current.id) {
+    draftStore.setState(() => ({
+      id: current.id,
+      value: current.kind === "prompt" ? (current.initialValue ?? "") : "",
+    }));
+  }
 
-  if (!current) return null
+  const value = useStore(draftStore, (s) => s.value);
+
+  if (!current) return null;
 
   if (current.kind === "confirm") {
     return (
@@ -94,24 +100,26 @@ export function DialogHost() {
         secondaryButtonText="Cancel"
         danger={current.danger ?? false}
         onRequestSubmit={() => {
-          current.resolve(true)
-          dismiss()
+          current.resolve(true);
+          dismiss();
         }}
         onRequestClose={() => {
-          current.resolve(false)
-          dismiss()
+          current.resolve(false);
+          dismiss();
         }}
       >
         <p style={{ fontSize: "0.875rem" }}>{current.message}</p>
       </Modal>
-    )
+    );
   }
 
-  const trimmed = value.trim()
+  const trimmed = value.trim();
+
   const submit = () => {
-    current.resolve(trimmed.length > 0 ? value : null)
-    dismiss()
-  }
+    current.resolve(trimmed.length > 0 ? value : null);
+    dismiss();
+  };
+
   return (
     <Modal
       open
@@ -122,8 +130,8 @@ export function DialogHost() {
       primaryButtonDisabled={trimmed.length === 0}
       onRequestSubmit={submit}
       onRequestClose={() => {
-        current.resolve(null)
-        dismiss()
+        current.resolve(null);
+        dismiss();
       }}
     >
       <TextInput
@@ -131,15 +139,17 @@ export function DialogHost() {
         labelText={current.label}
         placeholder={current.placeholder}
         value={value}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={(event) =>
+          draftStore.setState((p) => ({ ...p, value: event.target.value }))
+        }
         onKeyDown={(event) => {
           if (event.key === "Enter" && trimmed.length > 0) {
-            event.preventDefault()
-            submit()
+            event.preventDefault();
+            submit();
           }
         }}
         autoFocus
       />
     </Modal>
-  )
+  );
 }

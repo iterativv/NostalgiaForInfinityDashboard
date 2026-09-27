@@ -49,6 +49,7 @@ export async function hydrateSensitivity(): Promise<void> {
     status: "loading",
     detail: null,
   }));
+
   try {
     const response = await runApi((client) => client.System.sensitivity());
     sensitivityStore.setState(() => ({
@@ -58,7 +59,7 @@ export async function hydrateSensitivity(): Promise<void> {
     }));
   } catch (error) {
     // Offline fallback: the default criteria, so marks still render.
-    sensitivityStore.setState((state) => ({
+    sensitivityStore.setState(() => ({
       sensitiveKinds: [...DEFAULT_SENSITIVE_INFO_KINDS],
       status: "offline",
       detail: formatQueryError(error) ?? "sensitivity criteria unavailable",
@@ -75,11 +76,13 @@ export async function saveSensitivity(
       payload: { sensitiveKinds: [...sensitiveKinds] },
     }),
   );
+
   sensitivityStore.setState(() => ({
     sensitiveKinds: [...response.sensitiveKinds],
     status: "ready",
     detail: null,
   }));
+
   return response;
 }
 
@@ -142,6 +145,8 @@ export const INFO_KIND_META: Record<InfoKind, { label: string; hint: string }> =
   };
 
 /** Every kind in a stable order (editor lists all, checked = sensitive). */
+// SAFETY: INFO_KIND_META is keyed by the InfoKind literals (its annotated
+// key type), so Object.keys yields exactly that union.
 export const ALL_INFO_KINDS: ReadonlyArray<InfoKind> = Object.keys(
   INFO_KIND_META,
 ) as ReadonlyArray<InfoKind>;

@@ -17,7 +17,7 @@
  * the poller wiring change.
  */
 
-export const POLL_TICK_MS = 5_000
+export const POLL_TICK_MS = 5_000;
 
 /** Sqlite snapshot writes are throttled to this (history depth, not liveness). */
-export const SNAPSHOT_THROTTLE_MS = 60_000
+export const SNAPSHOT_THROTTLE_MS = 60_000;

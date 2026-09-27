@@ -28,6 +28,7 @@ export const BalanceConfigSchema = Schema.Struct({
   /** An instance id, or `all` for the fleet wallet (per-instance donut). */
   instanceId: InstanceIdField,
 });
+
 export type BalanceConfig = typeof BalanceConfigSchema.Type;
 
 export const BALANCE_DEFAULTS: BalanceConfig = Schema.decodeUnknownSync(
@@ -37,16 +38,19 @@ export const BALANCE_DEFAULTS: BalanceConfig = Schema.decodeUnknownSync(
 export function BalanceWidget({ config, panelId }: WidgetProps<BalanceConfig>) {
   const cfg = config;
   const fleet = cfg.instanceId === ALL_INSTANCES;
+
   const perInstanceView = useCapability(
     "instances.balance",
     { id: fleet ? "default" : cfg.instanceId },
     { enabled: !fleet },
   );
+
   const fleetView = useCapability("instances.overview", {}, { enabled: fleet });
   const error = fleet ? fleetView.error : perInstanceView.error;
   const isLoading = fleet ? fleetView.isLoading : perInstanceView.isLoading;
   const state = queryState(error, isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<BalanceConfig>) =>
     applyWidgetSettings(panelId, "balance", cfg, p);
 
@@ -54,6 +58,7 @@ export function BalanceWidget({ config, panelId }: WidgetProps<BalanceConfig>) {
   const fleetAllocation = (fleetView.data?.instances ?? [])
     .filter((row) => (row.totalStake ?? 0) > 0)
     .map((row) => ({ group: row.name, value: row.totalStake ?? 0 }));
+
   const fleetStake = fleetView.data?.totals.stakeCurrency;
 
   const allocation = fleet
@@ -64,20 +69,25 @@ export function BalanceWidget({ config, panelId }: WidgetProps<BalanceConfig>) {
           group: currency.currency,
           value: currency.total,
         }));
+
   const total = fleet
     ? (fleetView.data?.totals.totalStake ?? 0)
     : (perInstanceView.data?.totalStake ?? 0);
+
   const stakeLabel = fleet
     ? (fleetStake ?? "—")
     : (perInstanceView.data?.stakeCurrency ?? "—");
+
   // Compact cells (short rows in dense grid presets) get the ranked list —
   // a donut needs ~250px to read, below that it would clip or scroll.
   const compact = useCompactMode(250);
+
   const donutOptions: DonutChartOptions = {
     title: "Allocation",
     donut: { center: { label: `${total.toFixed(0)} ${stakeLabel}` } },
     theme: "g100",
   };
+
   return (
     <>
       <WidgetSettingsModal
@@ -94,110 +104,110 @@ export function BalanceWidget({ config, panelId }: WidgetProps<BalanceConfig>) {
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Balance"
-      isLoading={state.isLoading}
-      error={state.error}
-    >
-      {(
-        fleet
-          ? fleetView.data !== undefined
-          : perInstanceView.data !== undefined
-      ) ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.75rem",
-            flex: "1 1 auto",
-            minHeight: 0,
-          }}
-        >
-          <Stat
-            label={`Total (${stakeLabel})`}
-            value={total.toFixed(2)}
-            sub={`${allocation.length} ${fleet ? "wallets" : "currencies"}`}
-          />
-          {allocation.length > 1 && !compact ? (
-            <ChartBox min={180}>
-              {(height) => (
-                <DonutChart
-                  data={allocation}
-                  options={{ ...donutOptions, height: `${height}px` }}
-                />
-              )}
-            </ChartBox>
-          ) : (
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "0.25rem",
-                flex: "1 1 auto",
-                minHeight: 0,
-                overflowY: "auto",
-              }}
-            >
-              {fleet
-                ? (fleetView.data?.instances ?? [])
-                    .filter((row) => (row.totalStake ?? 0) > 0)
-                    .slice(0, 8)
-                    .map((row) => (
-                      <div
-                        key={row.id}
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          gap: "0.5rem",
-                          fontSize: "0.875rem",
-                        }}
-                      >
-                        <span
+        title="Balance"
+        isLoading={state.isLoading}
+        error={state.error}
+      >
+        {(
+          fleet
+            ? fleetView.data !== undefined
+            : perInstanceView.data !== undefined
+        ) ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+              flex: "1 1 auto",
+              minHeight: 0,
+            }}
+          >
+            <Stat
+              label={`Total (${stakeLabel})`}
+              value={total.toFixed(2)}
+              sub={`${allocation.length} ${fleet ? "wallets" : "currencies"}`}
+            />
+            {allocation.length > 1 && !compact ? (
+              <ChartBox min={180}>
+                {(height) => (
+                  <DonutChart
+                    data={allocation}
+                    options={{ ...donutOptions, height: `${height}px` }}
+                  />
+                )}
+              </ChartBox>
+            ) : (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.25rem",
+                  flex: "1 1 auto",
+                  minHeight: 0,
+                  overflowY: "auto",
+                }}
+              >
+                {fleet
+                  ? (fleetView.data?.instances ?? [])
+                      .filter((row) => (row.totalStake ?? 0) > 0)
+                      .slice(0, 8)
+                      .map((row) => (
+                        <div
+                          key={row.id}
                           style={{
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: "0.5rem",
+                            fontSize: "0.875rem",
                           }}
                         >
-                          {row.name}
-                        </span>
-                        <span
-                          className="nfi-mono"
-                          style={{ fontVariantNumeric: "tabular-nums" }}
+                          <span
+                            style={{
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {row.name}
+                          </span>
+                          <span
+                            className="nfi-mono"
+                            style={{ fontVariantNumeric: "tabular-nums" }}
+                          >
+                            {(row.totalStake ?? 0).toFixed(2)}{" "}
+                            {row.stakeCurrency ?? ""}
+                          </span>
+                        </div>
+                      ))
+                  : (perInstanceView.data?.currencies ?? [])
+                      .filter((currency) => currency.total > 0)
+                      .slice(0, 8)
+                      .map((currency) => (
+                        <div
+                          key={currency.currency}
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            gap: "0.5rem",
+                            fontSize: "0.875rem",
+                          }}
                         >
-                          {(row.totalStake ?? 0).toFixed(2)}{" "}
-                          {row.stakeCurrency ?? ""}
-                        </span>
-                      </div>
-                    ))
-                : (perInstanceView.data?.currencies ?? [])
-                    .filter((currency) => currency.total > 0)
-                    .slice(0, 8)
-                    .map((currency) => (
-                      <div
-                        key={currency.currency}
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          gap: "0.5rem",
-                          fontSize: "0.875rem",
-                        }}
-                      >
-                        <span>{currency.currency}</span>
-                        <span
-                          className="nfi-mono"
-                          style={{ fontVariantNumeric: "tabular-nums" }}
-                        >
-                          {currency.total.toFixed(4)}
-                        </span>
-                      </div>
-                    ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <EmptyState title="No balance data" />
-      )}
-    </WidgetFrame>
+                          <span>{currency.currency}</span>
+                          <span
+                            className="nfi-mono"
+                            style={{ fontVariantNumeric: "tabular-nums" }}
+                          >
+                            {currency.total.toFixed(4)}
+                          </span>
+                        </div>
+                      ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <EmptyState title="No balance data" />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -212,6 +222,8 @@ export const BalanceWidgetDef = defineWidget({
   defaultConfig: BALANCE_DEFAULTS,
   component: BalanceWidget,
   capabilities: [...BALANCE_CAPABILITIES],
-  minWidth: 280,
-  minHeight: 100,
+  minWidth: 350,
+  minHeight: 150,
+  defaultWidth: 360,
+  defaultHeight: 220,
 });

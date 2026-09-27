@@ -23,8 +23,10 @@ import {
   booleanWithDefault,
   numberWithDefault,
 } from "./shared/config";
+import { dimColor, useInstanceColors } from "./shared/instanceColors";
 import { useCompactMode } from "./shared/size";
 import { clampInt, parseCloseDate, pnlTone } from "./shared/format";
+import { chartTimeFormats, useTimeFormat } from "./shared/timeFormat";
 import { queryState } from "./shared/query";
 import { InstanceSelect } from "./shared/InstanceSelect";
 import { useClosedPositionsSource } from "./shared/sources";
@@ -41,6 +43,7 @@ export const CumulativeProfitConfigSchema = Schema.Struct({
   showCumulative: booleanWithDefault(true),
   showPerTrade: booleanWithDefault(false),
 });
+
 export type CumulativeProfitConfig = typeof CumulativeProfitConfigSchema.Type;
 
 export const CUMULATIVE_PROFIT_DEFAULTS: CumulativeProfitConfig =
@@ -52,51 +55,101 @@ export function CumulativeProfitWidget({
 }: WidgetProps<CumulativeProfitConfig>) {
   const cfg = config;
   const limit = clampInt(cfg.limit, 200, 10, 500);
+  const fleet = cfg.instanceId === "all";
   const closedQ = useClosedPositionsSource(cfg.instanceId, limit);
+
   // `instances.profit` has no fleet aggregate — the header stat only applies per instance.
   const profit = useCapability(
     "instances.profit",
     { id: cfg.instanceId },
     { enabled: cfg.instanceId !== "all" },
   );
+
   const state = queryState(closedQ.error, closedQ.isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
+  const { colorOf } = useInstanceColors();
+
   const patch = (p: Partial<CumulativeProfitConfig>) =>
     applyWidgetSettings(panelId, "cumulative-profit", cfg, p);
 
   const stake = profit.data?.stakeCurrency ?? "";
-  const points = (closedQ.data ?? [])
-    .map((p) => ({
-      at: parseCloseDate(p.closeDate),
-      profit: p.closeProfitAbs ?? p.profitAbs ?? 0,
-    }))
-    .filter((p) => p.at !== null)
-    .sort((a, b) => (a.at as number) - (b.at as number));
-  let running = 0;
-  const cumulative: Array<{ group: string; date: string; value: number }> = [];
-  for (const point of points) {
-    running += point.profit;
-    cumulative.push({
-      group: "Cumulative",
-      date: new Date(point.at as number).toISOString(),
-      value: running,
-    });
+
+  // Fleet mode attributes every closed trade to its bot and draws one
+  // cumulative line PER instance (colored) — absolute profit is summable,
+  // but per-bot curves answer "which instance earned this". Single mode
+  // keeps the classic Cumulative/Per-trade pair.
+  const byInstance = new Map<string, Array<{ at: number; profit: number }>>();
+
+  for (const p of closedQ.data ?? []) {
+    const at = parseCloseDate(p.closeDate);
+
+    if (at === null) continue;
+    const key = fleet ? (p.instanceId ?? p.instanceName ?? "unknown") : "sole";
+    const list = byInstance.get(key) ?? [];
+    list.push({ at, profit: p.closeProfitAbs ?? p.profitAbs ?? 0 });
+    byInstance.set(key, list);
   }
-  const perTrade = points.map((p) => ({
-    group: "Per trade",
-    date: new Date(p.at as number).toISOString(),
-    value: p.profit,
-  }));
-  const series = [
-    ...(cfg.showCumulative ? cumulative : []),
-    ...(cfg.showPerTrade ? perTrade : []),
-  ];
-  const windowProfit =
-    cumulative.length > 0 ? (cumulative[cumulative.length - 1]?.value ?? 0) : 0;
+
+  const series: Array<{ group: string; date: string; value: number }> = [];
+  const colorScale: Record<string, string> = {};
+  let windowProfit = 0;
+  let tradeCount = 0;
+
+  for (const [key, points] of byInstance) {
+    points.sort((a, b) => a.at - b.at);
+    tradeCount += points.length;
+
+    const row = (closedQ.data ?? []).find(
+      (p) => (p.instanceId ?? p.instanceName ?? "unknown") === key,
+    );
+
+    const label = fleet
+      ? (row?.instanceName ?? row?.instanceId ?? key)
+      : "Cumulative";
+
+    const color = fleet ? colorOf(key) : null;
+    let running = 0;
+
+    if (color) colorScale[label] = color;
+
+    if (cfg.showCumulative) {
+      for (const point of points) {
+        running += point.profit;
+        series.push({
+          group: label,
+          date: new Date(point.at).toISOString(),
+          value: running,
+        });
+      }
+    } else {
+      running = points.reduce((sum, point) => sum + point.profit, 0);
+    }
+
+    windowProfit += running;
+
+    if (cfg.showPerTrade) {
+      const perLabel = fleet ? `${label} · trades` : "Per trade";
+
+      if (color) colorScale[perLabel] = dimColor(color);
+
+      for (const point of points) {
+        series.push({
+          group: perLabel,
+          date: new Date(point.at).toISOString(),
+          value: point.profit,
+        });
+      }
+    }
+  }
+
   // Compact cells draw the curve alone; the headline stat needs ~250px total.
   const compact = useCompactMode(250);
+  // Time axis ticks follow the globally configured time format.
+  const timeFormat = useTimeFormat();
+
   const lineOptions: LineChartOptions = {
     title: "Cumulative profit",
+    timeScale: { timeIntervalFormats: chartTimeFormats(timeFormat) },
     axes: {
       bottom: {
         mapsTo: "date",
@@ -105,6 +158,7 @@ export function CumulativeProfitWidget({
       },
       left: { mapsTo: "value", title: `Profit (${stake || "stake"})` },
     },
+    color: { scale: colorScale },
     theme: "g100",
   };
 
@@ -148,43 +202,43 @@ export function CumulativeProfitWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Cumulative Profit"
-      isLoading={state.isLoading}
-      error={state.error}
-    >
-      {series.length >= 2 ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.75rem",
-            flex: "1 1 auto",
-            minHeight: 0,
-          }}
-        >
-          {!compact ? (
-            <Stat
-              label={`Window profit (${points.length} trades)`}
-              value={`${windowProfit >= 0 ? "+" : ""}${windowProfit.toFixed(2)}${stake ? ` ${stake}` : ""}`}
-              tone={pnlTone(windowProfit)}
-            />
-          ) : null}
-          <ChartBox min={compact ? 150 : 200}>
-            {(height) => (
-              <LineChart
-                data={series}
-                options={{ ...lineOptions, height: `${height}px` }}
+        title="Cumulative Profit"
+        isLoading={state.isLoading}
+        error={state.error}
+      >
+        {series.length >= 2 ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+              flex: "1 1 auto",
+              minHeight: 0,
+            }}
+          >
+            {!compact ? (
+              <Stat
+                label={`Window profit (${tradeCount} trades)`}
+                value={`${windowProfit >= 0 ? "+" : ""}${windowProfit.toFixed(2)}${stake ? ` ${stake}` : ""}`}
+                tone={pnlTone(windowProfit)}
               />
-            )}
-          </ChartBox>
-        </div>
-      ) : (
-        <EmptyState
-          title="Not enough closed trades"
-          hint="Close at least two trades (or widen the window in ⚙ settings) to draw the curve."
-        />
-      )}
-    </WidgetFrame>
+            ) : null}
+            <ChartBox min={compact ? 150 : 200}>
+              {(height) => (
+                <LineChart
+                  data={series}
+                  options={{ ...lineOptions, height: `${height}px` }}
+                />
+              )}
+            </ChartBox>
+          </div>
+        ) : (
+          <EmptyState
+            title="Not enough closed trades"
+            hint="Close at least two trades (or widen the window in ⚙ settings) to draw the curve."
+          />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -202,6 +256,8 @@ export const CumulativeProfitWidgetDef = defineWidget({
     "instances.profit",
     "instances.closed-all",
   ],
-  minWidth: 320,
-  minHeight: 150,
+  minWidth: 450,
+  minHeight: 300,
+  defaultWidth: 360,
+  defaultHeight: 220,
 });

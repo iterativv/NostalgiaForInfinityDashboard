@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
+import type { ReactNode, Ref } from "react";
 import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-  type Ref,
-} from "react";
+  useElementStore,
+  useLocalStore,
+  useStore,
+  useStoreEffect,
+} from "@nfi/ui";
 
 /**
  * SlimScroll — custom overlay scrollbars for dense workspace surfaces.
@@ -79,95 +78,150 @@ export function SlimScroll({
   scrollerRef?: Ref<HTMLDivElement>;
   children: ReactNode;
 }) {
-  const innerRef = useRef<HTMLDivElement | null>(null);
-  const contentRef = useRef<HTMLDivElement | null>(null);
-  const [metrics, setMetrics] = useState<SlimMetrics>(IDLE_METRICS);
-  const [dragging, setDragging] = useState<"v" | "h" | null>(null);
+  const { store: scrollerEl, setElement: setInnerEl } =
+    useElementStore<HTMLDivElement>();
+
+  const { store: contentEl, setElement: setContentEl } =
+    useElementStore<HTMLDivElement>();
+
+  // Scrollbar metrics + active thumb drag in one component store. The
+  // equality guard below keeps per-frame scroll/resize events no-ops.
+  interface SlimScrollState {
+    metrics: SlimMetrics;
+    dragging: "v" | "h" | null;
+  }
+
+  const slimStore = useLocalStore<SlimScrollState>({
+    metrics: IDLE_METRICS,
+    dragging: null,
+  });
+
+  const slim = useStore(slimStore, (s) => s);
+  const metrics = slim.metrics;
 
   const setScroller = (el: HTMLDivElement | null) => {
-    innerRef.current = el;
-    if (typeof scrollerRef === "function") scrollerRef(el);
-    else if (scrollerRef && typeof scrollerRef === "object")
-      (scrollerRef as React.RefObject<HTMLDivElement | null>).current = el;
+    setInnerEl(el);
+
+    if (scrollerRef instanceof Function) scrollerRef(el);
+    else if (scrollerRef) scrollerRef.current = el;
   };
 
-  const update = useCallback(() => {
-    const el = innerRef.current;
+  const update = () => {
+    const el = scrollerEl.state;
+
     if (!el) return;
     const vertical = el.scrollHeight > el.clientHeight + 1;
     const horizontal = el.scrollWidth > el.clientWidth + 1;
-    setMetrics({
+
+    const next: SlimMetrics = {
       vertical,
       horizontal,
       vSize: vertical ? el.clientHeight / el.scrollHeight : 1,
       hSize: horizontal ? el.clientWidth / el.scrollWidth : 1,
       vPos: vertical ? el.scrollTop / el.scrollHeight : 0,
       hPos: horizontal ? el.scrollLeft / el.scrollWidth : 0,
-    });
-  }, []);
+    };
 
-  useEffect(() => {
-    const el = innerRef.current;
+    // Equality guard: scroll/resize fire per frame — a fresh object
+    // identity would re-render the scroller subtree every time (returning
+    // the same state object is an identity no-op on the store).
+    slimStore.setState((prev) =>
+      prev.metrics.vertical === next.vertical &&
+      prev.metrics.horizontal === next.horizontal &&
+      Math.abs(prev.metrics.vSize - next.vSize) < 1e-4 &&
+      Math.abs(prev.metrics.hSize - next.hSize) < 1e-4 &&
+      Math.abs(prev.metrics.vPos - next.vPos) < 1e-4 &&
+      Math.abs(prev.metrics.hPos - next.hPos) < 1e-4
+        ? prev
+        : { ...prev, metrics: next },
+    );
+  };
+
+  // Deps []: `update` is a plain per-render function reading per-instance
+  // element stores, so wiring the observer once on mount is the whole
+  // dependency story.
+  useStoreEffect(() => {
+    const el = scrollerEl.state;
+
     if (!el || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(update);
     observer.observe(el);
-    if (contentRef.current) observer.observe(contentRef.current);
+
+    if (contentEl.state) observer.observe(contentEl.state);
     update();
+
     return () => observer.disconnect();
-  }, [update]);
+  }, []);
 
   /** Drag a thumb: pointer position maps 1:1 onto scroll offset (scaled). */
-  const beginThumbDrag = (kind: "v" | "h") =>
-    (event: React.PointerEvent<HTMLDivElement>) => {
+  const beginThumbDrag =
+    (kind: "v" | "h") => (event: React.PointerEvent<HTMLDivElement>) => {
       event.preventDefault();
       event.stopPropagation();
-      const el = innerRef.current;
+      const el = scrollerEl.state;
       const track = event.currentTarget.parentElement;
+
       if (!el || !track) return;
       const handle = event.currentTarget;
       handle.setPointerCapture(event.pointerId);
-      setDragging(kind);
+      slimStore.setState((prev) => ({ ...prev, dragging: kind }));
       const vertical = kind === "v";
+
       const trackPx = vertical
         ? track.getBoundingClientRect().height
         : track.getBoundingClientRect().width;
+
       const startPointer = vertical ? event.clientY : event.clientX;
       const startScroll = vertical ? el.scrollTop : el.scrollLeft;
       const scrollPx = vertical ? el.scrollHeight : el.scrollWidth;
       const contentPerTrack = trackPx > 0 ? scrollPx / trackPx : 0;
+
       const move = (moveEvent: PointerEvent) => {
         const delta =
           (vertical ? moveEvent.clientY : moveEvent.clientX) - startPointer;
+
         const next = startScroll + delta * contentPerTrack;
+
         if (vertical) el.scrollTop = next;
         else el.scrollLeft = next;
       };
+
       const up = () => {
+        // SAFETY: `move` handles PointerEvent; the Element/Window listener
+        // signature union collapses handlers to EventListener.
         handle.removeEventListener("pointermove", move as EventListener);
-        setDragging(null);
+        slimStore.setState((prev) => ({ ...prev, dragging: null }));
       };
+
+      // SAFETY: `move` handles PointerEvent; the Element/Window listener
+      // signature union collapses handlers to EventListener.
       handle.addEventListener("pointermove", move as EventListener);
       handle.addEventListener("pointerup", up, { once: true });
       handle.addEventListener("pointercancel", up, { once: true });
     };
 
   /** Track click: jump so the thumb centers under the pointer. */
-  const jumpTrack = (kind: "v" | "h") =>
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      const el = innerRef.current;
+  const jumpTrack =
+    (kind: "v" | "h") => (event: React.PointerEvent<HTMLDivElement>) => {
+      const el = scrollerEl.state;
+
       if (!el) return;
       const vertical = kind === "v";
       const track = event.currentTarget;
       const rect = track.getBoundingClientRect();
       const trackPx = vertical ? rect.height : rect.width;
+
       if (trackPx <= 0) return;
+
       const fraction =
         ((vertical ? event.clientY : event.clientX) -
           (vertical ? rect.top : rect.left)) /
         trackPx;
+
       const size = vertical ? metrics.vSize : metrics.hSize;
       const pos = Math.min(1 - size, Math.max(0, fraction - size / 2));
       const scrollPx = vertical ? el.scrollHeight : el.scrollWidth;
+
       if (vertical) el.scrollTop = pos * scrollPx;
       else el.scrollLeft = pos * scrollPx;
     };
@@ -175,7 +229,7 @@ export function SlimScroll({
   return (
     <div
       className={className ? `nfi-slim ${className}` : "nfi-slim"}
-      data-dragging={dragging ?? undefined}
+      data-dragging={slim.dragging ?? undefined}
     >
       <div
         ref={setScroller}
@@ -188,7 +242,7 @@ export function SlimScroll({
         onScroll={update}
       >
         <div
-          ref={contentRef}
+          ref={setContentEl}
           className={contentClassName ?? "nfi-slim-content"}
         >
           {children}

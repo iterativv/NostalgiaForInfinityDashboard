@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Schema } from "effect"
-import { Effect } from "effect"
-import { BackendError, CandlesResponse } from "@nfi/api-contract"
-import { defineCapability, parseLimitParam } from "./definition.js"
-import { asBackendError } from "./errors.js"
+import { Schema } from "effect";
+import { Effect } from "effect";
+import { BackendError, CandlesResponse } from "@nfi/api-contract";
+import { defineCapability, parseLimitParam } from "./definition.js";
+import { asBackendError } from "./errors.js";
 
 /** `instances.candles` — normalized OHLCV candles (public market data). */
 export const InstancesCandlesCapability = defineCapability({
@@ -23,11 +23,25 @@ export const InstancesCandlesCapability = defineCapability({
   exposes: ["market-data"],
   run: (options, ctx) =>
     Effect.gen(function* () {
-      const pair = options.pair.trim()
+      const pair = options.pair.trim();
+
       if (pair.length === 0) {
-        return yield* Effect.fail(BackendError.make({ error: "pair is required", detail: "pass a non-empty pair" }))
+        return yield* Effect.fail(
+          BackendError.make({
+            error: "pair is required",
+            detail: "pass a non-empty pair",
+          }),
+        );
       }
-      const service = yield* ctx.resolveInstance(options.id)
-      return yield* service.getCandles(pair, options.timeframe?.trim() || "15m", parseLimitParam(options.limit, 200, 1000))
-    }).pipe(Effect.mapError((cause) => asBackendError("instance candles", cause))),
-})
+
+      const service = yield* ctx.resolveInstance(options.id);
+
+      return yield* service.getCandles(
+        pair,
+        options.timeframe?.trim() || "15m",
+        parseLimitParam(options.limit, 200, 1000),
+      );
+    }).pipe(
+      Effect.mapError((cause) => asBackendError("instance candles", cause)),
+    ),
+});

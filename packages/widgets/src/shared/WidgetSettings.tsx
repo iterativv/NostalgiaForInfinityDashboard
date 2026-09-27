@@ -44,6 +44,7 @@ export function WidgetSettingsModal({
   children: ReactNode;
 }) {
   if (!open) return null;
+
   return (
     <Modal
       open
@@ -70,11 +71,14 @@ function SettingsScopeControl({
   title: string;
 }) {
   const scope = useWidgetSettingsScope();
+
   const hasGlobals = useStore(
     widgetGlobalsStore,
     (state) => Object.keys(state[widgetType] ?? {}).length > 0,
   );
+
   const widgetName = title.replace(/\s+settings$/i, "");
+
   return (
     <div className="nfi-settings-scope">
       <SettingsSelect
@@ -85,7 +89,11 @@ function SettingsScopeControl({
           { id: "global", text: "All widgets" },
         ]}
         value={scope}
-        onChange={(id) => setWidgetSettingsScope(id as WidgetSettingsScope)}
+        onChange={(id) =>
+          // SAFETY: the only ids rendered above are "tab" and "global" —
+          // exactly the WidgetSettingsScope union.
+          setWidgetSettingsScope(id as WidgetSettingsScope)
+        }
       />
       {scope === "global" ? (
         <div className="nfi-settings-scope-note">

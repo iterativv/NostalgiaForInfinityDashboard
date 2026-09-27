@@ -18,7 +18,9 @@ import { migrate, SettingsRepo, SettingsRepoLive } from "./index.js";
 const DB_PATH = join(tmpdir(), `nfi-desk-settings-test-${process.pid}.db`);
 
 const SqlLive = SqliteClient.layer({ filename: DB_PATH });
+
 const RepoLive = SettingsRepoLive.pipe(Layer.provide(SqlLive));
+
 const TestLive = Layer.mergeAll(RepoLive, SqlLive);
 
 const runTest = <A, E>(
@@ -40,6 +42,7 @@ describe("SettingsRepo", () => {
         repo.getSetting("sensitive-info-kinds"),
       ),
     );
+
     expect(value).toBeNull();
   });
 
@@ -50,6 +53,7 @@ describe("SettingsRepo", () => {
           repo.saveSetting("sensitive-info-kinds", value),
         ),
       );
+
     await save(JSON.stringify(["absolute-balance"]));
     await runTest(
       Effect.flatMap(SettingsRepo, (repo) =>

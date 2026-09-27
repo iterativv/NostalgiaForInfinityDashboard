@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 import { describe, expect, it } from "vitest";
+import { ForbiddenError, UnauthorizedError } from "@nfi/api-contract";
 import { formatQueryError } from "./api";
 
 describe("formatQueryError", () => {
   it("reads decoded contract errors", () => {
     expect(
-      formatQueryError({
-        _tag: "UnauthorizedError",
-        error: "invalid username or password",
-      }),
+      formatQueryError(
+        UnauthorizedError.make({ error: "invalid username or password" }),
+      ),
     ).toBe("Invalid username or password");
   });
 
@@ -18,6 +18,7 @@ describe("formatQueryError", () => {
     const failure = new Error(
       '{"_tag":"UnauthorizedError","error":"invalid username or password"}',
     );
+
     expect(formatQueryError(failure)).toBe("Invalid username or password");
     expect(
       formatQueryError(
@@ -28,11 +29,12 @@ describe("formatQueryError", () => {
 
   it("keeps detail suffixes from backend errors", () => {
     expect(
-      formatQueryError({
-        _tag: "ForbiddenError",
-        error: "not authorized for workspace.list",
-        detail: "sign in, or ask an admin",
-      }),
+      formatQueryError(
+        ForbiddenError.make({
+          error: "not authorized for workspace.list",
+          detail: "sign in, or ask an admin",
+        }),
+      ),
     ).toBe("Not authorized for workspace.list: sign in, or ask an admin");
   });
 

@@ -36,7 +36,10 @@ describe("widget globals store", () => {
       nested: { deep: { nope: true } },
       arr: [1, 2],
     });
-    expect(clean).toEqual({ balance: { instanceId: "bot-2", limit: 30, flag: true } });
+
+    expect(clean).toEqual({
+      balance: { instanceId: "bot-2", limit: 30, flag: true },
+    });
     expect(sanitizeWidgetGlobals(null)).toEqual({});
     expect(sanitizeWidgetGlobals(42)).toEqual({});
   });
@@ -75,12 +78,14 @@ describe("scope-aware settings writes", () => {
     const sink = vi.fn(() => true);
     setPanelConfigSink(sink);
     requestWidgetSettings("panel-1");
+
     const ok = applyWidgetSettings(
       "panel-1",
       "balance",
       { instanceId: "default", limit: 50 },
       { limit: 30 },
     );
+
     expect(ok).toBe(true);
     expect(sink).toHaveBeenCalledWith("panel-1", {
       instanceId: "default",
@@ -95,12 +100,14 @@ describe("scope-aware settings writes", () => {
     setPanelConfigSink(sink);
     requestWidgetSettings("panel-1");
     setWidgetSettingsScope("global");
+
     const ok = applyWidgetSettings(
       "panel-1",
       "balance",
       { instanceId: "default", limit: 50 },
       { instanceId: "bot-2" },
     );
+
     expect(ok).toBe(true);
     expect(widgetGlobalOverrides("balance")).toEqual({ instanceId: "bot-2" });
     // the app sink stays untouched — the workspace document is not rewritten

@@ -19,64 +19,135 @@
  */
 
 export * from "./definition.js";
+
 export * from "./errors.js";
+
 export * from "./fleet.js";
+
+export * from "./search.js";
+
 export * from "./relative.js";
+
 export * from "./registry.js";
+
 export * from "./sensitivity.js";
+
 export { SystemHealthCapability } from "./system-health.js";
+
 export { SystemBackendConfigCapability } from "./system-backend-config.js";
+
+export { SystemPageDefaultsCapability } from "./system-page-defaults.js";
+
+export { SystemPageDefaultsUpdateCapability } from "./system-page-defaults-update.js";
+
+export { MacroFedRateCapability } from "./macro-fed-rate.js";
+
 export { BotStatusCapability } from "./bot-status.js";
+
 export { BotBalanceCapability } from "./bot-balance.js";
+
 export { BotProfitCapability } from "./bot-profit.js";
+
 export { BotTradesCapability } from "./bot-trades.js";
+
 export { BotConfigCapability } from "./bot-config.js";
+
 export { BotProfitHistoryCapability } from "./bot-profit-history.js";
+
 export { BotBalanceHistoryCapability } from "./bot-balance-history.js";
+
 export { BotBalanceRelativeCapability } from "./bot-balance-relative.js";
+
 export { BotProfitRelativeCapability } from "./bot-profit-relative.js";
+
 export { BotTradesRelativeCapability } from "./bot-trades-relative.js";
+
 export { BotProfitHistoryRelativeCapability } from "./bot-profit-history-relative.js";
+
 export { BotBalanceHistoryRelativeCapability } from "./bot-balance-history-relative.js";
+
 export { WorkspaceListCapability } from "./workspace-list.js";
+
 export { WorkspaceLoadCapability } from "./workspace-load.js";
+
 export { WorkspaceSaveCapability } from "./workspace-save.js";
+
 export { WorkspaceCreateCapability } from "./workspace-create.js";
+
 export { WorkspaceRemoveCapability } from "./workspace-remove.js";
+
 export { InstancesListCapability } from "./instances-list.js";
+
 export { InstancesCreateCapability } from "./instances-create.js";
+
 export { InstancesUpdateCapability } from "./instances-update.js";
+
 export { InstancesRemoveCapability } from "./instances-remove.js";
+
 export { InstancesHealthCapability } from "./instances-health.js";
+
 export { InstancesStatusCapability } from "./instances-status.js";
+
 export { InstancesBalanceCapability } from "./instances-balance.js";
+
 export { InstancesProfitCapability } from "./instances-profit.js";
+
 export { InstancesOpenPositionsCapability } from "./instances-open-positions.js";
+
 export { InstancesClosedPositionsCapability } from "./instances-closed-positions.js";
+
 export { InstancesTagPerformanceCapability } from "./instances-tag-performance.js";
+
 export { InstancesPairsCapability } from "./instances-pairs.js";
+
 export { InstancesCandlesCapability } from "./instances-candles.js";
+
 export { InstancesPlotConfigCapability } from "./instances-plot-config.js";
+
 export { InstancesBalanceRelativeCapability } from "./instances-balance-relative.js";
+
 export { InstancesBalanceHistoryAllCapability } from "./instances-balance-history-all.js";
+
 export { InstancesBalanceHistoryAllRelativeCapability } from "./instances-balance-history-all-relative.js";
+
+export { InstancesProfitHistoryAllRelativeCapability } from "./instances-profit-history-all-relative.js";
+
 export { InstancesProfitRelativeCapability } from "./instances-profit-relative.js";
+
 export { InstancesOpenPositionsRelativeCapability } from "./instances-open-positions-relative.js";
+
 export { InstancesClosedPositionsRelativeCapability } from "./instances-closed-positions-relative.js";
+
 export { InstancesTagPerformanceRelativeCapability } from "./instances-tag-performance-relative.js";
+
 export { InstancesBlacklistCapability } from "./instances-blacklist.js";
+
 export { InstancesClosedAllCapability } from "./instances-closed-all.js";
+
 export { InstancesConfigCapability } from "./instances-config.js";
+
 export { InstancesLocksCapability } from "./instances-locks.js";
+
 export { InstancesOverviewCapability } from "./instances-overview.js";
+
 export { InstancesPositionsAllCapability } from "./instances-positions-all.js";
+
 export { InstancesProfitDailyAllCapability } from "./instances-profit-daily-all.js";
+
 export { InstancesProfitDailyCapability } from "./instances-profit-daily.js";
+
 export { InstancesProfitHistoryCapability } from "./instances-profit-history.js";
+
 export { InstancesTradeCountCapability } from "./instances-trade-count.js";
+
 export { InstancesWhitelistCapability } from "./instances-whitelist.js";
+
 export { UsersListCapability } from "./users-list.js";
+
 export { UsersCreateCapability } from "./users-create.js";
+
 export { UsersUpdateCapability } from "./users-update.js";
+
 export { UsersRemoveCapability } from "./users-remove.js";
+
 export { AuthCapabilitiesCapability } from "./auth-capabilities.js";

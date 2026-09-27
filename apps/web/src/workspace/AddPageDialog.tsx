@@ -1,24 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { useMemo, useState } from "react";
 import { useStore } from "@tanstack/react-store";
 import { Button, TextInput } from "@carbon/react";
+import { Add } from "@carbon/icons-react";
+import { useLocalStore } from "@nfi/ui";
 import { PAGE_ICON_KEYS, PRESET_PAGES, type PageIconKey } from "./pages";
 import { PageIconView } from "./pageIcons";
-import { addPresetPage, createCustomPage, workspaceStore } from "./store";
+import { createCustomPage, createPresetPage } from "./store";
 
 /**
  * Add-page dialog — the "+" action of the pages bar.
  *
- * Two ways to grow the pages bar:
- *
- * - Preset pages: the curated read-only dashboards (Overview, Trading,
- *   Markets, …). Adding one stores its built workspace in the backend
- *   (`origin: "user"`), so it persists until deleted; already-added
- *   presets are not offered again.
- * - Custom page: a blank, fully editable page with a name and an optional
- *   pages-bar icon.
+ * Preset dashboards first (curated bento layouts for common pro
+ * trader/investor workflows — fully editable once added, Reset restores
+ * the canonical layout), then a blank fully-editable custom page with a
+ * name and an optional pages-bar icon.
  */
 
 export function AddPageDialog({
@@ -29,31 +26,38 @@ export function AddPageDialog({
   /** Called after a page was added (off-terminal hosts navigate home). */
   onAdded?: () => void;
 }) {
-  const pages = useStore(workspaceStore, (s) => s.pages);
-  const addedIds = useMemo(() => new Set(pages.map((p) => p.id)), [pages]);
-  const availablePresets = useMemo(
-    () => PRESET_PAGES.filter((p) => !addedIds.has(p.id)),
-    [addedIds],
-  );
+  // Custom-page draft in one component store: name + optional icon.
+  interface PageDraftState {
+    name: string;
+    icon: PageIconKey | undefined;
+  }
 
-  const [name, setName] = useState("");
-  const [icon, setIcon] = useState<PageIconKey | undefined>(undefined);
-  const trimmed = name.trim();
+  const draftStore = useLocalStore<PageDraftState>({
+    name: "",
+    icon: undefined,
+  });
 
-  const addPreset = (presetId: string) => {
-    void addPresetPage(presetId).then((added) => {
-      if (!added) return;
-      onAdded?.();
-      onClose();
-    });
-  };
+  const draft = useStore(draftStore, (s) => s);
+  const trimmed = draft.name.trim();
 
+  // Optimistic close: the dialog dismisses instantly while the page builds
+  // in the background — awaiting the backend round trip with the dialog
+  // open is what froze the UI on preset adds (six widgets mounting their
+  // live queries at once behind a modal).
   const createCustom = () => {
     if (trimmed.length === 0) return;
-    void createCustomPage(name, icon).then(() => {
-      onAdded?.();
-      onClose();
-    });
+    const pendingName = draft.name;
+    const pendingIcon = draft.icon;
+    draftStore.setState((p) => ({ ...p, name: "" }));
+    onAdded?.();
+    onClose();
+    void createCustomPage(pendingName, pendingIcon);
+  };
+
+  const addPreset = (presetId: string) => {
+    onAdded?.();
+    onClose();
+    void createPresetPage(presetId);
   };
 
   return (
@@ -72,43 +76,51 @@ export function AddPageDialog({
         <div className="nfi-layouts-head">
           <div>
             <h2>Add page</h2>
-            <p>Start from a curated preset, or build your own page.</p>
+            <p>Build your own bento page.</p>
           </div>
           <Button kind="ghost" size="sm" onClick={onClose}>
             Close
           </Button>
         </div>
         <h3 className="nfi-layouts-section">Preset pages</h3>
-        {availablePresets.length === 0 ? (
-          <p className="nfi-addpage-note">
-            Every preset page is already added — delete one to re-add it, or
-            create a custom page below.
-          </p>
-        ) : (
-          <div className="nfi-grid-presets">
-            {availablePresets.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                className="nfi-grid-card nfi-addpage-card"
-                title={preset.description}
+        <p className="nfi-addpage-note">
+          Curated dashboards for professional traders and investors — fully
+          editable once added.
+        </p>
+        <div className="nfi-addpage-presets">
+          {PRESET_PAGES.map((preset) => (
+            <div key={preset.id} className="nfi-addpage-preset">
+              <div className="nfi-addpage-preset-head">
+                <PageIconView iconKey={preset.icon} size={16} />
+                <strong>{preset.title}</strong>
+              </div>
+              <p className="nfi-addpage-note">{preset.description}</p>
+              <p className="nfi-addpage-note">
+                {preset.widgets.length} widgets ·{" "}
+                {preset.widgets.slice(0, 3).join(", ")}
+                {preset.widgets.length > 3 ? ", …" : ""}
+              </p>
+              <Button
+                size="sm"
+                kind="tertiary"
+                renderIcon={Add}
                 onClick={() => addPreset(preset.id)}
               >
-                <PageIconView iconKey={preset.icon} size={18} />
-                <strong>{preset.title}</strong>
-                <span>{preset.description}</span>
-              </button>
-            ))}
-          </div>
-        )}
+                Add page
+              </Button>
+            </div>
+          ))}
+        </div>
         <h3 className="nfi-layouts-section">Custom page</h3>
         <div className="nfi-addpage-custom">
           <TextInput
             id="nfi-addpage-name"
             labelText="Page name"
             placeholder="My page"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
+            value={draft.name}
+            onChange={(event) =>
+              draftStore.setState((p) => ({ ...p, name: event.target.value }))
+            }
             onKeyDown={(event) => {
               if (event.key === "Enter" && trimmed.length > 0) {
                 event.preventDefault();
@@ -127,10 +139,12 @@ export function AddPageDialog({
               <button
                 type="button"
                 role="radio"
-                aria-checked={icon === undefined}
+                aria-checked={draft.icon === undefined}
                 className="nfi-addpage-icon"
                 title="No icon"
-                onClick={() => setIcon(undefined)}
+                onClick={() =>
+                  draftStore.setState((p) => ({ ...p, icon: undefined }))
+                }
               >
                 <span className="nfi-addpage-none">None</span>
               </button>
@@ -139,10 +153,12 @@ export function AddPageDialog({
                   key={key}
                   type="button"
                   role="radio"
-                  aria-checked={icon === key}
+                  aria-checked={draft.icon === key}
                   className="nfi-addpage-icon"
                   title={key}
-                  onClick={() => setIcon(key)}
+                  onClick={() =>
+                    draftStore.setState((p) => ({ ...p, icon: key }))
+                  }
                 >
                   <PageIconView iconKey={key} size={16} />
                 </button>

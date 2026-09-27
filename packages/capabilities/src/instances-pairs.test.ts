@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { Effect, Either } from "effect";
 import {
   FreqtradeError,
   type FreqtradeClientService,
@@ -48,9 +48,13 @@ function stubService(
 }
 
 function stubCtx(service: FreqtradeClientService): CapabilityContext {
-  return {
+  const ctx: Pick<CapabilityContext, "resolveInstance"> = {
     resolveInstance: () => Effect.succeed(service),
-  } as unknown as CapabilityContext;
+  };
+
+  // SAFETY: deliberate test double — `instances.pairs` reads only
+  // `resolveInstance` from the context.
+  return ctx as CapabilityContext;
 }
 
 const runPairs = (service: FreqtradeClientService) =>
@@ -71,9 +75,11 @@ describe("instances.pairs whitelist fallback", () => {
           stakeCurrency: "USDT",
         }),
     });
+
     const result = await runPairs(service);
-    expect(result._tag).toBe("Right");
-    if (result._tag === "Right")
+    expect(Either.isRight(result)).toBe(true);
+
+    if (Either.isRight(result))
       expect(result.right.pairs).toEqual(["BTC/USDT", "ETH/USDT"]);
   });
 
@@ -82,9 +88,11 @@ describe("instances.pairs whitelist fallback", () => {
       getWhitelist: () =>
         Effect.succeed({ pairs: ["HYPE/USDT:USDT", "BTC/USDT:USDT"] }),
     });
+
     const result = await runPairs(service);
-    expect(result._tag).toBe("Right");
-    if (result._tag === "Right") {
+    expect(Either.isRight(result)).toBe(true);
+
+    if (Either.isRight(result)) {
       expect(result.right.pairs).toEqual(["HYPE/USDT:USDT", "BTC/USDT:USDT"]);
       expect(result.right.length).toBe(2);
     }
@@ -92,13 +100,15 @@ describe("instances.pairs whitelist fallback", () => {
 
   it("reports the original failure when the whitelist is empty or down", async () => {
     const empty = await runPairs(stubService({}));
-    expect(empty._tag).toBe("Left");
-    if (empty._tag === "Left")
+    expect(Either.isLeft(empty)).toBe(true);
+
+    if (Either.isLeft(empty))
       expect(empty.left.error).toContain("instance pairs failed");
 
     const down = await runPairs(
       stubService({ getWhitelist: () => Effect.fail(gated) }),
     );
-    expect(down._tag).toBe("Left");
+
+    expect(Either.isLeft(down)).toBe(true);
   });
 });

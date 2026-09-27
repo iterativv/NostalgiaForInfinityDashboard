@@ -3,6 +3,7 @@
 
 import { Button, Tag } from "@carbon/react";
 import { useCapability } from "./live/live";
+import { InstanceDot, useInstanceColors } from "./shared/instanceColors";
 
 /** One row in the instance manager: live reachability plus edit/delete. */
 export function InstanceHealthRow({
@@ -27,6 +28,9 @@ export function InstanceHealthRow({
 }) {
   const { data, error } = useCapability("instances.health", { id: instanceId });
   const reachable = !error && data?.reachable === true;
+  const { colorOf } = useInstanceColors();
+  const color = colorOf(instanceId) ?? undefined;
+
   return (
     <div
       style={{
@@ -34,6 +38,9 @@ export function InstanceHealthRow({
         alignItems: "center",
         gap: "0.5rem",
         justifyContent: "space-between",
+        minWidth: 0,
+        width: "100%",
+        flexWrap: "wrap",
       }}
     >
       <div
@@ -42,13 +49,35 @@ export function InstanceHealthRow({
           flexDirection: "column",
           gap: "0.125rem",
           minWidth: 0,
+          flex: "1 1 auto",
         }}
       >
-        <span style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-          {name}{" "}
-          {isDefault ? (
-            <span style={{ opacity: 0.55, fontWeight: 400 }}>(env)</span>
-          ) : null}
+        <span
+          style={{
+            fontSize: "0.875rem",
+            fontWeight: 600,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            minWidth: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: "0.375rem",
+          }}
+        >
+          {color ? <InstanceDot color={color} title={name} /> : null}
+          <span
+            style={{
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {name}{" "}
+            {isDefault ? (
+              <span style={{ opacity: 0.55, fontWeight: 400 }}>(env)</span>
+            ) : null}
+          </span>
         </span>
         <span
           style={{
@@ -56,6 +85,8 @@ export function InstanceHealthRow({
             opacity: 0.65,
             overflow: "hidden",
             textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            minWidth: 0,
           }}
         >
           {baseUrl}

@@ -48,6 +48,7 @@ export const TickerTapeConfigSchema = Schema.Struct({
   showProfit: booleanWithDefault(true),
   showPrice: booleanWithDefault(true),
 });
+
 export type TickerTapeConfig = typeof TickerTapeConfigSchema.Type;
 
 export const TICKER_TAPE_DEFAULTS: TickerTapeConfig = Schema.decodeUnknownSync(
@@ -61,17 +62,23 @@ export function TickerTapeWidget({
   const cfg = config;
   const maxItems = clampInt(cfg.maxItems, 20, 1, 50);
   const access = useWidgetAccess(TICKER_TAPE_CAPABILITIES);
+
   const openQ = useOpenPositionsSource(cfg.instanceId, {
     enabled: access.allowed,
   });
+
   const closedQ = useClosedPositionsSource(cfg.instanceId, maxItems, {
     enabled: access.allowed,
   });
+
   const state = queryState(openQ.error, openQ.isLoading);
+
   const accessError = access.allowed
     ? null
     : `Not authorized — needs ${access.missing.join(", ")}`;
+
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<TickerTapeConfig>) =>
     applyWidgetSettings(panelId, "ticker-tape", cfg, p);
 
@@ -83,6 +90,7 @@ export function TickerTapeWidget({
     pct: p.profitPct,
     live: true as const,
   }));
+
   const fallback =
     live.length === 0
       ? (closedQ.data ?? []).slice(0, maxItems).map((p) => ({
@@ -94,6 +102,7 @@ export function TickerTapeWidget({
           live: false as const,
         }))
       : [];
+
   const items = live.length > 0 ? live : fallback;
   const showBot = cfg.instanceId === "all";
 
@@ -137,58 +146,58 @@ export function TickerTapeWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Ticker Tape"
-      isLoading={state.isLoading}
-      error={accessError ?? state.error}
-    >
-      {items.length > 0 ? (
-        <div
-          className="nfi-ticker-tape"
-          role="marquee"
-          aria-label="Live position tape"
-        >
-          {items.map((item) => (
-            <span
-              key={item.key}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.375rem",
-              }}
-            >
-              <strong className="nfi-mono" style={{ fontSize: "0.8125rem" }}>
-                {item.pair}
-              </strong>
-              {showBot && item.bot ? (
-                <span style={{ fontSize: "0.6875rem", opacity: 0.6 }}>
-                  {item.bot}
-                </span>
-              ) : null}
-              {cfg.showPrice ? (
-                <span className="nfi-mono" style={{ opacity: 0.75 }}>
-                  {fmt(item.price, 4)}
-                </span>
-              ) : null}
-              {cfg.showProfit ? (
-                <Tag type={(item.pct ?? 0) >= 0 ? "green" : "red"} size="sm">
-                  {fmt(item.pct, 2)}%
-                </Tag>
-              ) : null}
-              {!item.live ? (
-                <span style={{ fontSize: "0.6875rem", opacity: 0.5 }}>
-                  closed
-                </span>
-              ) : null}
-            </span>
-          ))}
-        </div>
-      ) : (
-        <EmptyState
-          title="No symbols"
-          hint="Open a position or pick an instance with history in ⚙ settings."
-        />
-      )}
-    </WidgetFrame>
+        title="Ticker Tape"
+        isLoading={state.isLoading}
+        error={accessError ?? state.error}
+      >
+        {items.length > 0 ? (
+          <div
+            className="nfi-ticker-tape"
+            role="marquee"
+            aria-label="Live position tape"
+          >
+            {items.map((item) => (
+              <span
+                key={item.key}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.375rem",
+                }}
+              >
+                <strong className="nfi-mono" style={{ fontSize: "0.8125rem" }}>
+                  {item.pair}
+                </strong>
+                {showBot && item.bot ? (
+                  <span style={{ fontSize: "0.6875rem", opacity: 0.6 }}>
+                    {item.bot}
+                  </span>
+                ) : null}
+                {cfg.showPrice ? (
+                  <span className="nfi-mono" style={{ opacity: 0.75 }}>
+                    {fmt(item.price, 4)}
+                  </span>
+                ) : null}
+                {cfg.showProfit ? (
+                  <Tag type={(item.pct ?? 0) >= 0 ? "green" : "red"} size="sm">
+                    {fmt(item.pct, 2)}%
+                  </Tag>
+                ) : null}
+                {!item.live ? (
+                  <span style={{ fontSize: "0.6875rem", opacity: 0.5 }}>
+                    closed
+                  </span>
+                ) : null}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="No symbols"
+            hint="Open a position or pick an instance with history in ⚙ settings."
+          />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -203,6 +212,8 @@ export const TickerTapeWidgetDef = defineWidget({
   defaultConfig: TICKER_TAPE_DEFAULTS,
   component: TickerTapeWidget,
   capabilities: [...TICKER_TAPE_CAPABILITIES],
-  minWidth: 280,
-  minHeight: 48,
+  minWidth: 370,
+  minHeight: 76,
+  defaultWidth: 1280,
+  defaultHeight: 140,
 });

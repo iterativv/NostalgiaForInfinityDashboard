@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { useEffect } from "react"
-import { createPortal } from "react-dom"
-import { Button } from "@carbon/react"
-import { Minimize } from "@carbon/icons-react"
-import { PanelVisibleContext } from "../capabilities/live"
-import type { Workspace } from "@nfi/api-contract"
-import type { WidgetRegistry } from "@nfi/widget-sdk"
-import { Panel } from "./Panel"
+import { createPortal } from "react-dom";
+import { Button } from "@carbon/react";
+import { Minimize } from "@carbon/icons-react";
+import { useStoreEffect } from "@nfi/ui";
+import { PanelVisibleContext } from "../capabilities/live";
+import type { Workspace } from "@nfi/api-contract";
+import type { WidgetRegistry } from "@nfi/widget-sdk";
+import { Panel } from "./Panel";
 
 /**
  * TabFullScreen — the full-screen view of one tab, opened from the tab's
@@ -23,24 +23,29 @@ import { Panel } from "./Panel"
  */
 
 /** Breathing room around the dialog on each axis (px). */
-const MARGIN_PX = 48
-const HEADER_PX = 28
+const MARGIN_PX = 48;
+
+const HEADER_PX = 28;
 
 /** Largest box with `aspect` that fits the viewport minus margins. */
-export function fitAspectRatioBox(aspect: number): {
-  width: number
-  height: number
-} {
-  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 16 / 9
-  const maxW = Math.max(320, window.innerWidth - MARGIN_PX * 2)
-  const maxH = Math.max(240, window.innerHeight - MARGIN_PX * 2)
+export interface AspectRatioBox {
+  width: number;
+  height: number;
+}
+
+export function fitAspectRatioBox(aspect: number): AspectRatioBox {
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 16 / 9;
+  const maxW = Math.max(320, window.innerWidth - MARGIN_PX * 2);
+  const maxH = Math.max(240, window.innerHeight - MARGIN_PX * 2);
   let width = maxW;
-  let height = width / safeAspect
+  let height = width / safeAspect;
+
   if (height > maxH) {
-    height = maxH
-    width = height * safeAspect
+    height = maxH;
+    width = height * safeAspect;
   }
-  return { width: Math.round(width), height: Math.round(height) }
+
+  return { width: Math.round(width), height: Math.round(height) };
 }
 
 export function TabFullScreen({
@@ -55,37 +60,39 @@ export function TabFullScreen({
   onClosePanel,
   onRestore,
 }: {
-  title: string
-  panelId: string
-  widgetType: string | undefined
-  widgetConfig: unknown
-  workspace: Workspace
-  registry: WidgetRegistry
+  title: string;
+  panelId: string;
+  widgetType: string | undefined;
+  widgetConfig: unknown;
+  workspace: Workspace;
+  registry: WidgetRegistry;
   /** Aspect ratio (width / height) of the tab's grid cell. */
-  aspect: number
-  onActivate: (panelId: string) => void
-  onClosePanel: (panelId: string) => void
-  onRestore: () => void
+  aspect: number;
+  onActivate: (panelId: string) => void;
+  onClosePanel: (panelId: string) => void;
+  onRestore: () => void;
 }) {
   // Escape restores, like every other dismissible surface.
-  useEffect(() => {
+  useStoreEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        event.preventDefault()
-        onRestore()
+        event.preventDefault();
+        onRestore();
       }
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [onRestore])
+    };
 
-  const { width, height } = fitAspectRatioBox(aspect)
+    window.addEventListener("keydown", onKey);
+
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onRestore]);
+
+  const { width, height } = fitAspectRatioBox(aspect);
 
   return createPortal(
     <div
       className="nfi-fullscreen-overlay"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onRestore()
+        if (event.target === event.currentTarget) onRestore();
       }}
     >
       <div
@@ -124,5 +131,5 @@ export function TabFullScreen({
       </div>
     </div>,
     document.getElementById("root") ?? document.body,
-  )
+  );
 }

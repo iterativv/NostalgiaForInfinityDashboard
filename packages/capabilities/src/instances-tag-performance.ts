@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Schema } from "effect"
-import { Effect } from "effect"
-import { TagPerformanceResponse, type TagGroupBy } from "@nfi/api-contract"
-import { defineCapability, parseLimitParam } from "./definition.js"
-import { asBackendError } from "./errors.js"
+import { Schema } from "effect";
+import { Effect } from "effect";
+import { TagPerformanceResponse, type TagGroupBy } from "@nfi/api-contract";
+import { defineCapability, parseLimitParam } from "./definition.js";
+import { asBackendError } from "./errors.js";
 
 /**
  * `instances.tag-performance` — per-tag closed-trade stats (ABSOLUTE profit).
@@ -26,8 +26,16 @@ export const InstancesTagPerformanceCapability = defineCapability({
   exposes: ["absolute-profit"],
   run: (options, ctx) =>
     Effect.gen(function* () {
-      const service = yield* ctx.resolveInstance(options.id)
-      const groupBy: TagGroupBy = options.groupBy === "exit" ? "exit" : "enter"
-      return yield* service.getTagPerformance(parseLimitParam(options.limit, 200, 1000), groupBy)
-    }).pipe(Effect.mapError((cause) => asBackendError("instance tag performance", cause))),
-})
+      const service = yield* ctx.resolveInstance(options.id);
+      const groupBy: TagGroupBy = options.groupBy === "exit" ? "exit" : "enter";
+
+      return yield* service.getTagPerformance(
+        parseLimitParam(options.limit, 200, 1000),
+        groupBy,
+      );
+    }).pipe(
+      Effect.mapError((cause) =>
+        asBackendError("instance tag performance", cause),
+      ),
+    ),
+});

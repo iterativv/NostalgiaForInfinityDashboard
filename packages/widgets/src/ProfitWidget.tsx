@@ -26,6 +26,7 @@ export const ProfitConfigSchema = Schema.Struct({
   /** An instance id, or `all` for fleet totals (instances.overview). */
   instanceId: InstanceIdField,
 });
+
 export type ProfitConfig = typeof ProfitConfigSchema.Type;
 
 export const PROFIT_DEFAULTS: ProfitConfig = Schema.decodeUnknownSync(
@@ -35,34 +36,41 @@ export const PROFIT_DEFAULTS: ProfitConfig = Schema.decodeUnknownSync(
 export function ProfitWidget({ config, panelId }: WidgetProps<ProfitConfig>) {
   const cfg = config;
   const fleet = cfg.instanceId === ALL_INSTANCES;
+
   const perInstanceView = useCapability(
     "instances.profit",
     { id: fleet ? "default" : cfg.instanceId },
     { enabled: !fleet },
   );
+
   const fleetView = useCapability("instances.overview", {}, { enabled: fleet });
   const error = fleet ? fleetView.error : perInstanceView.error;
   const isLoading = fleet ? fleetView.isLoading : perInstanceView.isLoading;
   const state = queryState(error, isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<ProfitConfig>) =>
     applyWidgetSettings(panelId, "profit", cfg, p);
 
   const closed = fleet
     ? (fleetView.data?.totals.profitClosedCoin ?? 0)
     : perInstanceView.data?.profitClosedCoin;
+
   const all = fleet
     ? (fleetView.data?.totals.profitAllCoin ?? 0)
     : perInstanceView.data?.profitAllCoin;
+
   const stake = fleet
     ? (fleetView.data?.totals.stakeCurrency ?? "—")
     : (perInstanceView.data?.stakeCurrency ?? "—");
+
   const trades = fleet
     ? (fleetView.data?.instances.reduce(
         (sum, row) => sum + (row.closedTradeCount ?? 0),
         0,
       ) ?? 0)
     : perInstanceView.data?.tradeCount;
+
   const closedTrades = fleet
     ? (fleetView.data?.instances.reduce(
         (sum, row) => sum + (row.closedTradeCount ?? 0),
@@ -85,46 +93,50 @@ export function ProfitWidget({ config, panelId }: WidgetProps<ProfitConfig>) {
           allowAll
         />
       </WidgetSettingsModal>
-      <WidgetFrame title="Profit" isLoading={state.isLoading} error={state.error}>
-      {closed !== undefined ? (
-        <div className="nfi-stat-grid nfi-stat-grid--fill">
-          <Stat
-            label="Closed profit"
-            value={`${closed.toFixed(2)} ${stake}`}
-            tone={pnlTone(closed)}
-            sub={
-              fleet
-                ? `${fleetView.data?.totals.reachableCount ?? 0}/${fleetView.data?.totals.instanceCount ?? 0} instances`
-                : undefined
-            }
-          />
-          <Stat
-            label="All profit"
-            value={`${all?.toFixed(2) ?? "—"} ${stake}`}
-            tone={pnlTone(all ?? 0)}
-            sub={
-              closed !== undefined && all !== undefined
-                ? `${(all - closed >= 0 ? "+" : "") + (all - closed).toFixed(2)} open`
-                : undefined
-            }
-          />
-          <Stat
-            label="Closed trades"
-            value={String(closedTrades ?? "—")}
-            sub={trades !== undefined ? `${trades} total` : undefined}
-          />
-          {fleet ? (
+      <WidgetFrame
+        title="Profit"
+        isLoading={state.isLoading}
+        error={state.error}
+      >
+        {closed !== undefined ? (
+          <div className="nfi-stat-grid nfi-stat-grid--fill">
             <Stat
-              label="Open trades"
-              value={String(fleetView.data?.totals.openCount ?? "—")}
-              sub="across the fleet"
+              label="Closed profit"
+              value={`${closed.toFixed(2)} ${stake}`}
+              tone={pnlTone(closed)}
+              sub={
+                fleet
+                  ? `${fleetView.data?.totals.reachableCount ?? 0}/${fleetView.data?.totals.instanceCount ?? 0} instances`
+                  : undefined
+              }
             />
-          ) : null}
-        </div>
-      ) : (
-        <EmptyState title="No profit data" />
-      )}
-    </WidgetFrame>
+            <Stat
+              label="All profit"
+              value={`${all?.toFixed(2) ?? "—"} ${stake}`}
+              tone={pnlTone(all ?? 0)}
+              sub={
+                closed !== undefined && all !== undefined
+                  ? `${(all - closed >= 0 ? "+" : "") + (all - closed).toFixed(2)} open`
+                  : undefined
+              }
+            />
+            <Stat
+              label="Closed trades"
+              value={String(closedTrades ?? "—")}
+              sub={trades !== undefined ? `${trades} total` : undefined}
+            />
+            {fleet ? (
+              <Stat
+                label="Open trades"
+                value={String(fleetView.data?.totals.openCount ?? "—")}
+                sub="across the fleet"
+              />
+            ) : null}
+          </div>
+        ) : (
+          <EmptyState title="No profit data" />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -139,6 +151,8 @@ export const ProfitWidgetDef = defineWidget({
   defaultConfig: PROFIT_DEFAULTS,
   component: ProfitWidget,
   capabilities: [...PROFIT_CAPABILITIES],
-  minWidth: 280,
-  minHeight: 100,
+  minWidth: 370,
+  minHeight: 156,
+  defaultWidth: 360,
+  defaultHeight: 220,
 });

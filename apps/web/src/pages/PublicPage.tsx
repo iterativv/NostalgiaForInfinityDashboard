@@ -2,16 +2,14 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 import { useCapability } from "../capabilities/live";
-import type { PanelId } from "@nfi/api-contract";
+import { Schema } from "effect";
+import { PanelId } from "@nfi/api-contract";
+import { RELATIVE_BALANCE_DEFAULTS, RelativeBalanceWidget } from "@nfi/widgets";
 import {
-  RELATIVE_BALANCE_DEFAULTS,
-  RelativeBalanceWidget,
+  RELATIVE_EQUITY_DEFAULTS,
+  RelativeEquityWidget,
 } from "@nfi/widgets";
-import { RelativeEquityWidget } from "@nfi/widgets";
-import {
-  RELATIVE_PROFIT_DEFAULTS,
-  RelativeProfitWidget,
-} from "@nfi/widgets";
+import { RELATIVE_PROFIT_DEFAULTS, RelativeProfitWidget } from "@nfi/widgets";
 
 /**
  * Public shareable page (`/public`): performance without absolute numbers.
@@ -21,13 +19,15 @@ import {
  * `NON_SENSITIVE_CAPABILITIES` (`@nfi/api-contract`) and no option
  * combination can reveal the underlying freqtrade balances or PnL. No
  * workspace, no instance management, no credentials: the page is a fixed,
- * read-only dashboard pinned to the `default` instance.
+ * read-only dashboard; the performance index covers every configured
+ * instance, one rebased curve per bot.
  */
 
 export function PublicPage() {
   // Capability gate for the whole page: without the relative grant the
   // widgets render their unauthorized state instead of streaming.
   const gate = useCapability("bot.profit.relative", {});
+
   return (
     <div
       style={{
@@ -53,17 +53,21 @@ export function PublicPage() {
       </header>
       <div className="nfi-stat-grid">
         <RelativeProfitWidget
-          panelId={"public-profit" as PanelId}
+          panelId={Schema.decodeSync(PanelId)("public-profit")}
           config={RELATIVE_PROFIT_DEFAULTS}
           focused={false}
         />
         <RelativeBalanceWidget
-          panelId={"public-balance" as PanelId}
+          panelId={Schema.decodeSync(PanelId)("public-balance")}
           config={RELATIVE_BALANCE_DEFAULTS}
           focused={false}
         />
       </div>
-      <RelativeEquityWidget />
+      <RelativeEquityWidget
+        panelId={Schema.decodeSync(PanelId)("public-equity")}
+        config={RELATIVE_EQUITY_DEFAULTS}
+        focused={false}
+      />
     </div>
   );
 }

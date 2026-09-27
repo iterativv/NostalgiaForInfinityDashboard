@@ -7,20 +7,27 @@ import type {
   FleetBalanceHistoryResponse,
   OpenPositionsResponse,
   OpenTradesResponse,
+  ProfitPoint,
   ProfitSummary,
   RelativeBalance,
   RelativeBalanceHistoryResponse,
   RelativeClosedPositionsResponse,
   RelativeFleetBalanceHistoryResponse,
+  RelativeFleetProfitHistoryResponse,
   RelativeOpenPositionsResponse,
+  RelativeOrder,
   RelativeProfit,
   RelativeProfitHistoryResponse,
   RelativeTagPerformanceResponse,
   RelativeTradesResponse,
   TagPerformanceResponse,
   TradeOrder,
-} from "@nfi/api-contract"
-import type { BalanceHistoryResponse, ProfitHistoryResponse } from "@nfi/api-contract"
+} from "@nfi/api-contract";
+import type {
+  BalanceHistoryResponse,
+  ProfitHistoryResponse,
+} from "@nfi/api-contract";
+import { isJsonObject, type JsonValue } from "./definition.js";
 
 /**
  * Absolute -> relative transforms (pure functions, no I/O).
@@ -68,45 +75,57 @@ export const RELATIVE_BANNED_KEYS: ReadonlyArray<string> = [
   "liquidationPrice",
   "fundingFees",
   "note",
-]
+];
 
 /** Collect every object key in a JSON value (for leak tests). */
-export const collectKeys = (value: unknown): string[] => {
-  const keys: string[] = []
-  const visit = (node: unknown): void => {
+export const collectKeys = (value: JsonValue): string[] => {
+  const keys: string[] = [];
+
+  const visit = (node: JsonValue): void => {
     if (Array.isArray(node)) {
-      for (const item of node) visit(item)
-    } else if (typeof node === "object" && node !== null) {
-      for (const [key, entry] of Object.entries(node as Record<string, unknown>)) {
-        keys.push(key)
-        visit(entry)
+      for (const item of node) visit(item);
+    } else if (isJsonObject(node)) {
+      for (const [key, entry] of Object.entries(node)) {
+        keys.push(key);
+        visit(entry);
       }
     }
-  }
-  visit(value)
-  return keys
-}
+  };
+
+  visit(value);
+
+  return keys;
+};
 
 const num = (value: number | undefined): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) ? value : undefined
+  value !== undefined && Number.isFinite(value) ? value : undefined;
 
 const str = (value: string | undefined): string | undefined =>
-  typeof value === "string" && value.length > 0 ? value : undefined
+  value !== undefined && value.length > 0 ? value : undefined;
 
 /** Rebase a window of absolute values to an index starting at exactly 100. */
 export const rebaseToIndex = (values: ReadonlyArray<number>): number[] => {
-  if (values.length === 0) return []
-  const base = values[0] ?? 0
-  let peak = 1
-  for (const v of values) {
-    const a = Math.abs(v - base)
-    if (a > peak) peak = a
-  }
-  return values.map((v) => 100 + ((v - base) / peak) * 100)
-}
+  if (values.length === 0) return [];
+  const base = values[0] ?? 0;
+  let peak = 1;
 
-export const toRelativeBalance = (absolute: BalanceResponse): RelativeBalance => {
-  const total = Number.isFinite(absolute.totalStake) && absolute.totalStake > 0 ? absolute.totalStake : 0
+  for (const v of values) {
+    const a = Math.abs(v - base);
+
+    if (a > peak) peak = a;
+  }
+
+  return values.map((v) => 100 + ((v - base) / peak) * 100);
+};
+
+export const toRelativeBalance = (
+  absolute: BalanceResponse,
+): RelativeBalance => {
+  const total =
+    Number.isFinite(absolute.totalStake) && absolute.totalStake > 0
+      ? absolute.totalStake
+      : 0;
+
   return {
     stakeCurrency: absolute.stakeCurrency,
     currencies: absolute.currencies.map((c) => ({
@@ -115,8 +134,8 @@ export const toRelativeBalance = (absolute: BalanceResponse): RelativeBalance =>
       freeWeight: total > 0 ? c.free / total : 0,
       usedWeight: total > 0 ? c.used / total : 0,
     })),
-  }
-}
+  };
+};
 
 export const toRelativeProfit = (absolute: ProfitSummary): RelativeProfit => ({
   profitClosedPercent: absolute.profitClosedPercent,
@@ -125,9 +144,11 @@ export const toRelativeProfit = (absolute: ProfitSummary): RelativeProfit => ({
   closedTradeCount: absolute.closedTradeCount,
   stakeCurrency: absolute.stakeCurrency,
   fiatCurrency: absolute.fiatCurrency,
-})
+});
 
-export const toRelativeTrades = (absolute: OpenTradesResponse): RelativeTradesResponse => ({
+export const toRelativeTrades = (
+  absolute: OpenTradesResponse,
+): RelativeTradesResponse => ({
   trades: absolute.trades.map((t) => ({
     tradeId: t.tradeId,
     pair: t.pair,
@@ -137,33 +158,37 @@ export const toRelativeTrades = (absolute: OpenTradesResponse): RelativeTradesRe
     strategy: str(t.strategy),
     timeframe: str(t.timeframe),
   })),
-})
+});
 
-export const toRelativeProfitHistory = (absolute: ProfitHistoryResponse): RelativeProfitHistoryResponse => {
-  const closed = absolute.points.map((p) => p.profitClosedCoin)
-  const all = absolute.points.map((p) => p.profitAllCoin)
-  const closedIndex = rebaseToIndex(closed)
-  const allIndex = rebaseToIndex(all)
+export const toRelativeProfitHistory = (
+  absolute: ProfitHistoryResponse,
+): RelativeProfitHistoryResponse => {
+  const closed = absolute.points.map((p) => p.profitClosedCoin);
+  const all = absolute.points.map((p) => p.profitAllCoin);
+  const closedIndex = rebaseToIndex(closed);
+  const allIndex = rebaseToIndex(all);
+
   return {
     points: absolute.points.map((p, i) => ({
       recordedAt: p.recordedAt,
       profitClosedIndex: closedIndex[i] ?? 100,
       profitAllIndex: allIndex[i] ?? 100,
     })),
-  }
-}
+  };
+};
 
 export const toRelativeBalanceHistory = (
   absolute: BalanceHistoryResponse,
 ): RelativeBalanceHistoryResponse => {
-  const index = rebaseToIndex(absolute.points.map((p) => p.totalStake))
+  const index = rebaseToIndex(absolute.points.map((p) => p.totalStake));
+
   return {
     points: absolute.points.map((p, i) => ({
       recordedAt: p.recordedAt,
       balanceIndex: index[i] ?? 100,
     })),
-  }
-}
+  };
+};
 
 /**
  * Fleet variant: every instance is rebased on its OWN first visible point,
@@ -174,7 +199,8 @@ export const toRelativeFleetBalanceHistory = (
   absolute: FleetBalanceHistoryResponse,
 ): RelativeFleetBalanceHistoryResponse => ({
   instances: absolute.instances.map((row) => {
-    const index = rebaseToIndex(row.points.map((p) => p.totalStake))
+    const index = rebaseToIndex(row.points.map((p) => p.totalStake));
+
     return {
       instanceId: row.instanceId,
       instanceName: row.instanceName,
@@ -183,16 +209,54 @@ export const toRelativeFleetBalanceHistory = (
         balanceIndex: index[i] ?? 100,
       })),
       error: str(row.error),
-    }
+    };
   }),
-})
+});
 
-const toRelativeOrderShape = (o: TradeOrder): { side: string; status?: string; isEntry?: boolean; tag?: string } => ({
+/** Fleet profit history input (no absolute fleet DTO — assembled per run). */
+interface FleetProfitHistoryInput {
+  readonly instances: ReadonlyArray<{
+    readonly instanceId: string;
+    readonly instanceName: string;
+    readonly points: ReadonlyArray<ProfitPoint>;
+    readonly error?: string;
+  }>;
+}
+
+/**
+ * Fleet profit variant: each instance's closed/all profit is rebased on its
+ * OWN first visible point, so curves compare shape without leaking any
+ * bot's absolute profit — nor the profit ratio between bots.
+ */
+export const toRelativeFleetProfitHistory = (
+  absolute: FleetProfitHistoryInput,
+): RelativeFleetProfitHistoryResponse => ({
+  instances: absolute.instances.map((row) => {
+    const closedIndex = rebaseToIndex(
+      row.points.map((p) => p.profitClosedCoin),
+    );
+
+    const allIndex = rebaseToIndex(row.points.map((p) => p.profitAllCoin));
+
+    return {
+      instanceId: row.instanceId,
+      instanceName: row.instanceName,
+      points: row.points.map((p, i) => ({
+        recordedAt: p.recordedAt,
+        profitClosedIndex: closedIndex[i] ?? 100,
+        profitAllIndex: allIndex[i] ?? 100,
+      })),
+      error: str(row.error),
+    };
+  }),
+});
+
+const toRelativeOrderFacets = (o: TradeOrder): RelativeOrder => ({
   side: o.side,
   status: str(o.status),
-  isEntry: typeof o.isEntry === "boolean" ? o.isEntry : undefined,
+  isEntry: o.isEntry,
   tag: str(o.tag),
-})
+});
 
 export const toRelativeOpenPositions = (
   absolute: OpenPositionsResponse,
@@ -202,7 +266,7 @@ export const toRelativeOpenPositions = (
     tradeId: p.tradeId,
     pair: p.pair,
     isOpen: p.isOpen,
-    isShort: typeof p.isShort === "boolean" ? p.isShort : undefined,
+    isShort: p.isShort,
     profitPct: num(p.profitPct),
     allocationWeight: totalStake > 0 ? p.stakeAmount / totalStake : 0,
     openDate: p.openDate,
@@ -210,9 +274,9 @@ export const toRelativeOpenPositions = (
     timeframe: str(p.timeframe),
     enterTag: str(p.enterTag),
     leverage: num(p.leverage),
-    orders: p.orders?.map(toRelativeOrderShape),
+    orders: p.orders?.map(toRelativeOrderFacets),
   })),
-})
+});
 
 export const toRelativeClosedPositions = (
   absolute: ClosedPositionsResponse,
@@ -221,7 +285,7 @@ export const toRelativeClosedPositions = (
     tradeId: p.tradeId,
     pair: p.pair,
     isOpen: p.isOpen,
-    isShort: typeof p.isShort === "boolean" ? p.isShort : undefined,
+    isShort: p.isShort,
     profitPct: num(p.profitPct),
     closeProfitPct: num(p.closeProfitPct),
     openDate: p.openDate,
@@ -232,12 +296,12 @@ export const toRelativeClosedPositions = (
     enterTag: str(p.enterTag),
     exitReason: str(p.exitReason),
     leverage: num(p.leverage),
-    orders: p.orders?.map(toRelativeOrderShape),
+    orders: p.orders?.map(toRelativeOrderFacets),
   })),
   tradesCount: num(absolute.tradesCount),
   totalTrades: num(absolute.totalTrades),
   offset: num(absolute.offset),
-})
+});
 
 export const toRelativeTagPerformance = (
   absolute: TagPerformanceResponse,
@@ -253,4 +317,4 @@ export const toRelativeTagPerformance = (
   })),
   aggregatedTrades: absolute.aggregatedTrades,
   totalTrades: num(absolute.totalTrades),
-})
+});

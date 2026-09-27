@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 import { SqlClient, SqlError } from "@effect/sql";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 
 /**
  * Durable app settings (key → JSON value).
@@ -50,6 +50,9 @@ export interface SettingsRepoService {
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
+/** Row contract of `SELECT value FROM app_settings` — `value` is TEXT NOT NULL. */
+const SettingsValueRow = Schema.Struct({ value: Schema.String });
+
 export class SettingsRepo extends Context.Tag("nfi/SettingsRepo")<
   SettingsRepo,
   SettingsRepoService
@@ -63,13 +66,20 @@ export const SettingsRepoLive: Layer.Layer<
   SettingsRepo,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+
     return {
       getSetting: (key) =>
         Effect.gen(function* () {
           const rows =
             yield* sql`SELECT value FROM app_settings WHERE key = ${key}`;
-          const row = (rows as ReadonlyArray<{ value: string }>)[0];
-          return row?.value ?? null;
+
+          const row = rows[0];
+
+          // Decode pins the cell to the declared column contract; a never-saved
+          // key simply has no row.
+          return row === undefined
+            ? null
+            : Schema.decodeUnknownSync(SettingsValueRow)(row).value;
         }),
       saveSetting: (key, value) =>
         Effect.gen(function* () {

@@ -26,5 +26,39 @@ export function useContentSize(): { width: number; height: number } {
  */
 export function useCompactMode(thresholdPx: number): boolean {
   const { height } = useContentSize();
+
   return height > 0 && height < thresholdPx;
+}
+
+/**
+ * True once the cell is measured below `thresholdPx` wide — the narrow
+ * presentation kicks in (collapsed quote strips, hidden secondary stats,
+ * single-column toggles) so content fits slim grid cells without overflow.
+ */
+export function useNarrowMode(thresholdPx: number): boolean {
+  const { width } = useContentSize();
+
+  return width > 0 && width < thresholdPx;
+}
+
+/**
+ * Combined density: `{ compact, narrow }` plus `dense` when either applies.
+ * Prefer this in new widgets so height-short AND width-slim cells both get
+ * a readable fallback instead of only one axis.
+ */
+export interface ResponsiveMode {
+  compact: boolean;
+  narrow: boolean;
+  dense: boolean;
+}
+
+export function useResponsiveMode(
+  compactPx = 250,
+  narrowPx = 380,
+): ResponsiveMode {
+  const { width, height } = useContentSize();
+  const compact = height > 0 && height < compactPx;
+  const narrow = width > 0 && width < narrowPx;
+
+  return { compact, narrow, dense: compact || narrow };
 }

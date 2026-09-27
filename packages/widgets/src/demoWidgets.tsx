@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { useState } from "react"
-import { Button, TextInput, Tile } from "@carbon/react"
-import { Schema } from "effect"
-import { defineWidget, type WidgetProps } from "@nfi/widget-sdk"
-import { updatePanelConfig } from "./shared/panelConfig"
+import { Button, TextInput, Tile } from "@carbon/react";
+import { Schema } from "effect";
+import { useStore } from "@tanstack/react-store";
+import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
+import { useLocalStore } from "@nfi/ui";
+import { updatePanelConfig } from "./shared/panelConfig";
+import { formatTimePrecise } from "./shared/timeFormat";
 
 /**
  * Development/demo widgets — architecture fixtures, not production features.
@@ -13,12 +15,15 @@ import { updatePanelConfig } from "./shared/panelConfig"
  * and the ephemeral-vs-persisted state split (Log entries are local-only).
  */
 
-export const WELCOME_WIDGET_TYPE = "development.welcome"
-export const INSPECTOR_WIDGET_TYPE = "development.inspector"
-export const LOG_WIDGET_TYPE = "development.log"
+export const WELCOME_WIDGET_TYPE = "development.welcome";
 
-const WelcomeConfig = Schema.Struct({})
-type WelcomeConfig = typeof WelcomeConfig.Type
+export const INSPECTOR_WIDGET_TYPE = "development.inspector";
+
+export const LOG_WIDGET_TYPE = "development.log";
+
+const WelcomeConfig = Schema.Struct({});
+
+type WelcomeConfig = typeof WelcomeConfig.Type;
 
 function WelcomeView({ focused }: WidgetProps<WelcomeConfig>) {
   return (
@@ -31,8 +36,9 @@ function WelcomeView({ focused }: WidgetProps<WelcomeConfig>) {
       }}
     >
       <p>
-        <strong>Workspace terminal.</strong> This panel is a <em>widget</em> hosted by a <em>panel</em> inside a{" "}
-        <em>tab group / split</em> layout. The layout is a declarative AST persisted in SQLite — not React code.
+        <strong>Workspace terminal.</strong> This panel is a <em>widget</em>{" "}
+        hosted by a <em>panel</em> inside a <em>tab group / split</em> layout.
+        The layout is a declarative AST persisted in SQLite — not React code.
       </p>
       <ul
         style={{
@@ -47,9 +53,13 @@ function WelcomeView({ focused }: WidgetProps<WelcomeConfig>) {
         <li>Open multiple Inspectors — each instance has its own config.</li>
         <li>Split, retab, resize, reload: the layout is restored.</li>
       </ul>
-      <p style={{ opacity: 0.6 }}>{focused ? "This panel holds workspace focus." : "Click to focus this panel."}</p>
+      <p style={{ opacity: 0.6 }}>
+        {focused
+          ? "This panel holds workspace focus."
+          : "Click to focus this panel."}
+      </p>
     </div>
-  )
+  );
 }
 
 export const WelcomeWidget = defineWidget({
@@ -60,15 +70,16 @@ export const WelcomeWidget = defineWidget({
   defaultConfig: {},
   component: WelcomeView,
   capabilities: [],
-  minWidth: 280,
-  minHeight: 160,
-})
+  minWidth: 284,
+  minHeight: 258,
+});
 
 const InspectorConfig = Schema.Struct({
   title: Schema.String,
   value: Schema.String,
-})
-type InspectorConfig = typeof InspectorConfig.Type
+});
+
+type InspectorConfig = typeof InspectorConfig.Type;
 
 function InspectorView({ panelId, config }: WidgetProps<InspectorConfig>) {
   return (
@@ -93,24 +104,30 @@ function InspectorView({ panelId, config }: WidgetProps<InspectorConfig>) {
         >
           {config.value || "—"}
         </div>
-        <div style={{ fontSize: "0.75rem", opacity: 0.7 }}>{config.title || "untitled"}</div>
+        <div style={{ fontSize: "0.75rem", opacity: 0.7 }}>
+          {config.title || "untitled"}
+        </div>
       </Tile>
       <TextInput
         id={`inspector-title-${panelId}`}
         labelText="Title (persisted widget config)"
         value={config.title}
-        onChange={(event) => updatePanelConfig(panelId, { ...config, title: event.target.value })}
+        onChange={(event) =>
+          updatePanelConfig(panelId, { ...config, title: event.target.value })
+        }
         size="sm"
       />
       <TextInput
         id={`inspector-value-${panelId}`}
         labelText="Value (persisted widget config)"
         value={config.value}
-        onChange={(event) => updatePanelConfig(panelId, { ...config, value: event.target.value })}
+        onChange={(event) =>
+          updatePanelConfig(panelId, { ...config, value: event.target.value })
+        }
         size="sm"
       />
     </div>
-  )
+  );
 }
 
 export const InspectorWidget = defineWidget({
@@ -121,31 +138,42 @@ export const InspectorWidget = defineWidget({
   defaultConfig: { title: "BTCUSDT", value: "Demo" },
   component: InspectorView,
   capabilities: [],
-  minWidth: 240,
-  minHeight: 160,
-})
+  minWidth: 244,
+  minHeight: 240,
+});
 
 const LogConfig = Schema.Struct({
   source: Schema.String,
-})
-type LogConfig = typeof LogConfig.Type
+});
+
+type LogConfig = typeof LogConfig.Type;
 
 interface LogEntry {
-  readonly at: string
-  readonly text: string
+  readonly at: string;
+  readonly text: string;
 }
 
 function LogView({ config }: WidgetProps<LogConfig>) {
-  // Ephemeral UI state on purpose: entries live only in React state and are
-  // never persisted — workspace state holds the `source` config, domain
-  // state would come from the backend. This split is the point.
-  const [entries, setEntries] = useState<ReadonlyArray<LogEntry>>([
-    {
-      at: new Date().toLocaleTimeString([], { hour12: false }),
-      text: `attached to ${config.source || "workspace"}`,
-    },
-  ])
-  const [counter, setCounter] = useState(1)
+  // Ephemeral UI state on purpose: entries live only in a component-local
+  // store and are never persisted — workspace state holds the `source`
+  // config, domain state would come from the backend. This split is the
+  // point.
+  interface LogState {
+    counter: number;
+    entries: ReadonlyArray<LogEntry>;
+  }
+
+  const logStore = useLocalStore<LogState>(() => ({
+    counter: 1,
+    entries: [
+      {
+        at: formatTimePrecise(new Date()),
+        text: `attached to ${config.source || "workspace"}`,
+      },
+    ],
+  }));
+
+  const entries = useStore(logStore, (s) => s.entries);
 
   return (
     <div
@@ -153,7 +181,10 @@ function LogView({ config }: WidgetProps<LogConfig>) {
         display: "flex",
         flexDirection: "column",
         gap: "0.5rem",
-        minHeight: 160,
+        minHeight: 0,
+        flex: "1 1 auto",
+        minWidth: 0,
+        width: "100%",
       }}
     >
       <div
@@ -165,11 +196,13 @@ function LogView({ config }: WidgetProps<LogConfig>) {
           background: "var(--cds-background)",
           border: "1px solid var(--cds-border-subtle)",
           padding: "0.5rem",
-          height: "9rem",
+          minHeight: "6rem",
+          flex: "1 1 auto",
           overflowY: "auto",
           display: "flex",
           flexDirection: "column",
           gap: "0.125rem",
+          minWidth: 0,
         }}
       >
         {entries.map((entry, index) => (
@@ -183,25 +216,32 @@ function LogView({ config }: WidgetProps<LogConfig>) {
           size="sm"
           kind="secondary"
           onClick={() => {
-            const next = counter + 1
-            setCounter(next)
-            setEntries((prev) => [
-              ...prev.slice(-49),
-              {
-                at: new Date().toLocaleTimeString([], { hour12: false }),
-                text: `entry #${next} (${config.source || "workspace"})`,
-              },
-            ])
+            const next = logStore.state.counter + 1;
+
+            logStore.setState((p) => ({
+              counter: next,
+              entries: [
+                ...p.entries.slice(-49),
+                {
+                  at: formatTimePrecise(new Date()),
+                  text: `entry #${next} (${config.source || "workspace"})`,
+                },
+              ],
+            }));
           }}
         >
           Append entry
         </Button>
-        <Button size="sm" kind="ghost" onClick={() => setEntries([])}>
+        <Button
+          size="sm"
+          kind="ghost"
+          onClick={() => logStore.setState((p) => ({ ...p, entries: [] }))}
+        >
           Clear
         </Button>
       </div>
     </div>
-  )
+  );
 }
 
 export const LogWidget = defineWidget({
@@ -212,8 +252,12 @@ export const LogWidget = defineWidget({
   defaultConfig: { source: "workspace" },
   component: LogView,
   capabilities: [],
-  minWidth: 280,
-  minHeight: 160,
-})
+  minWidth: 284,
+  minHeight: 184,
+});
 
-export const DEMO_WIDGETS = [WelcomeWidget, InspectorWidget, LogWidget] as const
+export const DEMO_WIDGETS = [
+  WelcomeWidget,
+  InspectorWidget,
+  LogWidget,
+] as const;

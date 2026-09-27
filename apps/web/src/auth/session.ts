@@ -1,14 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { formatQueryError, runApi } from "../api"
-import { hydrateCapabilities, resetCapabilitiesHydration } from "./capabilities"
+import { formatQueryError, runApi } from "../api";
+import {
+  hydrateCapabilities,
+  resetCapabilitiesHydration,
+} from "./capabilities";
 import {
   hydrateSensitivity,
   resetSensitivityHydration,
-} from "../capabilities/sensitivity"
-import { rehydrateWorkspace } from "../workspace/store"
-import { liveStore } from "../capabilities/live"
+} from "../capabilities/sensitivity";
+import { rehydrateWorkspace } from "../workspace/store";
+import {
+  hydratePageDefaults,
+  resetPageDefaultsHydration,
+} from "../workspace/pageDefaults";
+import { clearViewAs } from "./viewAs";
+import { liveStore } from "../capabilities/live";
 
 /**
  * Session actions — the frontend half of login/logout.
@@ -23,29 +31,34 @@ import { liveStore } from "../capabilities/live"
 
 /** Re-read identity + grant + workspace after any session change. */
 export async function refreshSessionState(): Promise<void> {
-  resetCapabilitiesHydration()
-  resetSensitivityHydration()
+  resetCapabilitiesHydration();
+  resetSensitivityHydration();
+  resetPageDefaultsHydration();
+  // A preview belongs to the previous session's user list — drop it so a
+  // sign-in never lands inside another identity's mock.
+  clearViewAs();
   // Drop cached live snapshots: they may belong to the previous identity's
   // grants (e.g. absolute values seen before switching to anonymous).
-  liveStore.setState(() => ({}))
-  await Promise.allSettled([
-    hydrateCapabilities(),
-    hydrateSensitivity(),
-    rehydrateWorkspace(),
-  ])
+  liveStore.setState(() => ({}));
+  await hydrateCapabilities();
+  await Promise.allSettled([hydrateSensitivity(), hydratePageDefaults()]);
+  await rehydrateWorkspace();
 }
 
 export async function login(username: string, password: string): Promise<void> {
-  await runApi((client) => client.Auth.login({ payload: { username, password } }))
-  await refreshSessionState()
+  await runApi((client) =>
+    client.Auth.login({ payload: { username, password } }),
+  );
+  await refreshSessionState();
 }
 
 export async function logout(): Promise<void> {
   try {
-    await runApi((client) => client.Auth.logout())
+    await runApi((client) => client.Auth.logout());
   } catch (error) {
     // Logging out is best-effort client-side; the cookie clear matters most.
-    void formatQueryError(error)
+    void formatQueryError(error);
   }
-  await refreshSessionState()
+
+  await refreshSessionState();
 }

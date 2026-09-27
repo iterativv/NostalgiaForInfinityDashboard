@@ -6,14 +6,23 @@
  *
  * Groups the recent closed positions (one instance or the whole fleet) by
  * pair: trades, win rate, net profit and average profit %, sortable. The
- * classic freqtrade "which pairs pay the bills" view.
+ * classic freqtrade "which pairs pay the bills" view. Rows render through
+ * NfiDataTable in the fixed "Sort by" order.
  */
 
 import { NumberInput } from "@carbon/react";
 import { Schema } from "effect";
 import type { Capability } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
-import { EmptyState, Stat, WidgetFrame } from "@nfi/ui";
+import {
+  EmptyState,
+  NfiDataTable,
+  shallow,
+  Stat,
+  useDerived,
+  WidgetFrame,
+  type NfiColumnDef,
+} from "@nfi/ui";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import {
   InstanceIdField,
@@ -42,21 +51,23 @@ const SORTS = [
   { id: "trades", text: "Trades" },
   { id: "winrate", text: "Win rate" },
   { id: "profitPctAvg", text: "Avg %" },
-  { id: "pair", text: "Pair (A→Z)" },
+  { id: "pair", text: "Pair" },
 ] as const;
+
+const SortBySchema = Schema.Literal(...SORTS.map((sort) => sort.id));
 
 export const PairSummaryConfigSchema = Schema.Struct({
   /** An instance id, or `all` for every closed position in the fleet. */
   instanceId: InstanceIdField,
   limit: numberWithDefault(200),
   minTrades: numberWithDefault(1),
-  sortBy: Schema.optionalWith(Schema.Literal(...SORTS.map((s) => s.id)), {
+  sortBy: Schema.optionalWith(SortBySchema, {
     default: (): (typeof SORTS)[number]["id"] => "profitAbs",
   }),
-  sortAsc: booleanWithDefault(false),
   showWinrate: booleanWithDefault(true),
   showAvgPct: booleanWithDefault(true),
 });
+
 export type PairSummaryConfig = typeof PairSummaryConfigSchema.Type;
 
 export const PAIR_SUMMARY_DEFAULTS: PairSummaryConfig =
@@ -73,6 +84,91 @@ interface PairRow {
   readonly profitPctAvg: number;
 }
 
+/**
+ * Right alignment for the numeric columns, carried over from the raw table
+ * this component used before NfiDataTable (which applies classes to cells,
+ * not inline styles) — a block span fills the cell and aligns the content.
+ */
+const RIGHT_ALIGN = { display: "block", textAlign: "right" } as const;
+
+/**
+ * Column set: pair + trades always, win rate / avg % behind config flags.
+ * Rows keep their fixed business order (the "Sort by" pick pre-sorts the
+ * data), so no column opts into header sorting.
+ */
+function buildColumns([showWinrate, showAvgPct]: readonly [
+  boolean,
+  boolean,
+]): NfiColumnDef<PairRow>[] {
+  const defs: (NfiColumnDef<PairRow> | null)[] = [
+    {
+      id: "pair",
+      header: "Pair",
+      cell: ({ row }) => row.original.pair,
+      meta: { className: "nfi-mono" },
+      enableSorting: false,
+    },
+    {
+      id: "trades",
+      header: () => <span style={RIGHT_ALIGN}>Trades</span>,
+      cell: ({ row }) => (
+        <span style={RIGHT_ALIGN}>
+          {row.original.trades}
+          <span style={{ opacity: 0.5 }}>
+            {" "}
+            ({row.original.wins}W/{row.original.losses}L)
+          </span>
+        </span>
+      ),
+      meta: { className: "nfi-mono" },
+      enableSorting: false,
+    },
+    showWinrate
+      ? {
+          id: "winrate",
+          header: () => <span style={RIGHT_ALIGN}>Win rate</span>,
+          cell: ({ row }) => (
+            <span style={RIGHT_ALIGN}>
+              {(row.original.winrate * 100).toFixed(1)}%
+            </span>
+          ),
+          meta: { className: "nfi-mono" },
+          enableSorting: false,
+        }
+      : null,
+    {
+      id: "profitAbs",
+      header: () => <span style={RIGHT_ALIGN}>Net profit</span>,
+      cell: ({ row }) => (
+        <span style={RIGHT_ALIGN}>
+          <span className={pnlClass(row.original.profitAbs)}>
+            {fmt(row.original.profitAbs, 2)}
+          </span>
+        </span>
+      ),
+      meta: { className: "nfi-mono" },
+      enableSorting: false,
+    },
+    showAvgPct
+      ? {
+          id: "avgPct",
+          header: () => <span style={RIGHT_ALIGN}>Avg %</span>,
+          cell: ({ row }) => (
+            <span style={RIGHT_ALIGN}>
+              <span className={pnlClass(row.original.profitPctAvg)}>
+                {row.original.profitPctAvg.toFixed(2)}%
+              </span>
+            </span>
+          ),
+          meta: { className: "nfi-mono" },
+          enableSorting: false,
+        }
+      : null,
+  ];
+
+  return defs.flatMap((entry) => (entry ? [entry] : []));
+}
+
 export function PairSummaryWidget({
   config,
   panelId,
@@ -81,18 +177,24 @@ export function PairSummaryWidget({
   const limit = clampInt(cfg.limit, 200, 10, 500);
   const minTrades = clampInt(cfg.minTrades, 1, 1, 100);
   const access = useWidgetAccess(PAIR_SUMMARY_CAPABILITIES);
+
   const source = useClosedPositionsSource(cfg.instanceId, limit, {
     enabled: access.allowed,
   });
+
   const state = queryState(source.error, source.isLoading);
+
   const accessError = access.allowed
     ? null
     : `Not authorized — needs ${access.missing.join(", ")}`;
+
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<PairSummaryConfig>) =>
     applyWidgetSettings(panelId, "pair-summary", cfg, p);
 
   const positions = source.data ?? [];
+
   const byPair = new Map<
     string,
     {
@@ -103,9 +205,11 @@ export function PairSummaryWidget({
       pctSum: number;
     }
   >();
+
   for (const position of positions) {
     const profitAbs = position.closeProfitAbs ?? position.profitAbs ?? 0;
     const profitPct = position.closeProfitPct ?? position.profitPct ?? 0;
+
     const entry = byPair.get(position.pair) ?? {
       trades: 0,
       wins: 0,
@@ -113,43 +217,65 @@ export function PairSummaryWidget({
       profitAbs: 0,
       pctSum: 0,
     };
+
     entry.trades += 1;
+
     if (profitAbs > 0) entry.wins += 1;
     else if (profitAbs < 0) entry.losses += 1;
     entry.profitAbs += profitAbs;
     entry.pctSum += profitPct;
     byPair.set(position.pair, entry);
   }
+
   const rows: PairRow[] = [...byPair.entries()]
-    .map(([pair, entry]) => ({
-      pair,
-      trades: entry.trades,
-      wins: entry.wins,
-      losses: entry.losses,
-      winrate: entry.trades > 0 ? entry.wins / entry.trades : 0,
-      profitAbs: entry.profitAbs,
-      profitPctSum: entry.pctSum,
-      profitPctAvg: entry.trades > 0 ? entry.pctSum / entry.trades : 0,
-    }))
-    .filter((row) => row.trades >= minTrades)
+    .flatMap(([pair, entry]) =>
+      entry.trades < minTrades
+        ? []
+        : [
+            {
+              pair,
+              trades: entry.trades,
+              wins: entry.wins,
+              losses: entry.losses,
+              winrate: entry.trades > 0 ? entry.wins / entry.trades : 0,
+              profitAbs: entry.profitAbs,
+              profitPctSum: entry.pctSum,
+              profitPctAvg: entry.trades > 0 ? entry.pctSum / entry.trades : 0,
+            },
+          ],
+    )
     .sort((a, b) => {
-      const direction = cfg.sortAsc ? 1 : -1;
       const key = cfg.sortBy;
-      if (key === "pair")
-        return a.pair.localeCompare(b.pair) * (cfg.sortAsc ? 1 : -1);
-      return ((a[key] as number) - (b[key] as number)) * direction;
+
+      // Metrics sort best-first; the pair name sorts A→Z — the "sort by"
+      // pick alone decides both, no separate direction toggle.
+      if (key === "pair") return a.pair.localeCompare(b.pair);
+
+      return b[key] - a[key];
     });
+
   const netProfit = rows.reduce((sum, row) => sum + row.profitAbs, 0);
   const totalTrades = rows.reduce((sum, row) => sum + row.trades, 0);
+
   const best = rows.reduce<PairRow | undefined>(
     (acc, row) =>
       acc === undefined || row.profitAbs > acc.profitAbs ? row : acc,
     undefined,
   );
+
   const worst = rows.reduce<PairRow | undefined>(
     (acc, row) =>
       acc === undefined || row.profitAbs < acc.profitAbs ? row : acc,
     undefined,
+  );
+
+  // Column set derived through a store: rebuilt only when the win-rate /
+  // avg-% flags flip; row order is fixed by the "Sort by" pick (data
+  // pre-sorted above).
+  const columns = useDerived(
+    [cfg.showWinrate, cfg.showAvgPct] as const,
+    buildColumns,
+    { inputs: shallow },
   );
 
   return (
@@ -172,14 +298,8 @@ export function PairSummaryWidget({
           items={SORTS.map((sort) => ({ id: sort.id, text: sort.text }))}
           value={cfg.sortBy}
           onChange={(sortBy) =>
-            patch({ sortBy: sortBy as PairSummaryConfig["sortBy"] })
+            patch({ sortBy: Schema.decodeUnknownSync(SortBySchema)(sortBy) })
           }
-        />
-        <SettingsToggle
-          id={`pair-summary-asc-${panelId}`}
-          label="Ascending"
-          toggled={cfg.sortAsc}
-          onToggle={(v) => patch({ sortAsc: v })}
         />
         <NumberInput
           id={`pair-summary-limit-${panelId}`}
@@ -219,93 +339,52 @@ export function PairSummaryWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Pair Summary"
-      isLoading={state.isLoading}
-      error={accessError ?? state.error}
-    >
-      {rows.length > 0 ? (
-        <div
-          style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}
-        >
-          <div className="nfi-stat-grid">
-            <Stat
-              label="Net profit"
-              value={fmt(netProfit, 2)}
-              sub={`${totalTrades} closed trades`}
-            />
-            <Stat
-              label="Pairs traded"
-              value={String(rows.length)}
-              sub={cfg.instanceId === ALL_INSTANCES ? "fleet-wide" : undefined}
-            />
-            <Stat
-              label="Best / worst"
-              value={best && worst ? `${best.pair} / ${worst.pair}` : "—"}
-              sub={
-                best && worst
-                  ? `${fmt(best.profitAbs, 2)} / ${fmt(worst.profitAbs, 2)}`
-                  : undefined
-              }
-            />
+        title="Pair Summary"
+        isLoading={state.isLoading}
+        error={accessError ?? state.error}
+      >
+        {rows.length > 0 ? (
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}
+          >
+            <div className="nfi-stat-grid">
+              <Stat
+                label="Net profit"
+                value={fmt(netProfit, 2)}
+                sub={`${totalTrades} closed trades`}
+              />
+              <Stat
+                label="Pairs traded"
+                value={String(rows.length)}
+                sub={
+                  cfg.instanceId === ALL_INSTANCES ? "fleet-wide" : undefined
+                }
+              />
+              <Stat
+                label="Best / worst"
+                value={best && worst ? `${best.pair} / ${worst.pair}` : "—"}
+                sub={
+                  best && worst
+                    ? `${fmt(best.profitAbs, 2)} / ${fmt(worst.profitAbs, 2)}`
+                    : undefined
+                }
+              />
+            </div>
+            <div className="nfi-table-scroll">
+              <NfiDataTable
+                columns={columns}
+                data={rows}
+                getRowId={(row) => row.pair}
+              />
+            </div>
           </div>
-          <div className="nfi-table-scroll">
-            <table style={{ width: "100%", fontSize: "0.8125rem" }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left" }}>Pair</th>
-                  <th style={{ textAlign: "right" }}>Trades</th>
-                  {cfg.showWinrate ? (
-                    <th style={{ textAlign: "right" }}>Win rate</th>
-                  ) : null}
-                  <th style={{ textAlign: "right" }}>Net profit</th>
-                  {cfg.showAvgPct ? (
-                    <th style={{ textAlign: "right" }}>Avg %</th>
-                  ) : null}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <tr key={row.pair}>
-                    <td className="nfi-mono">{row.pair}</td>
-                    <td style={{ textAlign: "right" }} className="nfi-mono">
-                      {row.trades}
-                      <span style={{ opacity: 0.5 }}>
-                        {" "}
-                        ({row.wins}W/{row.losses}L)
-                      </span>
-                    </td>
-                    {cfg.showWinrate ? (
-                      <td style={{ textAlign: "right" }} className="nfi-mono">
-                        {(row.winrate * 100).toFixed(1)}%
-                      </td>
-                    ) : null}
-                    <td
-                      style={{ textAlign: "right" }}
-                      className={`nfi-mono ${pnlClass(row.profitAbs)}`}
-                    >
-                      {fmt(row.profitAbs, 2)}
-                    </td>
-                    {cfg.showAvgPct ? (
-                      <td
-                        style={{ textAlign: "right" }}
-                        className={`nfi-mono ${pnlClass(row.profitPctAvg)}`}
-                      >
-                        {row.profitPctAvg.toFixed(2)}%
-                      </td>
-                    ) : null}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : (
-        <EmptyState
-          title="No closed trades"
-          hint="Pair attribution appears once trades close."
-        />
-      )}
-    </WidgetFrame>
+        ) : (
+          <EmptyState
+            title="No closed trades"
+            hint="Pair attribution appears once trades close."
+          />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -319,6 +398,8 @@ export const PairSummaryWidgetDef = defineWidget({
   defaultConfig: PAIR_SUMMARY_DEFAULTS,
   component: PairSummaryWidget,
   capabilities: [...PAIR_SUMMARY_CAPABILITIES],
-  minWidth: 340,
-  minHeight: 140,
+  minWidth: 446,
+  minHeight: 287,
+  defaultWidth: 480,
+  defaultHeight: 360,
 });

@@ -40,9 +40,11 @@ export const InstancesProfitDailyAllCapability = defineCapability({
       const bucket = asBucket(options.bucket);
       const timescale = parseLimitParam(options.days, 30, 100);
       const instances = yield* fleetInstances(ctx);
+
       const outcomes = yield* perInstance(instances, (instance) =>
         instance.service.getProfitBuckets(bucket, timescale),
       );
+
       const merged = new Map<
         string,
         {
@@ -53,16 +55,20 @@ export const InstancesProfitDailyAllCapability = defineCapability({
           weight: number;
         }
       >();
+
       let failures = 0;
       let firstError: string | null = null;
+
       for (const outcome of outcomes) {
         if (outcome.data === undefined) {
           failures += 1;
           firstError = firstError ?? outcome.error ?? "unreachable";
           continue;
         }
+
         for (const entry of outcome.data.buckets) {
           if (entry.date.length === 0) continue;
+
           const acc = merged.get(entry.date) ?? {
             abs: 0,
             fiat: 0,
@@ -70,18 +76,22 @@ export const InstancesProfitDailyAllCapability = defineCapability({
             relWeighted: 0,
             weight: 0,
           };
+
           acc.abs += entry.profitAbs;
           acc.fiat += entry.profitFiat;
           acc.trades += entry.trades;
+
           // Weight each instance's relative return by its absolute profit so
           // big books dominate; zero-profit days fall back to equal weight.
           const weight =
             Math.abs(entry.profitAbs) > 0 ? Math.abs(entry.profitAbs) : 1;
+
           acc.relWeighted += entry.profitRel * weight;
           acc.weight += weight;
           merged.set(entry.date, acc);
         }
       }
+
       if (merged.size === 0 && failures > 0 && failures === instances.length) {
         return yield* Effect.fail(
           toBackendError(
@@ -90,6 +100,7 @@ export const InstancesProfitDailyAllCapability = defineCapability({
           ),
         );
       }
+
       const buckets = [...merged.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([date, acc]) => ({
@@ -99,6 +110,7 @@ export const InstancesProfitDailyAllCapability = defineCapability({
           profitFiat: acc.fiat,
           trades: acc.trades,
         }));
+
       return { bucket, buckets };
     }).pipe(
       Effect.mapError((cause) => asBackendError("fleet profit-daily", cause)),

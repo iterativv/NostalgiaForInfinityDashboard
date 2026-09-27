@@ -1,10 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Effect } from "effect"
-import { BackendError, CreateInstanceRequest, CreateInstanceResponse } from "@nfi/api-contract"
-import { DEFAULT_INSTANCE_ID, defineCapability } from "./definition.js"
-import { asBackendError } from "./errors.js"
+import { Effect } from "effect";
+import {
+  BackendError,
+  CreateInstanceRequest,
+  CreateInstanceResponse,
+} from "@nfi/api-contract";
+import {
+  DEFAULT_INSTANCE_ID,
+  defineCapability,
+  normalizeInstanceColor,
+} from "./definition.js";
+import { asBackendError } from "./errors.js";
 
 /** `instances.create` — store a new named freqtrade connection. */
 export const InstancesCreateCapability = defineCapability({
@@ -19,24 +27,62 @@ export const InstancesCreateCapability = defineCapability({
     Effect.gen(function* () {
       if (options.name.trim() === DEFAULT_INSTANCE_ID) {
         return yield* Effect.fail(
-          BackendError.make({ error: "instance name reserved", detail: `"${DEFAULT_INSTANCE_ID}" is the env instance` }),
-        )
+          BackendError.make({
+            error: "instance name reserved",
+            detail: `"${DEFAULT_INSTANCE_ID}" is the env instance`,
+          }),
+        );
       }
-      let parsed: URL
+
+      let parsed: URL;
+
       try {
-        parsed = new URL(options.baseUrl.trim())
+        parsed = new URL(options.baseUrl.trim());
       } catch {
-        return yield* Effect.fail(BackendError.make({ error: "invalid baseUrl", detail: options.baseUrl }))
+        return yield* Effect.fail(
+          BackendError.make({
+            error: "invalid baseUrl",
+            detail: options.baseUrl,
+          }),
+        );
       }
+
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        return yield* Effect.fail(BackendError.make({ error: "invalid baseUrl", detail: "use http(s)://host:port" }))
+        return yield* Effect.fail(
+          BackendError.make({
+            error: "invalid baseUrl",
+            detail: "use http(s)://host:port",
+          }),
+        );
       }
+
+      let color: string | null = null;
+
+      if (options.color !== undefined) {
+        const normalized = normalizeInstanceColor(options.color);
+
+        if (!normalized.ok) {
+          return yield* Effect.fail(
+            BackendError.make({
+              error: "invalid color",
+              detail: normalized.reason,
+            }),
+          );
+        }
+
+        color = normalized.color;
+      }
+
       const instance = yield* ctx.instances.createInstance({
         name: options.name,
         baseUrl: options.baseUrl,
         username: options.username,
         password: options.password,
-      })
-      return { instance }
-    }).pipe(Effect.mapError((cause) => asBackendError("instance create", cause))),
-})
+        color,
+      });
+
+      return { instance };
+    }).pipe(
+      Effect.mapError((cause) => asBackendError("instance create", cause)),
+    ),
+});

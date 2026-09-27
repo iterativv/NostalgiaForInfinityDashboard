@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { SqlClient, SqlError } from "@effect/sql"
-import { Context, Effect, Layer, Schema } from "effect"
-import type { ParseError } from "effect/ParseResult"
-import { randomUUID } from "node:crypto"
-import { FreqtradeInstance } from "@nfi/api-contract"
+import { SqlClient, SqlError } from "@effect/sql";
+import { Context, Effect, Layer, Schema } from "effect";
+import type { ParseError } from "effect/ParseResult";
+import { randomUUID } from "node:crypto";
+import { FreqtradeInstance } from "@nfi/api-contract";
 
 /**
  * Durable freqtrade instance storage (multi-bot support).
@@ -18,6 +18,7 @@ import { FreqtradeInstance } from "@nfi/api-contract"
  * base_url    TEXT NOT NULL
  * username    TEXT NOT NULL
  * password    TEXT NOT NULL  -- stored server-side only, never sent to browsers
+ * color       TEXT NULL      -- custom #rrggbb identity; NULL = automatic
  * created_at  TEXT NOT NULL
  * updated_at  TEXT NOT NULL
  * ```
@@ -27,23 +28,41 @@ import { FreqtradeInstance } from "@nfi/api-contract"
  * before responding.
  */
 
-export const migrateInstances: Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient> = Effect.gen(
-  function* () {
-    const sql = yield* SqlClient.SqlClient
-    yield* sql`
+export const migrateInstances: Effect.Effect<
+  void,
+  SqlError.SqlError,
+  SqlClient.SqlClient
+> = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
       CREATE TABLE IF NOT EXISTS freqtrade_instances (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
         base_url TEXT NOT NULL,
         username TEXT NOT NULL,
         password TEXT NOT NULL,
+        color TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
-    `
-    yield* sql`CREATE INDEX IF NOT EXISTS idx_freqtrade_instances_name ON freqtrade_instances (name)`
-  },
-).pipe(Effect.asVoid)
+    `;
+  yield* sql`CREATE INDEX IF NOT EXISTS idx_freqtrade_instances_name ON freqtrade_instances (name)`;
+  // SQLite has no `ADD COLUMN IF NOT EXISTS` — check the live columns
+  // before altering, so re-running the migration on fresh and old
+  // databases alike is a no-op.
+  const columns = yield* sql`PRAGMA table_info(freqtrade_instances)`;
+
+  // SAFETY: `PRAGMA table_info` returns one row per column with a `name`
+  // field; the driver hands back untyped rows, so this narrows to the
+  // shape SQLite documents.
+  const hasColor = (columns as ReadonlyArray<{ name?: string }>).some(
+    (column) => column.name === "color",
+  );
+
+  if (!hasColor) {
+    yield* sql`ALTER TABLE freqtrade_instances ADD COLUMN color TEXT`;
+  }
+}).pipe(Effect.asVoid);
 
 const InstanceRow = Schema.Struct({
   id: Schema.String,
@@ -51,132 +70,185 @@ const InstanceRow = Schema.Struct({
   baseUrl: Schema.String,
   username: Schema.String,
   password: Schema.String,
+  color: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String,
-})
-type InstanceRow = typeof InstanceRow.Type
+});
+
+type InstanceRow = typeof InstanceRow.Type;
 
 export interface StoredInstance extends InstanceRow {}
 
-const toPublic = (row: InstanceRow): FreqtradeInstance => ({
-  id: row.id,
-  name: row.name,
-  baseUrl: row.baseUrl,
-  username: row.username,
-  hasPassword: row.password.length > 0,
-  createdAt: row.createdAt,
-  updatedAt: row.updatedAt,
-})
+const toPublic = (row: InstanceRow): FreqtradeInstance => {
+  const base: FreqtradeInstance = {
+    id: row.id,
+    name: row.name,
+    baseUrl: row.baseUrl,
+    username: row.username,
+    hasPassword: row.password.length > 0,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+
+  // NULL color = automatic list assignment — omit the field entirely.
+  if (row.color === null) return base;
+
+  return { ...base, color: row.color };
+};
 
 export interface InstanceRepoService {
-  readonly listInstances: () => Effect.Effect<ReadonlyArray<FreqtradeInstance>, SqlError.SqlError | ParseError>
-  readonly getInstance: (id: string) => Effect.Effect<StoredInstance | null, SqlError.SqlError | ParseError>
+  readonly listInstances: () => Effect.Effect<
+    ReadonlyArray<FreqtradeInstance>,
+    SqlError.SqlError | ParseError
+  >;
+  readonly getInstance: (
+    id: string,
+  ) => Effect.Effect<StoredInstance | null, SqlError.SqlError | ParseError>;
   readonly createInstance: (input: {
-    readonly name: string
-    readonly baseUrl: string
-    readonly username: string
-    readonly password: string
-  }) => Effect.Effect<FreqtradeInstance, SqlError.SqlError | ParseError>
+    readonly name: string;
+    readonly baseUrl: string;
+    readonly username: string;
+    readonly password: string;
+    readonly color?: string | null;
+  }) => Effect.Effect<FreqtradeInstance, SqlError.SqlError | ParseError>;
   readonly updateInstance: (
     id: string,
-    input: { readonly name?: string; readonly baseUrl?: string; readonly username?: string; readonly password?: string },
-  ) => Effect.Effect<FreqtradeInstance | null, SqlError.SqlError | ParseError>
-  readonly deleteInstance: (id: string) => Effect.Effect<boolean, SqlError.SqlError>
+    input: {
+      readonly name?: string;
+      readonly baseUrl?: string;
+      readonly username?: string;
+      readonly password?: string;
+      /**
+       * Undefined = keep the stored color; null = back to automatic;
+       * string = custom `#rrggbb`.
+       */
+      readonly color?: string | null;
+    },
+  ) => Effect.Effect<FreqtradeInstance | null, SqlError.SqlError | ParseError>;
+  readonly deleteInstance: (
+    id: string,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
 }
 
-export class InstanceRepo extends Context.Tag("nfi/InstanceRepo")<InstanceRepo, InstanceRepoService>() {}
+export class InstanceRepo extends Context.Tag("nfi/InstanceRepo")<
+  InstanceRepo,
+  InstanceRepoService
+>() {}
 
-export const InstanceRepoLive: Layer.Layer<InstanceRepo, never, SqlClient.SqlClient> = Layer.effect(
+export const InstanceRepoLive: Layer.Layer<
+  InstanceRepo,
+  never,
+  SqlClient.SqlClient
+> = Layer.effect(
   InstanceRepo,
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
+    const sql = yield* SqlClient.SqlClient;
 
-    const decodeRows = Schema.decodeUnknown(Schema.Array(InstanceRow))
+    const decodeRows = Schema.decodeUnknown(Schema.Array(InstanceRow));
 
     return {
       listInstances: () =>
         Effect.gen(function* () {
           const rows = yield* sql`
-            SELECT id, name, base_url AS baseUrl, username, password, created_at AS createdAt, updated_at AS updatedAt
+            SELECT id, name, base_url AS baseUrl, username, password, color, created_at AS createdAt, updated_at AS updatedAt
             FROM freqtrade_instances
             ORDER BY name ASC
-          `
-          const decoded = yield* decodeRows(rows)
-          return decoded.map(toPublic)
+          `;
+
+          const decoded = yield* decodeRows(rows);
+
+          return decoded.map(toPublic);
         }),
 
       getInstance: (id) =>
         Effect.gen(function* () {
           const rows = yield* sql`
-            SELECT id, name, base_url AS baseUrl, username, password, created_at AS createdAt, updated_at AS updatedAt
+            SELECT id, name, base_url AS baseUrl, username, password, color, created_at AS createdAt, updated_at AS updatedAt
             FROM freqtrade_instances
             WHERE id = ${id}
             LIMIT 1
-          `
-          const decoded = yield* decodeRows(rows)
-          return decoded[0] ?? null
+          `;
+
+          const decoded = yield* decodeRows(rows);
+
+          return decoded[0] ?? null;
         }),
 
       createInstance: (input) =>
         Effect.gen(function* () {
-          const now = new Date().toISOString()
-          const id = `ft-${randomUUID()}`
-          const baseUrl = input.baseUrl.trim().replace(/\/$/, "")
+          const now = new Date().toISOString();
+          const id = `ft-${randomUUID()}`;
+          const baseUrl = input.baseUrl.trim().replace(/\/$/, "");
+          const color = input.color ?? null;
           yield* sql`
-            INSERT INTO freqtrade_instances (id, name, base_url, username, password, created_at, updated_at)
-            VALUES (${id}, ${input.name.trim()}, ${baseUrl}, ${input.username}, ${input.password}, ${now}, ${now})
-          `
+            INSERT INTO freqtrade_instances (id, name, base_url, username, password, color, created_at, updated_at)
+            VALUES (${id}, ${input.name.trim()}, ${baseUrl}, ${input.username}, ${input.password}, ${color}, ${now}, ${now})
+          `;
+
           return toPublic({
             id,
             name: input.name.trim(),
             baseUrl,
             username: input.username,
             password: input.password,
+            color,
             createdAt: now,
             updatedAt: now,
-          })
+          });
         }),
 
       updateInstance: (id, input) =>
         Effect.gen(function* () {
           const existing = yield* sql`
-            SELECT id, name, base_url AS baseUrl, username, password, created_at AS createdAt, updated_at AS updatedAt
+            SELECT id, name, base_url AS baseUrl, username, password, color, created_at AS createdAt, updated_at AS updatedAt
             FROM freqtrade_instances
             WHERE id = ${id}
             LIMIT 1
-          `
-          const decoded = yield* decodeRows(existing)
-          const current = decoded[0]
-          if (!current) return null
+          `;
+
+          const decoded = yield* decodeRows(existing);
+          const current = decoded[0];
+
+          if (!current) return null;
+
           const next = {
             ...current,
             name: input.name !== undefined ? input.name.trim() : current.name,
             baseUrl:
-              input.baseUrl !== undefined ? input.baseUrl.trim().replace(/\/$/, "") : current.baseUrl,
-            username: input.username !== undefined ? input.username : current.username,
+              input.baseUrl !== undefined
+                ? input.baseUrl.trim().replace(/\/$/, "")
+                : current.baseUrl,
+            username:
+              input.username !== undefined ? input.username : current.username,
             // Empty/omitted password keeps the stored secret. NOTE: the
             // `instances.update` capability guards the repoint case above
             // this layer — a baseUrl/username change without a fresh
             // password is rejected there, so the secret kept here can never
             // be forwarded to a repointed host.
             password:
-              input.password !== undefined && input.password.length > 0 ? input.password : current.password,
+              input.password !== undefined && input.password.length > 0
+                ? input.password
+                : current.password,
+            color: input.color !== undefined ? input.color : current.color,
             updatedAt: new Date().toISOString(),
-          }
+          };
+
           yield* sql`
             UPDATE freqtrade_instances
             SET name = ${next.name}, base_url = ${next.baseUrl}, username = ${next.username},
-                password = ${next.password}, updated_at = ${next.updatedAt}
+                password = ${next.password}, color = ${next.color}, updated_at = ${next.updatedAt}
             WHERE id = ${id}
-          `
-          return toPublic(next)
+          `;
+
+          return toPublic(next);
         }),
 
       deleteInstance: (id) =>
         Effect.gen(function* () {
-          yield* sql`DELETE FROM freqtrade_instances WHERE id = ${id}`
-          return true
+          yield* sql`DELETE FROM freqtrade_instances WHERE id = ${id}`;
+
+          return true;
         }),
-    } satisfies InstanceRepoService
+    } satisfies InstanceRepoService;
   }),
-)
+);

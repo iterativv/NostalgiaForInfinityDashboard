@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { BackendError } from "@nfi/api-contract";
-import type { FreqtradeClientService } from "@nfi/freqtrade-client";
+import { FreqtradeError, type FreqtradeClientService } from "@nfi/freqtrade-client";
 import { DEFAULT_INSTANCE_ID, type CapabilityContext } from "./definition.js";
 import { asBackendError } from "./errors.js";
 
@@ -27,7 +27,9 @@ export const fleetInstances = (
     const stored = yield* ctx.instances
       .listInstances()
       .pipe(Effect.mapError((cause) => asBackendError("instance list", cause)));
+
     const rows: Array<{ id: string; name: string }> = [];
+
     // The implicit env-backed entry only exists when the env default is
     // actually configured (FREQTRADE_URL / FREQTRADE_PASSWORD set); the
     // built-in fallback URL is an empty slot, not an instance. When
@@ -35,7 +37,9 @@ export const fleetInstances = (
     // would duplicate the same bot across the fleet.
     if (ctx.defaultEnvConfigured && !ctx.defaultFollowsStoredInstance)
       rows.push({ id: DEFAULT_INSTANCE_ID, name: "default" });
+
     for (const row of stored) rows.push({ id: row.id, name: row.name });
+
     return yield* Effect.forEach(rows, ({ id, name }) =>
       ctx
         .resolveInstance(id)
@@ -50,22 +54,28 @@ export interface FleetOutcome<T> {
   readonly error?: string;
 }
 
+/**
+ * Failure carrying a human message and optional detail — the shared surface
+ * of `BackendError` and `ForbiddenError` (their `_tag` is irrelevant here).
+ */
+const DetailedFailure = Schema.Struct({
+  error: Schema.String,
+  detail: Schema.optional(Schema.String),
+});
+
+const isDetailedFailure = Schema.is(DetailedFailure);
+
+const isFreqtradeFailure = Schema.is(FreqtradeError);
+
 const describeError = (cause: unknown): string => {
-  if (typeof cause === "object" && cause !== null) {
-    const record = cause as Record<string, unknown>;
-    if (typeof record["error"] === "string") {
-      const detail = record["detail"];
-      return detail !== undefined
-        ? `${record["error"]}: ${String(detail)}`
-        : record["error"];
-    }
-    if (
-      typeof record["operation"] === "string" &&
-      record["reason"] !== undefined
-    ) {
-      return `${record["operation"]} failed: ${String(record["reason"])}`;
-    }
+  if (isDetailedFailure(cause)) {
+    return cause.detail !== undefined ? `${cause.error}: ${cause.detail}` : cause.error;
   }
+
+  if (isFreqtradeFailure(cause)) {
+    return `${cause.operation} failed: ${cause.reason}`;
+  }
+
   return cause instanceof Error ? cause.message : String(cause);
 };
 

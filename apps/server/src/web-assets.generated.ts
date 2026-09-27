@@ -5,4 +5,4 @@
 // committed copy is an empty stub; release builds regenerate it from
 // apps/web/dist before compiling the single-file binary.
 
-export const webAssets: Record<string, { body: string; base64: boolean }> = {}
+export const webAssets: Record<string, { body: string; base64: boolean }> = {};

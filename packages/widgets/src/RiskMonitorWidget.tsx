@@ -13,14 +13,21 @@ import { NumberInput, Tag } from "@carbon/react";
 import { Schema } from "effect";
 import type { Capability } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
-import { EmptyState, Stat, WidgetFrame } from "@nfi/ui";
+import {
+  EmptyState,
+  shallow,
+  Stat,
+  useDerived,
+  WidgetFrame,
+} from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import { InstanceIdField, numberWithDefault } from "./shared/config";
 import { useCompactMode } from "./shared/size";
 import { clampInt } from "./shared/format";
 import { queryState, useWidgetAccess } from "./shared/query";
-import { InstanceSelect } from "./shared/InstanceSelect";
+import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
+import { useOpenPositionsSource } from "./shared/sources";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
 import {
   closeWidgetSettings,
@@ -30,13 +37,19 @@ import {
 export const RISK_MONITOR_CAPABILITIES: ReadonlyArray<Capability> = [
   "instances.open-positions",
   "instances.balance",
+  // Fleet mode (`instanceId: "all"`): positions/capital come from the
+  // fleet aggregates instead of the per-instance reads.
+  "instances.positions-all",
+  "instances.overview",
 ];
 
 export const RiskMonitorConfigSchema = Schema.Struct({
+  /** An instance id, or `all` for fleet-wide risk. */
   instanceId: InstanceIdField,
   warnExposurePct: numberWithDefault(50),
   maxExposurePct: numberWithDefault(80),
 });
+
 export type RiskMonitorConfig = typeof RiskMonitorConfigSchema.Type;
 
 export const RISK_MONITOR_DEFAULTS: RiskMonitorConfig =
@@ -49,43 +62,113 @@ export function RiskMonitorWidget({
   const cfg = config;
   const warnAt = clampInt(cfg.warnExposurePct, 50, 1, 200);
   const maxAt = clampInt(cfg.maxExposurePct, 80, 1, 300);
+  const fleet = cfg.instanceId === ALL_INSTANCES;
   const access = useWidgetAccess(RISK_MONITOR_CAPABILITIES);
-  const openQ = useCapability(
-    "instances.open-positions",
-    { id: cfg.instanceId },
-    { enabled: access.allowed },
-  );
-  const balanceQ = useCapability(
+
+  const openSrc = useOpenPositionsSource(cfg.instanceId, {
+    enabled: access.allowed,
+  });
+
+  const perBalance = useCapability(
     "instances.balance",
     { id: cfg.instanceId },
-    { enabled: access.allowed },
+    { enabled: access.allowed && !fleet },
   );
-  const state = queryState(
-    openQ.error ?? balanceQ.error,
-    openQ.isLoading || balanceQ.isLoading,
+
+  const overview = useCapability(
+    "instances.overview",
+    {},
+    { enabled: access.allowed && fleet },
   );
+
+  const error = fleet
+    ? (overview.error ?? openSrc.error)
+    : (openSrc.error ?? perBalance.error);
+
+  const isLoading = fleet
+    ? overview.isLoading || openSrc.isLoading
+    : openSrc.isLoading || perBalance.isLoading;
+
+  const state = queryState(error, isLoading);
+
   const accessError = access.allowed
     ? null
     : `Not authorized — needs ${access.missing.join(", ")}`;
+
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<RiskMonitorConfig>) =>
     applyWidgetSettings(panelId, "risk-monitor", cfg, p);
 
-  const positions = openQ.data?.positions ?? [];
-  const deployed = positions.reduce((s, p) => s + p.stakeAmount, 0);
-  const capital = balanceQ.data?.totalStake ?? 0;
-  const exposurePct =
-    capital > 0 ? (deployed / capital) * 100 : positions.length > 0 ? 100 : 0;
-  const unrealized = positions.reduce((s, p) => s + (p.profitAbs ?? 0), 0);
-  const leverages = positions.map((p) => p.leverage ?? 1);
-  const maxLev = leverages.length > 0 ? Math.max(...leverages) : 1;
-  const longs = positions.filter((p) => !p.isShort).length;
-  const shorts = positions.filter((p) => p.isShort).length;
-  const largest =
-    positions.length > 0 ? Math.max(...positions.map((p) => p.stakeAmount)) : 0;
-  const largestPct = deployed > 0 ? (largest / deployed) * 100 : 0;
+  /** Capital base for the exposure ratio: own wallet, or the fleet total. */
+  const capitalBase = fleet
+    ? (overview.data?.totals.totalStake ?? 0)
+    : (perBalance.data?.totalStake ?? 0);
+
+  // Derived through a store: single-pass aggregation (no spread Math.max
+  // over the position list) reruns only when positions or capital change,
+  // so store/resize re-renders stay cheap.
+  const risk = useDerived(
+    [openSrc.data, capitalBase] as const,
+    ([positionsData, capital]) => {
+      const positions = positionsData ?? [];
+      let deployed = 0;
+      let unrealized = 0;
+      let maxLev = 1;
+      let longs = 0;
+      let shorts = 0;
+      let largest = 0;
+
+      for (const p of positions) {
+        deployed += p.stakeAmount;
+        unrealized += p.profitAbs ?? 0;
+        const lev = p.leverage ?? 1;
+
+        if (lev > maxLev) maxLev = lev;
+
+        if (p.isShort) shorts += 1;
+        else longs += 1;
+
+        if (p.stakeAmount > largest) largest = p.stakeAmount;
+      }
+
+      return {
+        positions,
+        deployed,
+        capital,
+        exposurePct:
+          capital > 0
+            ? (deployed / capital) * 100
+            : positions.length > 0
+              ? 100
+              : 0,
+        unrealized,
+        maxLev,
+        longs,
+        shorts,
+        largest,
+        largestPct: deployed > 0 ? (largest / deployed) * 100 : 0,
+      };
+    },
+    { inputs: shallow },
+  );
+
+  const {
+    positions,
+    deployed,
+    capital,
+    exposurePct,
+    unrealized,
+    maxLev,
+    longs,
+    shorts,
+    largest,
+    largestPct,
+  } = risk;
+
   // Short cells drop the thresholds explainer (still in ⚙ settings).
   const compact = useCompactMode(200);
+
   const exposureTone =
     exposurePct >= maxAt ? "red" : exposurePct >= warnAt ? "purple" : "green";
 
@@ -101,6 +184,7 @@ export function RiskMonitorWidget({
           id={`risk-inst-${panelId}`}
           value={cfg.instanceId}
           onChange={(instanceId) => patch({ instanceId })}
+          allowAll
         />
         <NumberInput
           id={`risk-warn-${panelId}`}
@@ -128,63 +212,69 @@ export function RiskMonitorWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Risk Monitor"
-      isLoading={state.isLoading}
-      error={accessError ?? state.error}
-    >
-      {positions.length > 0 || (balanceQ.data && capital > 0) ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.75rem",
-            flex: "1 1 auto",
-            minHeight: 0,
-          }}
-        >
-          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-            <Tag type={exposureTone} size="sm">
-              exposure {exposurePct.toFixed(1)}%
-            </Tag>
-            <Tag type={unrealized >= 0 ? "green" : "red"} size="sm">
-              unrealized {unrealized >= 0 ? "+" : ""}
-              {unrealized.toFixed(2)}
-            </Tag>
+        title="Risk Monitor"
+        isLoading={state.isLoading}
+        error={accessError ?? state.error}
+      >
+        {positions.length > 0 || capital > 0 ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+              flex: "1 1 auto",
+              minHeight: 0,
+            }}
+          >
+            <div
+              style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}
+            >
+              <Tag type={exposureTone} size="sm">
+                exposure {exposurePct.toFixed(1)}%
+              </Tag>
+              <Tag type={unrealized >= 0 ? "green" : "red"} size="sm">
+                unrealized {unrealized >= 0 ? "+" : ""}
+                {unrealized.toFixed(2)}
+              </Tag>
+            </div>
+            <div className="nfi-stat-grid nfi-stat-grid--fill">
+              <Stat
+                label="Deployed"
+                value={deployed.toFixed(2)}
+                sub={
+                  capital > 0
+                    ? `of ${capital.toFixed(2)} capital`
+                    : `${positions.length} open`
+                }
+              />
+              <Stat
+                label="Max leverage"
+                value={`${maxLev}x`}
+                sub={`${longs}L / ${shorts}S`}
+              />
+              <Stat
+                label="Largest position"
+                value={`${largestPct.toFixed(1)}%`}
+                sub={`${largest.toFixed(2)} stake`}
+              />
+            </div>
+            {!compact ? (
+              <p style={{ fontSize: "0.75rem", opacity: 0.65 }}>
+                Warn at {warnAt}% · critical at {maxAt}% of capital deployed.
+              </p>
+            ) : null}
           </div>
-          <div className="nfi-stat-grid nfi-stat-grid--fill">
-            <Stat
-              label="Deployed"
-              value={deployed.toFixed(2)}
-              sub={
-                capital > 0
-                  ? `of ${capital.toFixed(2)} capital`
-                  : `${positions.length} open`
-              }
-            />
-            <Stat
-              label="Max leverage"
-              value={`${maxLev}x`}
-              sub={`${longs}L / ${shorts}S`}
-            />
-            <Stat
-              label="Largest position"
-              value={`${largestPct.toFixed(1)}%`}
-              sub={`${largest.toFixed(2)} stake`}
-            />
-          </div>
-          {!compact ? (
-            <p style={{ fontSize: "0.75rem", opacity: 0.65 }}>
-              Warn at {warnAt}% · critical at {maxAt}% of capital deployed.
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <EmptyState
-          title="No risk"
-          hint="Flat — no open positions on this instance."
-        />
-      )}
-    </WidgetFrame>
+        ) : (
+          <EmptyState
+            title="No risk"
+            hint={
+              fleet
+                ? "Flat — no open positions in the fleet."
+                : "Flat — no open positions on this instance."
+            }
+          />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -198,6 +288,8 @@ export const RiskMonitorWidgetDef = defineWidget({
   defaultConfig: RISK_MONITOR_DEFAULTS,
   component: RiskMonitorWidget,
   capabilities: [...RISK_MONITOR_CAPABILITIES],
-  minWidth: 320,
-  minHeight: 150,
+  minWidth: 370,
+  minHeight: 216,
+  defaultWidth: 480,
+  defaultHeight: 380,
 });

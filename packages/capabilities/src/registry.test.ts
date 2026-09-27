@@ -24,12 +24,14 @@ import {
   isNonSensitiveCapabilities,
   nonSensitiveCapabilityNames,
 } from "./sensitivity.js";
-import { Effect } from "effect";
+import { Effect, Match } from "effect";
+import type { AST } from "effect/SchemaAST";
 
 describe("capability registry (hard-coded, type-safe)", () => {
-  it("covers the wire vocabulary exactly (56 capabilities)", () => {
-    expect(ALL_CAPABILITY_NAMES).toHaveLength(56);
+  it("covers the wire vocabulary exactly (65 capabilities)", () => {
+    expect(ALL_CAPABILITY_NAMES).toHaveLength(65);
     expect(new Set(ALL_CAPABILITY_NAMES)).toEqual(new Set(ALL_CAPABILITIES));
+
     for (const [key, def] of Object.entries(CAPABILITY_REGISTRY)) {
       expect(def.name, `definition file for ${key}`).toBe(key);
       expect(def.description.length).toBeGreaterThan(0);
@@ -40,13 +42,12 @@ describe("capability registry (hard-coded, type-safe)", () => {
     for (const name of ALL_CAPABILITY_NAMES) {
       const def = CAPABILITY_REGISTRY[name];
       expect(def.exposes.length, `${name} exposes nothing`).toBeGreaterThan(0);
+
       for (const kind of def.exposes) {
-        expect(
-          typeof kind === "string" && kind.length > 0,
-          `${name} exposes invalid kind ${String(kind)}`,
-        ).toBe(true);
+        expect(kind.length > 0, `${name} exposes invalid kind`).toBe(true);
       }
     }
+
     // Relative mirrors are the only capabilities exposing relative values —
     // and they expose nothing else.
     for (const name of ALL_CAPABILITY_NAMES) {
@@ -56,8 +57,9 @@ describe("capability registry (hard-coded, type-safe)", () => {
         ]);
       }
     }
+
     // Spot-checks for the leaky kinds the default criteria rely on.
-    const spot = {
+    const spot: Partial<Record<CapabilityName, ReadonlyArray<string>>> = {
       "bot.config": ["strategy-config", "stake-amount"],
       "instances.config": ["strategy-config", "stake-amount"],
       "instances.list": ["infra-location"],
@@ -68,16 +70,19 @@ describe("capability registry (hard-coded, type-safe)", () => {
       "instances.candles": ["market-data"],
       "instances.status": ["bot-state"],
     } as const;
-    for (const [name, kinds] of Object.entries(spot)) {
-      expect(
-        CAPABILITY_REGISTRY[name as CapabilityName]?.exposes,
-        name,
-      ).toEqual([...kinds]);
+
+    for (const name of ALL_CAPABILITY_NAMES) {
+      const kinds = spot[name];
+
+      if (kinds !== undefined) {
+        expect(CAPABILITY_REGISTRY[name]?.exposes, name).toEqual([...kinds]);
+      }
     }
   });
 
   it("keeps the anonymous seed non-sensitive under the default criteria", () => {
     const all = new Set(ALL_CAPABILITY_NAMES);
+
     for (const cap of NON_SENSITIVE_CAPABILITIES) {
       expect(all.has(cap), `${cap} not registered`).toBe(true);
       expect(
@@ -98,6 +103,7 @@ describe("capability registry (hard-coded, type-safe)", () => {
     // cannot ship as "non-sensitive" while returning absolute figures.
     const amountish = (field: string): boolean => {
       const s = field.toLowerCase();
+
       // Non-amount numerics: shares/percentages, indices, counts, rates,
       // market prices/volumes, currency NAMES, timings, identifiers.
       if (
@@ -107,59 +113,52 @@ describe("capability registry (hard-coded, type-safe)", () => {
       ) {
         return false;
       }
+
       return /stake|balance|amount|free|used|total|capital|fiat|profit|cost|fee|liquidat|funding|abs/.test(
         s,
       );
     };
+
     const locationish = (field: string): boolean => /url|host/i.test(field);
 
-    const collect = (ast: unknown, into: Set<string>): void => {
-      if (!ast || typeof ast !== "object") return;
-      const node = ast as {
-        _tag?: string;
-        propertySignatures?: ReadonlyArray<{ name: unknown; type: unknown }>;
-        from?: unknown;
-        to?: unknown;
-        members?: ReadonlyArray<unknown>;
-        elements?: ReadonlyArray<{ type: unknown }>;
-        rest?: ReadonlyArray<unknown>;
-      };
-      switch (node._tag) {
-        case "TypeLiteral":
-          for (const ps of node.propertySignatures ?? []) {
-            const name = String(ps.name);
-            if (amountish(name) || locationish(name)) into.add(name);
-            collect(ps.type, into);
-          }
-          return;
-        case "Refinement":
-          collect(node.from, into);
-          return;
-        case "Transformation":
-          collect(node.from, into);
-          collect(node.to, into);
-          return;
-        case "Union":
-          for (const member of node.members ?? []) collect(member, into);
-          return;
-        case "TupleType":
-          // `elements`/`rest` entries are descriptors ({ type, annotations }),
-          // not AST nodes — unwrap before recursing.
-          for (const element of node.elements ?? [])
-            collect(element.type, into);
-          for (const rest of node.rest ?? [])
-            collect((rest as { type?: unknown }).type ?? rest, into);
-          return;
-        default:
-          return;
-      }
+    const collect = (ast: AST, into: Set<string>): void => {
+      Match.value(ast).pipe(
+        Match.tags({
+          TypeLiteral: (node) => {
+            for (const ps of node.propertySignatures) {
+              const name = String(ps.name);
+
+              if (amountish(name) || locationish(name)) into.add(name);
+              collect(ps.type, into);
+            }
+          },
+          Refinement: (node) => collect(node.from, into),
+          Transformation: (node) => {
+            collect(node.from, into);
+            collect(node.to, into);
+          },
+          Union: (node) => {
+            for (const member of node.types) collect(member, into);
+          },
+          TupleType: (node) => {
+            // `elements` and `rest` entries are both optional-element
+            // wrappers ({ type }) around the real AST node.
+            for (const element of node.elements) collect(element.type, into);
+
+            for (const rest of node.rest) collect(rest.type, into);
+          },
+        }),
+        Match.orElse(() => undefined),
+      );
     };
 
     let checked = 0;
+
     for (const name of ALL_CAPABILITY_NAMES) {
       const def = CAPABILITY_REGISTRY[name];
       const flagged = new Set<string>();
-      collect((def.resultSchema as { ast: unknown }).ast, flagged);
+      collect(def.resultSchema.ast, flagged);
+
       if (flagged.size === 0) continue;
       checked += 1;
       expect(
@@ -167,6 +166,7 @@ describe("capability registry (hard-coded, type-safe)", () => {
         `${name} returns amount/location-shaped fields [${[...flagged].join(", ")}] yet is non-sensitive by default`,
       ).toBe(true);
     }
+
     // Sanity: the walk actually flagged the amount-carrying surface
     // (balances, profits, trades, configs, histories, fleet views,
     // instance URLs) — not just a handful of flat DTOs.
@@ -178,6 +178,7 @@ describe("capability registry (hard-coded, type-safe)", () => {
       const def = CAPABILITY_REGISTRY[name];
       expect(def.pollMs, name).toBeGreaterThan(0);
     }
+
     expect(CAPABILITY_REGISTRY["system.health"]?.streamable).toBe(true);
     expect(CAPABILITY_REGISTRY["system.backend-config"]?.streamable).toBe(
       false,
@@ -220,11 +221,13 @@ describe("capability registry (hard-coded, type-safe)", () => {
       pair: "BTC/USDT",
       timeframe: "5m",
     });
+
     const b = capabilityKey("instances.candles", {
       timeframe: "5m",
       pair: "BTC/USDT",
       id: "x",
     });
+
     expect(a).toBe(b);
     expect(
       capabilityKey("instances.candles", { id: "y", pair: "BTC/USDT" }),
@@ -237,17 +240,20 @@ describe("capability registry (hard-coded, type-safe)", () => {
       id: "ft-1",
       limit: "50",
     });
+
     expect(path.startsWith("/api/stream?capability=")).toBe(true);
     const url = new URL(path, "http://localhost");
+
     const parsed = await Effect.runPromise(
       parseStreamRequest(
         url.searchParams.get("capability") ?? undefined,
         url.searchParams.get("options") ?? undefined,
       ),
     );
+
     expect(parsed.name).toBe("instances.closed-positions");
     expect(parsed.options).toEqual({ id: "ft-1", limit: "50" });
-    expect(encodeStreamOptions({})).not.toContain("+");
+    expect(encodeStreamOptions("instances.list", {})).not.toContain("+");
     await expect(
       Effect.runPromise(parseStreamRequest("nope", undefined)),
     ).rejects.toThrow();
@@ -269,6 +275,7 @@ describe("adjustable sensitivity criteria", () => {
     const relaxed = DEFAULT_SENSITIVE_INFO_KINDS.filter(
       (kind) => kind !== "stake-amount" && kind !== "strategy-config",
     );
+
     expect(isCapabilitySensitive("bot.config", relaxed)).toBe(false);
     expect(isCapabilitySensitive("bot.balance", relaxed)).toBe(true);
 
@@ -301,14 +308,17 @@ describe("adjustable sensitivity criteria", () => {
 
   it("derives the non-sensitive-by-default capability set", () => {
     const derived = nonSensitiveCapabilityNames();
+
     // The anonymous seed is a subset of the derived set...
     for (const cap of NON_SENSITIVE_CAPABILITIES) {
       expect(derived).toContain(cap);
     }
+
     // ...and the derived set never contains an amount/infra/user leak.
     for (const name of derived) {
       expect(isCapabilitySensitiveByDefault(name), name).toBe(false);
     }
+
     expect(derived).toContain("instances.health");
     expect(derived).not.toContain("bot.balance");
   });

@@ -38,6 +38,7 @@ export const InstancesProfitDailyCapability = defineCapability({
       const bucket = asBucket(options.bucket);
       const timescale = parseLimitParam(options.days, 30, 100);
       const service = yield* ctx.resolveInstance(options.id);
+
       return yield* service.getProfitBuckets(bucket, timescale);
     }).pipe(
       Effect.mapError((cause) =>

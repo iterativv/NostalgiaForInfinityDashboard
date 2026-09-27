@@ -26,6 +26,7 @@ export const RELATIVE_BALANCE_CAPABILITIES: ReadonlyArray<Capability> = [
 export const RelativeBalanceConfigSchema = Schema.Struct({
   instanceId: InstanceIdField,
 });
+
 export type RelativeBalanceConfig = typeof RelativeBalanceConfigSchema.Type;
 
 export const RELATIVE_BALANCE_DEFAULTS: RelativeBalanceConfig =
@@ -42,12 +43,15 @@ export function RelativeBalanceWidget({
   panelId,
 }: WidgetProps<RelativeBalanceConfig>) {
   const cfg = config;
+
   const { data, error, isLoading } = useCapability(
     "instances.balance.relative",
     { id: cfg.instanceId },
   );
+
   const state = queryState(error, isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
+
   const patch = (p: Partial<RelativeBalanceConfig>) =>
     applyWidgetSettings(panelId, "balance-relative", cfg, p);
 
@@ -57,12 +61,15 @@ export function RelativeBalanceWidget({
       group: currency.currency,
       value: Number((currency.weight * 100).toFixed(2)),
     }));
+
   const top =
     allocation.length > 0
       ? allocation.reduce((a, b) => (b.value > a.value ? b : a))
       : null;
+
   // Compact cells get the ranked percentage list — a donut needs ~250px.
   const compact = useCompactMode(250);
+
   const donutOptions: DonutChartOptions = {
     title: "Allocation %",
     donut: {
@@ -72,6 +79,7 @@ export function RelativeBalanceWidget({
     },
     theme: "g100",
   };
+
   return (
     <>
       <WidgetSettingsModal
@@ -87,75 +95,75 @@ export function RelativeBalanceWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Allocation %"
-      isLoading={state.isLoading}
-      error={state.error}
-    >
-      {data ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.75rem",
-            flex: "1 1 auto",
-            minHeight: 0,
-          }}
-        >
-          <Stat
-            label="Tracked currencies"
-            value={String(data.currencies.length)}
-            sub={
-              top
-                ? `largest ${top.group} ${top.value.toFixed(1)}%`
-                : "no allocation"
-            }
-          />
-          {allocation.length > 1 && !compact ? (
-            <ChartBox min={180}>
-              {(height) => (
-                <DonutChart
-                  data={allocation}
-                  options={{ ...donutOptions, height: `${height}px` }}
-                />
-              )}
-            </ChartBox>
-          ) : (
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "0.25rem",
-                flex: "1 1 auto",
-                minHeight: 0,
-                overflowY: "auto",
-              }}
-            >
-              {allocation.slice(0, 10).map((entry) => (
-                <div
-                  key={entry.group}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    gap: "0.5rem",
-                    fontSize: "0.875rem",
-                  }}
-                >
-                  <span>{entry.group}</span>
-                  <span
-                    className="nfi-mono"
-                    style={{ fontVariantNumeric: "tabular-nums" }}
+        title="Allocation %"
+        isLoading={state.isLoading}
+        error={state.error}
+      >
+        {data ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+              flex: "1 1 auto",
+              minHeight: 0,
+            }}
+          >
+            <Stat
+              label="Tracked currencies"
+              value={String(data.currencies.length)}
+              sub={
+                top
+                  ? `largest ${top.group} ${top.value.toFixed(1)}%`
+                  : "no allocation"
+              }
+            />
+            {allocation.length > 1 && !compact ? (
+              <ChartBox min={180}>
+                {(height) => (
+                  <DonutChart
+                    data={allocation}
+                    options={{ ...donutOptions, height: `${height}px` }}
+                  />
+                )}
+              </ChartBox>
+            ) : (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.25rem",
+                  flex: "1 1 auto",
+                  minHeight: 0,
+                  overflowY: "auto",
+                }}
+              >
+                {allocation.slice(0, 10).map((entry) => (
+                  <div
+                    key={entry.group}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: "0.5rem",
+                      fontSize: "0.875rem",
+                    }}
                   >
-                    {entry.value.toFixed(2)}%
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <EmptyState title="No allocation data" />
-      )}
-    </WidgetFrame>
+                    <span>{entry.group}</span>
+                    <span
+                      className="nfi-mono"
+                      style={{ fontVariantNumeric: "tabular-nums" }}
+                    >
+                      {entry.value.toFixed(2)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <EmptyState title="No allocation data" />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -170,6 +178,8 @@ export const RelativeBalanceWidgetDef = defineWidget({
   defaultConfig: RELATIVE_BALANCE_DEFAULTS,
   component: RelativeBalanceWidget,
   capabilities: [...RELATIVE_BALANCE_CAPABILITIES],
-  minWidth: 280,
-  minHeight: 120,
+  minWidth: 350,
+  minHeight: 150,
+  defaultWidth: 360,
+  defaultHeight: 220,
 });

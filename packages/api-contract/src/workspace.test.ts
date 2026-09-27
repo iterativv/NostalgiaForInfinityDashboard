@@ -54,9 +54,9 @@ describe("Workspace schema", () => {
     expect(workspace.version).toBe(3);
     // JSON transport round trip: encode -> stringify -> parse -> decode.
     const encoded = Schema.encodeSync(Workspace)(workspace);
-    const revived = decodeWorkspace(
-      JSON.parse(JSON.stringify(encoded)) as unknown,
-    );
+
+    const revived = decodeWorkspace(JSON.parse(JSON.stringify(encoded)));
+
     expect(revived).toEqual(workspace);
   });
 
@@ -66,6 +66,7 @@ describe("Workspace schema", () => {
         ...VALID_WORKSPACE,
         layout: { ...VALID_WORKSPACE.layout, ratio },
       });
+
     expect(() => decodeWorkspace(bad(0))).toThrow();
     expect(() => decodeWorkspace(bad(1))).toThrow();
     expect(() => decodeWorkspace(bad(0.5))).not.toThrow();
@@ -91,13 +92,14 @@ describe("Workspace schema", () => {
       icon: "rocket",
       origin: "user",
     });
+
     expect(decorated.icon).toBe("rocket");
     expect(decorated.origin).toBe("user");
+
     const revived = decodeWorkspace(
-      JSON.parse(
-        JSON.stringify(Schema.encodeSync(Workspace)(decorated)),
-      ) as unknown,
+      JSON.parse(JSON.stringify(Schema.encodeSync(Workspace)(decorated))),
     );
+
     expect(revived).toEqual(decorated);
 
     // Absent metadata stays absent; unknown origins are rejected.
@@ -124,6 +126,7 @@ describe("Workspace schema", () => {
     // and every required capability must be grantable (member of ALL).
     const all = new Set(ALL_CAPABILITIES);
     expect(ALL_CAPABILITIES.length).toBeGreaterThan(0);
+
     for (const [endpoint, caps] of Object.entries(ENDPOINT_CAPABILITIES)) {
       for (const cap of caps) {
         expect(
@@ -132,6 +135,7 @@ describe("Workspace schema", () => {
         ).toBe(true);
       }
     }
+
     expect(capabilitiesForEndpoint("Bot", "status")).toEqual(["bot.status"]);
     expect(capabilitiesForEndpoint("Bot", "balanceRelative")).toEqual([
       "bot.balance.relative",
@@ -162,6 +166,7 @@ describe("Workspace schema", () => {
       },
       second: { type: "tabs", id: "t", panels: [], activePanelId: null },
     } as const;
+
     expect(() =>
       Schema.decodeUnknownSync(LayoutNode)(structuredClone(nested)),
     ).not.toThrow();
@@ -169,7 +174,15 @@ describe("Workspace schema", () => {
 });
 
 describe("grid layout schema + legacy migration", () => {
-  const tabs = (id: string, panels: string[]): unknown => ({
+  /** Wire shape of a `tabs` layout node as persisted (pre-decode). */
+  interface TabsNodeFixture {
+    readonly type: "tabs";
+    readonly id: string;
+    readonly panels: string[];
+    readonly activePanelId: string | null;
+  }
+
+  const tabs = (id: string, panels: string[]): TabsNodeFixture => ({
     type: "tabs",
     id,
     panels,
@@ -212,17 +225,16 @@ describe("grid layout schema + legacy migration", () => {
         },
       ],
     };
+
     expect(() =>
       Schema.decodeUnknownSync(LayoutNode)(structuredClone(grid)),
     ).not.toThrow();
     // Zero/negative tracks and non-integer coordinates are refused.
-    const badTracks = structuredClone(grid) as Record<string, unknown>;
-    badTracks["columns"] = [1, 0];
+    const badTracks = { ...structuredClone(grid), columns: [1, 0] };
     expect(() => Schema.decodeUnknownSync(LayoutNode)(badTracks)).toThrow();
-    const badCoord = structuredClone(grid) as {
-      items: Array<Record<string, unknown>>;
-    };
-    badCoord.items[0]!["col"] = 0;
+
+    const badCoord = structuredClone(grid);
+    badCoord.items[0]!.col = 0;
     expect(() => Schema.decodeUnknownSync(LayoutNode)(badCoord)).toThrow();
   });
 
@@ -257,8 +269,10 @@ describe("grid layout schema + legacy migration", () => {
       },
       activePanelId: "panel-a",
     };
+
     const migrated = decodePersistedWorkspace(legacy);
     expect(migrated.layout.type).toBe("grid");
+
     if (migrated.layout.type !== "grid") return;
     expect(migrated.layout.columns).toHaveLength(3);
     expect(migrated.layout.rows).toHaveLength(1);
@@ -301,8 +315,10 @@ describe("grid layout schema + legacy migration", () => {
       },
       activePanelId: "panel-a",
     };
+
     const migrated = decodePersistedWorkspace(legacy);
     expect(migrated.layout.type).toBe("grid");
+
     if (migrated.layout.type !== "grid") return;
     // The horizontal child split flattens into the vertical parent: a 2x2
     // grid whose bottom row spans both columns (rows keep the 0.7/0.3 split).
@@ -312,10 +328,330 @@ describe("grid layout schema + legacy migration", () => {
     const bottom = migrated.layout.items.find((i) => i.row === 2);
     expect(bottom).toMatchObject({ col: 1, colSpan: 2 });
     expect(migrated.layout.items).toHaveLength(3);
+
     // Second run changes nothing (idempotent).
     const again = decodePersistedWorkspace(
-      JSON.parse(JSON.stringify(migrated)) as never,
+      JSON.parse(JSON.stringify(migrated)),
     );
+
     expect(again).toEqual(migrated);
+  });
+});
+
+describe("masonry layout schema + legacy migration", () => {
+  const tabs = (id: string, panels: string[]) => ({
+    type: "tabs",
+    id,
+    panels,
+    activePanelId: panels[0] ?? null,
+  });
+
+  it("decodes masonry nodes with target column width and card heights", () => {
+    const masonry = {
+      type: "masonry",
+      id: "m",
+      columnWidth: 320,
+      items: [
+        {
+          type: "masonry-item",
+          id: "c1",
+          height: 300,
+          child: tabs("t1", ["a"]),
+        },
+        {
+          type: "masonry-item",
+          id: "c2",
+          height: 180,
+          child: tabs("t2", ["b"]),
+        },
+      ],
+    };
+
+    const decoded = Schema.decodeUnknownSync(LayoutNode)(
+      structuredClone(masonry),
+    );
+
+    expect(decoded.type).toBe("masonry");
+
+    // Zero/negative column width or heights are refused.
+    const badWidth = { ...structuredClone(masonry), columnWidth: 0 };
+    expect(() => Schema.decodeUnknownSync(LayoutNode)(badWidth)).toThrow();
+
+    const badHeight = structuredClone(masonry);
+    badHeight.items[0]!.height = -5;
+    expect(() => Schema.decodeUnknownSync(LayoutNode)(badHeight)).toThrow();
+
+    const badItem = structuredClone(masonry);
+    badItem.items[0]!.type = "flow-item";
+    expect(() => Schema.decodeUnknownSync(LayoutNode)(badItem)).toThrow();
+  });
+
+  it("defaults missing masonry card spans to 1 and keeps encoded spans", () => {
+    const legacy = {
+      type: "masonry",
+      id: "m",
+      columnWidth: 320,
+      items: [
+        {
+          type: "masonry-item",
+          id: "c1",
+          height: 300,
+          child: tabs("t1", ["a"]),
+        },
+        {
+          type: "masonry-item",
+          id: "c2",
+          height: 180,
+          span: 3,
+          child: tabs("t2", ["b"]),
+        },
+      ],
+    };
+
+    const decoded = Schema.decodeUnknownSync(LayoutNode)(
+      structuredClone(legacy),
+    );
+
+    expect(decoded.type).toBe("masonry");
+
+    if (decoded.type === "masonry") {
+      // Pre-span documents decode with the default span.
+      expect(decoded.items[0]!.span).toBe(1);
+      // Encoded spans survive round-tripping.
+      expect(decoded.items[1]!.span).toBe(3);
+    }
+
+    // Non-integer / non-positive spans are refused.
+    const badSpan = structuredClone(legacy);
+    badSpan.items[1]!.span = 0;
+    expect(() => Schema.decodeUnknownSync(LayoutNode)(badSpan)).toThrow();
+
+    const fractional = structuredClone(legacy);
+    fractional.items[1]!.span = 1.5;
+    expect(() => Schema.decodeUnknownSync(LayoutNode)(fractional)).toThrow();
+  });
+
+  it("decodes masonry workspaces and migrates legacy splits nested inside cards", () => {
+    const legacy = {
+      id: "ws-masonry",
+      name: "Masonry",
+      schemaVersion: 1,
+      version: 2,
+      layout: {
+        type: "masonry",
+        id: "m",
+        columnWidth: 360,
+        items: [
+          {
+            type: "masonry-item",
+            id: "c1",
+            height: 320,
+            child: {
+              type: "split",
+              id: "split-1",
+              direction: "horizontal",
+              ratio: 0.5,
+              first: tabs("t-a", ["panel-a"]),
+              second: tabs("t-b", ["panel-b"]),
+            },
+          },
+          {
+            type: "masonry-item",
+            id: "c2",
+            height: 200,
+            child: tabs("t-c", ["panel-c"]),
+          },
+        ],
+      },
+      panels: {
+        "panel-a": {
+          id: "panel-a",
+          widgetType: "development.welcome",
+          widgetConfig: {},
+        },
+        "panel-b": {
+          id: "panel-b",
+          widgetType: "development.welcome",
+          widgetConfig: {},
+        },
+        "panel-c": {
+          id: "panel-c",
+          widgetType: "development.welcome",
+          widgetConfig: {},
+        },
+      },
+      activePanelId: "panel-a",
+    };
+
+    const migrated = decodePersistedWorkspace(legacy);
+    expect(migrated.layout.type).toBe("masonry");
+
+    if (migrated.layout.type !== "masonry") return;
+    // The card wrapper survives; the legacy split inside it became a grid.
+    expect(migrated.layout.items).toHaveLength(2);
+    const first = migrated.layout.items[0]!;
+    expect(first.height).toBe(320);
+    expect(first.child.type).toBe("grid");
+  });
+});
+
+describe("auto layout schema (bento rows)", () => {
+  const tabs = (id: string, panels: string[]) => ({
+    type: "tabs",
+    id,
+    panels,
+    activePanelId: panels[0] ?? null,
+  });
+
+  it("decodes auto nodes with target column width, heights and spans", () => {
+    const auto = {
+      type: "auto",
+      id: "a",
+      columnWidth: 320,
+      items: [
+        {
+          type: "auto-item",
+          id: "c1",
+          height: 300,
+          span: 2,
+          child: tabs("t1", ["a"]),
+        },
+        {
+          type: "auto-item",
+          id: "c2",
+          height: 180,
+          child: tabs("t2", ["b"]),
+        },
+      ],
+    };
+
+    const decoded = Schema.decodeUnknownSync(LayoutNode)(
+      structuredClone(auto),
+    );
+
+    expect(decoded.type).toBe("auto");
+
+    // Zero/negative column width or heights are refused.
+    const badWidth = { ...structuredClone(auto), columnWidth: 0 };
+    expect(() => Schema.decodeUnknownSync(LayoutNode)(badWidth)).toThrow();
+
+    const badHeight = structuredClone(auto);
+    badHeight.items[0]!.height = -5;
+    expect(() => Schema.decodeUnknownSync(LayoutNode)(badHeight)).toThrow();
+
+    const badItem = structuredClone(auto);
+    badItem.items[0]!.type = "flow-item";
+    expect(() => Schema.decodeUnknownSync(LayoutNode)(badItem)).toThrow();
+  });
+
+  it("defaults missing auto card spans to 1 and validates encoded spans", () => {
+    const legacy = {
+      type: "auto",
+      id: "a",
+      columnWidth: 320,
+      items: [
+        { type: "auto-item", id: "c1", height: 300, child: tabs("t1", ["a"]) },
+        {
+          type: "auto-item",
+          id: "c2",
+          height: 180,
+          span: 3,
+          child: tabs("t2", ["b"]),
+        },
+      ],
+    };
+
+    const decoded = Schema.decodeUnknownSync(LayoutNode)(
+      structuredClone(legacy),
+    );
+
+    expect(decoded.type).toBe("auto");
+
+    if (decoded.type === "auto") {
+      // Pre-span documents decode with the default span.
+      expect(decoded.items[0]!.span).toBe(1);
+      // Encoded spans survive round-tripping.
+      expect(decoded.items[1]!.span).toBe(3);
+    }
+
+    // Non-positive spans are refused; fractional spans persist stepless
+    // drags (finite, positive).
+    const badSpan = structuredClone(legacy);
+    badSpan.items[1]!.span = 0;
+    expect(() => Schema.decodeUnknownSync(LayoutNode)(badSpan)).toThrow();
+
+    const fractional = structuredClone(legacy);
+    fractional.items[1]!.span = 1.5;
+    const decodedFractional = Schema.decodeUnknownSync(LayoutNode)(fractional);
+    expect(decodedFractional.type).toBe("auto");
+
+    if (decodedFractional.type === "auto") {
+      expect(decodedFractional.items[1]!.span).toBe(1.5);
+    }
+  });
+
+  it("decodes auto workspaces and migrates legacy splits nested inside cards", () => {
+    const legacy = {
+      id: "ws-auto",
+      name: "Auto",
+      schemaVersion: 1,
+      version: 2,
+      layout: {
+        type: "auto",
+        id: "a",
+        columnWidth: 320,
+        items: [
+          {
+            type: "auto-item",
+            id: "c1",
+            height: 320,
+            span: 2,
+            child: {
+              type: "split",
+              id: "split-1",
+              direction: "horizontal",
+              ratio: 0.5,
+              first: tabs("t-a", ["panel-a"]),
+              second: tabs("t-b", ["panel-b"]),
+            },
+          },
+          {
+            type: "auto-item",
+            id: "c2",
+            height: 200,
+            child: tabs("t-c", ["panel-c"]),
+          },
+        ],
+      },
+      panels: {
+        "panel-a": {
+          id: "panel-a",
+          widgetType: "development.welcome",
+          widgetConfig: {},
+        },
+        "panel-b": {
+          id: "panel-b",
+          widgetType: "development.welcome",
+          widgetConfig: {},
+        },
+        "panel-c": {
+          id: "panel-c",
+          widgetType: "development.welcome",
+          widgetConfig: {},
+        },
+      },
+      activePanelId: "panel-a",
+    };
+
+    const migrated = decodePersistedWorkspace(legacy);
+    expect(migrated.layout.type).toBe("auto");
+
+    if (migrated.layout.type !== "auto") return;
+    // The card wrapper survives; the legacy split inside it became a grid.
+    expect(migrated.layout.items).toHaveLength(2);
+    const first = migrated.layout.items[0]!;
+    expect(first.height).toBe(320);
+    expect(first.span).toBe(2);
+    expect(first.child.type).toBe("grid");
   });
 });

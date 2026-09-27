@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { createContext, useContext, useEffect } from "react";
+import { createContext, useContext } from "react";
+import { Schema } from "effect";
 import { Store } from "@tanstack/store";
 import { useStore } from "@tanstack/react-store";
+import { useStoreEffect } from "@nfi/ui";
 import {
   CAPABILITY_REGISTRY,
   capabilityKey,
@@ -14,28 +16,36 @@ import {
   type CapabilityResult,
 } from "@nfi/capabilities";
 import { formatQueryError } from "@nfi/api-contract";
-import { callCapability, capabilitiesGrantStore } from "./transport";
+import {
+  callCapability,
+  capabilitiesGrantStore,
+  resolveStreamUrl,
+} from "./transport";
 import {
   clearInstanceAuthFailure,
   noteInstanceAuthFailure,
 } from "./credentialsFix";
 
 /**
- * Real-time capability state — the ONLY live-data path in the frontend.
+ * Stream capability state — the ONLY live-data path in the frontend.
  *
  * There is deliberately NO polling here (`setInterval`/`refetchInterval` do
  * not exist in the web shell): `useCapability(name, options)` seeds first
  * paint with one unary `callCapability` and then renders snapshots pushed by
- * the backend over SSE (`GET /api/stream`), stored in the `liveStore`
- * TanStack Store below. The only interval in the system ticks between the
- * backend and freqtrade (`LivePollerLive`); browsers only receive pushes.
+ * the backend over the SSE stream (`GET /api/stream`), stored in the
+ * `liveStore` TanStack Store below. The only interval in the system ticks
+ * between the backend and freqtrade (`LivePollerLive`); browsers only
+ * receive pushed stream snapshots (SSE `EventSource`, WebSocket-ready:
+ * the pool builds one multiplexed URL per connection, so a future
+ * WebSocket transport can reuse the same subscription set).
  *
- * All live widgets share ONE multiplexed `EventSource`: the server accepts
- * repeated `capability`/`options` pairs per connection, so dense terminal
- * pages (many visible widgets) hold a single connection instead of one per
- * widget — the browser caps connections per host (~6 on HTTP/1.1), and one
- * connection per widget starved unary fetches. When the subscription set
- * changes, the pool reopens the connection (debounced) with the new set.
+ * All live widgets share ONE multiplexed stream connection: the server
+ * accepts repeated `capability`/`options` pairs per connection, so dense
+ * terminal pages (many visible widgets) hold a single connection instead
+ * of one per widget — the browser caps connections per host (~6 on
+ * HTTP/1.1), and one connection per widget starved unary fetches. When the
+ * subscription set changes, the pool reopens the connection (debounced)
+ * with the new set.
  *
  * Non-streamable capabilities (mutations, static config) fetch once and never
  * open a stream. Availability is gated on the capability id itself (the auth
@@ -73,11 +83,14 @@ const setEntry = (key: string, entry: StoredLive): void => {
 
 // --- Shared multiplexed SSE pool ---------------------------------------------
 
-interface StreamMessage {
-  readonly key: string;
-  readonly result: unknown;
-  readonly updatedAt: unknown;
-}
+/** One decoded SSE snapshot frame (`GET /api/stream`). */
+const StreamMessageSchema = Schema.Struct({
+  key: Schema.String,
+  result: Schema.Unknown,
+  updatedAt: Schema.Unknown,
+});
+
+type StreamMessage = typeof StreamMessageSchema.Type;
 
 interface PoolEntry {
   readonly name: CapabilityName;
@@ -109,6 +122,7 @@ class StreamPool {
     onError: () => void,
   ): () => void {
     let entry = this.entries.get(key);
+
     if (!entry) {
       entry = {
         name,
@@ -119,19 +133,23 @@ class StreamPool {
       };
       this.entries.set(key, entry);
     }
+
     entry.refcount += 1;
     entry.listeners.add(onMessage);
     entry.errorListeners.add(onError);
     this.scheduleReopen();
     let released = false;
+
     return () => {
       if (released) return;
       released = true;
       const current = this.entries.get(key);
+
       if (!current) return;
       current.listeners.delete(onMessage);
       current.errorListeners.delete(onError);
       current.refcount -= 1;
+
       if (current.refcount <= 0) this.entries.delete(key);
       this.scheduleReopen();
     };
@@ -139,6 +157,7 @@ class StreamPool {
 
   private scheduleReopen(): void {
     if (typeof EventSource === "undefined") return;
+
     if (this.reopenTimer !== null) clearTimeout(this.reopenTimer);
     this.reopenTimer = setTimeout(() => {
       this.reopenTimer = null;
@@ -146,31 +165,56 @@ class StreamPool {
     }, REOPEN_DEBOUNCE_MS);
   }
 
+  /** Force the shared stream to reconnect (e.g. backend base URL changed). */
+  reconnect(): void {
+    if (typeof EventSource === "undefined") return;
+
+    if (this.reopenTimer !== null) {
+      clearTimeout(this.reopenTimer);
+      this.reopenTimer = null;
+    }
+
+    this.reopen();
+  }
+
   private reopen(): void {
     this.source?.close();
     this.source = null;
     this.sourceGeneration += 1;
     const generation = this.sourceGeneration;
+
     if (this.entries.size === 0) return;
     const params = new URLSearchParams();
+
     for (const entry of this.entries.values()) {
       params.append("capability", entry.name);
       params.append("options", entry.encodedOptions);
     }
-    // withCredentials: the session cookie must reach the stream when the
-    // backend lives on another origin (same-origin sends it anyway).
-    const next = new EventSource(`/api/stream?${params.toString()}`, {
-      withCredentials: true,
-    });
+
+    // Stream URL honors the app's backend base URL (same-origin when empty):
+    // withCredentials carries the session cookie cross-origin, matching the
+    // unary transport. This is the SSE stream transport — the subscription
+    // set is transport-agnostic, so a future WebSocket endpoint can reuse it.
+    const next = new EventSource(
+      resolveStreamUrl(`/api/stream?${params.toString()}`),
+      {
+        withCredentials: true,
+      },
+    );
+
     this.source = next;
-    next.addEventListener("snapshot", (event) => {
+    next.addEventListener("snapshot", (event: MessageEvent) => {
       if (this.sourceGeneration !== generation) return;
+
       try {
-        const message = JSON.parse(
-          (event as MessageEvent).data as string,
-        ) as StreamMessage;
+        const message = Schema.decodeUnknownSync(StreamMessageSchema)(
+          JSON.parse(event.data),
+        );
+
         const entry = this.entries.get(message.key);
+
         if (!entry) return;
+
         for (const listener of entry.listeners) listener(message);
       } catch {
         // Malformed frame: keep the connection; the next snapshot re-decodes.
@@ -178,6 +222,7 @@ class StreamPool {
     });
     next.onerror = () => {
       if (this.sourceGeneration !== generation) return;
+
       // EventSource reconnects on its own; keep stale data visible meanwhile.
       for (const entry of this.entries.values()) {
         for (const listener of entry.errorListeners) listener();
@@ -188,11 +233,21 @@ class StreamPool {
 
 const streamPool = new StreamPool();
 
+/**
+ * Reopen the shared SSE stream connection (e.g. after the backend base URL
+ * changes in Settings). Safe to call with no subscribers — it no-ops.
+ */
+export function reconnectStream(): void {
+  streamPool.reconnect();
+}
+
 // --- Active-key registry ------------------------------------------------------
 
 interface ActiveKey {
   readonly name: CapabilityName;
-  readonly options: CapabilityOptions<CapabilityName>;
+  /** Re-fetch built inside `acquireActiveKey`, where name/options still
+   * carry their exact per-capability types. */
+  readonly refresh: () => Promise<void>;
   refcount: number;
   /** Panels (widget instances) currently holding this key. */
   readonly owners: Set<string>;
@@ -215,21 +270,25 @@ const activeKeys = new Map<string, ActiveKey>();
  */
 export const LiveOwnerContext = createContext<string | null>(null);
 
-function acquireActiveKey(
+function acquireActiveKey<N extends CapabilityName>(
   key: string,
-  name: CapabilityName,
-  options: CapabilityOptions<CapabilityName>,
+  name: N,
+  options: CapabilityOptions<N>,
   owner: string | null,
 ): void {
   const existing = activeKeys.get(key);
+
   if (existing) {
     existing.refcount += 1;
+
     if (owner !== null) existing.owners.add(owner);
+
     return;
   }
+
   activeKeys.set(key, {
     name,
-    options,
+    refresh: () => refreshCapability(name, options),
     refcount: 1,
     owners: owner !== null ? new Set([owner]) : new Set(),
   });
@@ -237,9 +296,12 @@ function acquireActiveKey(
 
 function releaseActiveKey(key: string, owner: string | null): void {
   const existing = activeKeys.get(key);
+
   if (!existing) return;
   existing.refcount -= 1;
+
   if (owner !== null) existing.owners.delete(owner);
+
   if (existing.refcount <= 0) activeKeys.delete(key);
 }
 
@@ -253,9 +315,8 @@ export async function reloadOwnerCapabilities(ownerId: string): Promise<void> {
   const entries = [...activeKeys.values()].filter((entry) =>
     entry.owners.has(ownerId),
   );
-  await Promise.allSettled(
-    entries.map((entry) => refreshCapability(entry.name, entry.options)),
-  );
+
+  await Promise.allSettled(entries.map((entry) => entry.refresh()));
 }
 
 /**
@@ -268,9 +329,7 @@ export async function reloadOwnerCapabilities(ownerId: string): Promise<void> {
  */
 export async function refreshAllCapabilities(): Promise<void> {
   const entries = [...activeKeys.values()];
-  await Promise.allSettled(
-    entries.map((entry) => refreshCapability(entry.name, entry.options)),
-  );
+  await Promise.allSettled(entries.map((entry) => entry.refresh()));
 }
 
 /**
@@ -283,6 +342,7 @@ export async function refreshCapability<N extends CapabilityName>(
   options: CapabilityOptions<N>,
 ): Promise<void> {
   const key = capabilityKey(name, options);
+
   try {
     const data = await callCapability(name, options);
     setEntry(key, {
@@ -326,6 +386,7 @@ export function useCapability<N extends CapabilityName>(
   const ownerId = useContext(LiveOwnerContext);
   const granted = useStore(capabilitiesGrantStore, (state) => state.granted);
   const allowed = granted.includes(name);
+
   const subscribed =
     enabled &&
     allowed &&
@@ -333,17 +394,14 @@ export function useCapability<N extends CapabilityName>(
     visible &&
     CAPABILITY_REGISTRY[name].streamable;
 
-  useEffect(() => {
+  // External-system lifecycle (REST seed + SSE pool join/leave) wired
+  // through the sanctioned effect hook.
+  useStoreEffect(() => {
     if (!enabled || !allowed) return;
     let cancelled = false;
     let release: (() => void) | null = null;
     // Register the live subscription so the refresh/reload helpers cover it.
-    acquireActiveKey(
-      key,
-      name,
-      options as CapabilityOptions<CapabilityName>,
-      ownerId,
-    );
+    acquireActiveKey(key, name, options, ownerId);
     const previous = liveStore.state[key];
     setEntry(key, {
       data: previous?.data,
@@ -351,24 +409,25 @@ export function useCapability<N extends CapabilityName>(
       isLoading: previous?.data === undefined,
       updatedAt: previous?.updatedAt ?? null,
     });
+
     const joinStream = (): void => {
       if (cancelled || !subscribed || release !== null) return;
       release = streamPool.subscribe(
         key,
         name,
-        encodeStreamOptions(options),
+        encodeStreamOptions(name, options),
         (message) => {
           try {
             const data = decodeCapabilityResult(name, message.result);
+
             if (cancelled) return;
             setEntry(key, {
               data,
               error: null,
               isLoading: false,
-              updatedAt:
-                typeof message.updatedAt === "string"
-                  ? message.updatedAt
-                  : new Date().toISOString(),
+              updatedAt: Schema.is(Schema.String)(message.updatedAt)
+                ? message.updatedAt
+                : new Date().toISOString(),
             });
           } catch (error) {
             if (cancelled) return;
@@ -396,6 +455,7 @@ export function useCapability<N extends CapabilityName>(
         },
       );
     };
+
     // Seed first paint over REST, then join the shared stream: opening the
     // persistent connection only after the short-lived fetch settles keeps
     // unary calls from queueing behind held SSE connections on HTTP/1.1.
@@ -425,19 +485,21 @@ export function useCapability<N extends CapabilityName>(
         joinStream();
       },
     );
+
     return () => {
       cancelled = true;
       releaseActiveKey(key, ownerId);
       release?.();
     };
     // `key` is the canonical identity of (name, options); the closure values match it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled, allowed, subscribed, ownerId]);
 
   const entry = useStore(liveStore, (state) => state[key]);
+
   if (!enabled) {
     return { data: undefined, error: null, isLoading: false, updatedAt: null };
   }
+
   if (!allowed) {
     return {
       data: undefined,
@@ -446,6 +508,9 @@ export function useCapability<N extends CapabilityName>(
       updatedAt: null,
     };
   }
+
+  // SAFETY: `key` is `capabilityKey(name, options)`, so the entry stored
+  // under it was written by this N-subscription's decodeCapabilityResult.
   return {
     data: entry?.data as CapabilityResult<N> | undefined,
     error: entry?.error ?? null,

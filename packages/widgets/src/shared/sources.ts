@@ -12,12 +12,8 @@
  * rows while single-instance views stay unchanged.
  */
 
-import type {
-  ClosedPosition,
-  FleetClosedPositionsResponse,
-  FleetOpenPositionsResponse,
-  OpenPosition,
-} from "@nfi/api-contract";
+import type { ClosedPosition, OpenPosition } from "@nfi/api-contract";
+import { useDerived } from "@nfi/ui";
 import { useCapability } from "../live/live";
 import { ALL_INSTANCES } from "./InstanceSelect";
 
@@ -37,74 +33,125 @@ export interface SourceResult<T> {
   readonly data: T | undefined;
   readonly error: string | null;
   readonly isLoading: boolean;
+  /**
+   * Full-history size behind the window when the backend reports it
+   * (closed trades on record; the fleet variant sums instances) — drives
+   * the tables' load-more affordance.
+   */
+  readonly total: number | undefined;
 }
 
-/** Open positions for one instance or the whole fleet (`instanceId === "all"`). */
+/**
+ * Open positions for one instance or the whole fleet
+ * (`instanceId === "all"`). `search` is applied server-side, before any
+ * slicing, so matches outside the fetched window still surface.
+ */
 export function useOpenPositionsSource(
   instanceId: string,
-  opts?: { enabled?: boolean },
+  opts?: { enabled?: boolean; search?: string },
 ): SourceResult<ReadonlyArray<SourcedOpenPosition>> {
   const enabled = opts?.enabled ?? true;
+  const search = opts?.search?.trim() || undefined;
   const fleet = instanceId === ALL_INSTANCES;
+
   const perInstanceView = useCapability(
     "instances.open-positions",
-    { id: fleet ? "default" : instanceId },
+    { id: fleet ? "default" : instanceId, search },
     { enabled: enabled && !fleet },
   );
+
   const fleetView = useCapability(
     "instances.positions-all",
-    {},
+    { search },
     { enabled: enabled && fleet },
   );
-  if (!enabled) return { data: undefined, error: null, isLoading: false };
+
+  // Stable identity: the fleet `.map(tagged)` allocated a fresh array
+  // every render, defeating every downstream derivation (reference equality
+  // is all store selectors compare by). Derive through a store keyed on the
+  // liveStore payload identity so re-renders from resize/store ticks reuse
+  // the same array reference; only a real SSE frame recomputes.
+  const fleetPositions = fleetView.data;
+  const perPositions = perInstanceView.data;
+
+  const fleetMapped = useDerived(
+    fleetPositions,
+    (payload) => (payload ? payload.positions.map(tagged) : undefined),
+  );
+
+  if (!enabled)
+    return { data: undefined, error: null, isLoading: false, total: undefined };
+
   if (fleet) {
     return {
-      data: fleetView.data
-        ? (fleetView.data as FleetOpenPositionsResponse).positions.map(tagged)
-        : undefined,
+      data: fleetMapped,
       error: fleetView.error,
       isLoading: fleetView.isLoading,
+      // Open positions are complete by construction — no windowed total.
+      total: undefined,
     };
   }
+
   return {
-    data: perInstanceView.data ? perInstanceView.data.positions : undefined,
+    data: perPositions ? perPositions.positions : undefined,
     error: perInstanceView.error,
     isLoading: perInstanceView.isLoading,
+    total: undefined,
   };
 }
 
-/** Recent closed positions for one instance or the whole fleet. */
+/**
+ * Recent closed positions for one instance or the whole fleet. `search` is
+ * applied server-side, before the limit window is sliced, so matches beyond
+ * the fetched page still surface.
+ */
 export function useClosedPositionsSource(
   instanceId: string,
   limit: number,
-  opts?: { enabled?: boolean },
+  opts?: { enabled?: boolean; search?: string },
 ): SourceResult<ReadonlyArray<SourcedClosedPosition>> {
   const enabled = opts?.enabled ?? true;
+  const search = opts?.search?.trim() || undefined;
   const fleet = instanceId === ALL_INSTANCES;
+
   const perInstanceView = useCapability(
     "instances.closed-positions",
-    { id: fleet ? "default" : instanceId, limit: String(limit) },
+    { id: fleet ? "default" : instanceId, limit: String(limit), search },
     { enabled: enabled && !fleet },
   );
+
   const fleetView = useCapability(
     "instances.closed-all",
-    { limit: String(limit) },
+    { limit: String(limit), search },
     { enabled: enabled && fleet },
   );
-  if (!enabled) return { data: undefined, error: null, isLoading: false };
+
+  // Same stable-identity derivation as the open-positions source above.
+  const fleetClosed = fleetView.data;
+  const perClosed = perInstanceView.data;
+
+  const fleetClosedMapped = useDerived(
+    fleetClosed,
+    (payload) => (payload ? payload.positions.map(tagged) : undefined),
+  );
+
+  if (!enabled)
+    return { data: undefined, error: null, isLoading: false, total: undefined };
+
   if (fleet) {
     return {
-      data: fleetView.data
-        ? (fleetView.data as FleetClosedPositionsResponse).positions.map(tagged)
-        : undefined,
+      data: fleetClosedMapped,
       error: fleetView.error,
       isLoading: fleetView.isLoading,
+      total: fleetClosed?.totalTrades,
     };
   }
+
   return {
-    data: perInstanceView.data ? perInstanceView.data.positions : undefined,
+    data: perClosed ? perClosed.positions : undefined,
     error: perInstanceView.error,
     isLoading: perInstanceView.isLoading,
+    total: perClosed?.totalTrades,
   };
 }
 

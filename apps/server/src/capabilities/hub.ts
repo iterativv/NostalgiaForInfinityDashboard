@@ -1,7 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { capabilityKey, type CapabilityName, type CapabilityOptions } from "@nfi/capabilities"
+import {
+  capabilityKey,
+  type CapabilityName,
+  type CapabilityOptions,
+  isJsonObject,
+  type JsonValue,
+} from "@nfi/capabilities";
 
 /**
  * LiveHub — the in-memory fan-out between freqtrade and SSE subscribers.
@@ -14,36 +20,44 @@ import { capabilityKey, type CapabilityName, type CapabilityOptions } from "@nfi
  */
 
 export interface HubSnapshot {
-  readonly result: unknown
-  readonly updatedAt: string
+  readonly result: JsonValue;
+  readonly updatedAt: string;
 }
 
 export interface TrackedKey {
-  readonly key: string
-  readonly name: CapabilityName
-  readonly options: unknown
-  readonly lastRefreshMs: number
-  readonly subscribers: number
+  readonly key: string;
+  readonly name: CapabilityName;
+  readonly options: JsonValue;
+  readonly lastRefreshMs: number;
+  readonly subscribers: number;
 }
 
-type Listener = (snapshot: HubSnapshot) => void
+type Listener = (snapshot: HubSnapshot) => void;
 
 class LiveHub {
-  private readonly snapshots = new Map<string, HubSnapshot>()
-  private readonly listeners = new Map<string, Set<Listener>>()
-  private readonly tracked = new Map<string, { name: CapabilityName; options: unknown; lastRefreshMs: number }>()
+  private readonly snapshots = new Map<string, HubSnapshot>();
+  private readonly listeners = new Map<string, Set<Listener>>();
+  private readonly tracked = new Map<
+    string,
+    { name: CapabilityName; options: JsonValue; lastRefreshMs: number }
+  >();
   /** SSE subscriber refcount per key — drives `release` pruning. */
-  private readonly refs = new Map<string, number>()
+  private readonly refs = new Map<string, number>();
 
   /** Ensure a capability+options is refreshed by the poller; returns its key. */
-  track<N extends CapabilityName>(name: N, options: CapabilityOptions<N>): string
-  track(name: CapabilityName, options: unknown): string
-  track(name: CapabilityName, options: unknown): string {
-    const key = `${name}:${stableKeyPart(options)}`
+  track<N extends CapabilityName>(
+    name: N,
+    options: CapabilityOptions<N>,
+  ): string;
+  track(name: CapabilityName, options: JsonValue): string;
+  track(name: CapabilityName, options: JsonValue): string {
+    const key = `${name}:${stableKeyPart(options)}`;
+
     if (!this.tracked.has(key)) {
-      this.tracked.set(key, { name, options, lastRefreshMs: 0 })
+      this.tracked.set(key, { name, options, lastRefreshMs: 0 });
     }
-    return key
+
+    return key;
   }
 
   /**
@@ -53,47 +67,60 @@ class LiveHub {
    * poller's own baseline keys are never retained and thus never pruned.
    */
   retain(key: string): void {
-    this.refs.set(key, (this.refs.get(key) ?? 0) + 1)
+    this.refs.set(key, (this.refs.get(key) ?? 0) + 1);
   }
 
   release(key: string): void {
     // Only SSE-retained keys are release-managed: an unbalanced release
     // (no prior retain) must never prune a poller baseline key.
-    if (!this.refs.has(key)) return
-    const next = (this.refs.get(key) ?? 0) - 1
+    if (!this.refs.has(key)) return;
+    const next = (this.refs.get(key) ?? 0) - 1;
+
     if (next > 0) {
-      this.refs.set(key, next)
-      return
+      this.refs.set(key, next);
+
+      return;
     }
-    this.refs.delete(key)
-    this.tracked.delete(key)
-    this.snapshots.delete(key)
+
+    this.refs.delete(key);
+    this.tracked.delete(key);
+    this.snapshots.delete(key);
   }
 
   get(key: string): HubSnapshot | undefined {
-    return this.snapshots.get(key)
+    return this.snapshots.get(key);
   }
 
-  publish(key: string, result: unknown): HubSnapshot {
-    const snapshot: HubSnapshot = { result, updatedAt: new Date().toISOString() }
-    this.snapshots.set(key, snapshot)
-    const entry = this.tracked.get(key)
-    if (entry) entry.lastRefreshMs = Date.now()
-    this.listeners.get(key)?.forEach((listener) => listener(snapshot))
-    return snapshot
+  publish(key: string, result: JsonValue): HubSnapshot {
+    const snapshot: HubSnapshot = {
+      result,
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.snapshots.set(key, snapshot);
+    const entry = this.tracked.get(key);
+
+    if (entry) entry.lastRefreshMs = Date.now();
+    this.listeners.get(key)?.forEach((listener) => listener(snapshot));
+
+    return snapshot;
   }
 
   subscribe(key: string, listener: Listener): () => void {
-    let set = this.listeners.get(key)
+    let set = this.listeners.get(key);
+
     if (!set) {
-      set = new Set()
-      this.listeners.set(key, set)
+      set = new Set();
+      this.listeners.set(key, set);
     }
-    set.add(listener)
+
+    set.add(listener);
+
     return () => {
-      set?.delete(listener)
-      if (set?.size === 0) this.listeners.delete(key)
-    }
+      set?.delete(listener);
+
+      if (set?.size === 0) this.listeners.delete(key);
+    };
   }
 
   trackedKeys(): TrackedKey[] {
@@ -103,23 +130,29 @@ class LiveHub {
       options: entry.options,
       lastRefreshMs: entry.lastRefreshMs,
       subscribers: this.listeners.get(key)?.size ?? 0,
-    }))
+    }));
   }
 }
 
-const stableKeyPart = (value: unknown): string => {
-  if (value === null || value === undefined) return "null"
-  if (Array.isArray(value)) return `[${value.map(stableKeyPart).join(",")}]`
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
+const stableKeyPart = (value: JsonValue): string => {
+  if (value === null) return "null";
+
+  if (Array.isArray(value)) return `[${value.map(stableKeyPart).join(",")}]`;
+
+  if (isJsonObject(value)) {
+    const entries = Object.entries(value)
       .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableKeyPart(v)}`).join(",")}}`
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableKeyPart(v)}`).join(",")}}`;
   }
-  return JSON.stringify(value) ?? "null"
-}
 
-export const keyFor = <N extends CapabilityName>(name: N, options: CapabilityOptions<N>): string =>
-  capabilityKey(name, options)
+  return JSON.stringify(value) ?? "null";
+};
 
-export const liveHub = new LiveHub()
+export const keyFor = <N extends CapabilityName>(
+  name: N,
+  options: CapabilityOptions<N>,
+): string => capabilityKey(name, options);
+
+export const liveHub = new LiveHub();

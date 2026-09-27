@@ -49,8 +49,7 @@ describe("widget config schemas", () => {
       Schema.decodeUnknownSync(OpenPositionsConfigSchema)({}),
     ).toMatchObject({
       instanceId: "default",
-      maxVisibleOrders: 4,
-      showHiddenCountRow: true,
+      maxVisibleOrders: 5,
       showStrategy: false,
     });
     expect(
@@ -87,19 +86,20 @@ describe("widget config schemas", () => {
       instanceId: "ft-1",
       showStrategy: true,
     });
+
     expect(decoded.instanceId).toBe("ft-1");
     expect(decoded.showStrategy).toBe(true);
-    expect(decoded.maxVisibleOrders).toBe(4);
+    expect(decoded.maxVisibleOrders).toBe(5);
   });
 
   it("inherits open-positions fields in the closed-positions schema", () => {
     const decoded = Schema.decodeUnknownSync(ClosedPositionsConfigSchema)({
       limit: 10,
     });
+
     expect(decoded.limit).toBe(10);
-    expect(decoded.maxVisibleOrders).toBe(4);
+    expect(decoded.maxVisibleOrders).toBe(5);
     expect(decoded.showPair).toBe(true);
-    expect(decoded.showOrderTag).toBe(false);
   });
 
   it("decodes terminal widget defaults", () => {
@@ -252,18 +252,17 @@ describe("widget config schemas", () => {
       instanceId: "default",
       limit: 500,
     });
-    expect(
-      Schema.decodeUnknownSync(EquityCurveConfigSchema)({}),
-    ).toMatchObject({
-      instanceId: "default",
-    });
+    expect(Schema.decodeUnknownSync(EquityCurveConfigSchema)({})).toMatchObject(
+      {
+        instanceId: "default",
+      },
+    );
     expect(Schema.decodeUnknownSync(PairSummaryConfigSchema)({})).toMatchObject(
       {
         instanceId: "default",
         limit: 200,
         minTrades: 1,
         sortBy: "profitAbs",
-        sortAsc: false,
       },
     );
     expect(() =>

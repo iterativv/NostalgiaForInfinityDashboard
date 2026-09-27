@@ -33,6 +33,7 @@ export const InstancesOverviewCapability = defineCapability({
   run: (_options, ctx) =>
     Effect.gen(function* () {
       const instances = yield* fleetInstances(ctx);
+
       const outcomes = yield* perInstance(instances, (instance) =>
         Effect.gen(function* () {
           const [ping, version, status, profit, balance, count, open] =
@@ -45,8 +46,10 @@ export const InstancesOverviewCapability = defineCapability({
               optional(instance.service.getTradeCount()),
               optional(instance.service.getOpenTrades()),
             ]);
+
           const reachable =
             ping !== undefined || version !== undefined || status !== undefined;
+
           if (
             !reachable &&
             profit === undefined &&
@@ -60,10 +63,12 @@ export const InstancesOverviewCapability = defineCapability({
               ),
             );
           }
+
           const openProfitCoin = (open?.trades ?? []).reduce(
             (sum, trade) => sum + (trade.profitAbs ?? 0),
             0,
           );
+
           return {
             reachable,
             version: version?.version,
@@ -78,8 +83,7 @@ export const InstancesOverviewCapability = defineCapability({
             profitAllPercent: profit?.profitAllPercent,
             closedTradeCount: profit?.closedTradeCount,
             tradeCount: profit?.tradeCount,
-            openProfitCoin:
-              open !== undefined ? openProfitCoin : undefined,
+            openProfitCoin: open !== undefined ? openProfitCoin : undefined,
             wins: profit?.winningTrades,
             losses: profit?.losingTrades,
             totalStake: balance?.totalStake,
@@ -87,6 +91,7 @@ export const InstancesOverviewCapability = defineCapability({
           };
         }),
       );
+
       const rows: FleetInstanceSummary[] = outcomes.map((outcome) => ({
         id: outcome.instance.id,
         name: outcome.instance.name,
@@ -94,10 +99,15 @@ export const InstancesOverviewCapability = defineCapability({
           ? outcome.data
           : { reachable: false, error: outcome.error ?? "unreachable" }),
       }));
+
       const healthy = rows.filter((row) => row.error === undefined);
+
       const stakeCurrencies = new Set(
-        healthy.map((row) => row.stakeCurrency).filter((c): c is string => !!c),
+        healthy.flatMap((row) =>
+          row.stakeCurrency === undefined ? [] : [row.stakeCurrency],
+        ),
       );
+
       return {
         instances: rows,
         totals: {

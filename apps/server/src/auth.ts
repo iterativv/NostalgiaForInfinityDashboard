@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { HttpApiBuilder, HttpServerResponse } from "@effect/platform"
-import { Effect, Schema } from "effect"
+import { HttpApiBuilder, HttpServerResponse } from "@effect/platform";
+import { Effect, Schema } from "effect";
 import {
   BackendError,
   LoginRequest,
@@ -10,9 +10,15 @@ import {
   LogoutResponse,
   NfiApi,
   SetupRootRequest,
-} from "@nfi/api-contract"
-import { runCapabilityForHttp } from "./capabilities/context.js"
-import { clearedSessionCookie, requestIsSecure, SessionAuth, sessionTokenFromRequest } from "./auth/session.js"
+} from "@nfi/api-contract";
+import { runCapabilityForHttp } from "./capabilities/context.js";
+import { decodeJsonValue } from "@nfi/capabilities";
+import {
+  clearedSessionCookie,
+  requestIsSecure,
+  SessionAuth,
+  sessionTokenFromRequest,
+} from "./auth/session.js";
 
 /**
  * Auth / capabilities.
@@ -42,14 +48,19 @@ const encodeFailure = (operation: string) => (cause: unknown) =>
   BackendError.make({
     error: `${operation} failed`,
     detail: cause instanceof Error ? cause.message : String(cause),
-  })
+  });
 
-const decodePayload = <A, I>(schema: Schema.Schema<A, I>) => (body: unknown) =>
-  Effect.try({
-    try: () => Schema.decodeUnknownSync(schema)(body),
-    catch: (cause) =>
-      BackendError.make({ error: "invalid login payload", detail: String(cause) }),
-  })
+const decodePayload =
+  <A, I>(schema: Schema.Schema<A, I>) =>
+  (raw: string) =>
+    Effect.try({
+      try: () => Schema.decodeUnknownSync(schema)(decodeJsonValue(raw)),
+      catch: (cause) =>
+        BackendError.make({
+          error: "invalid login payload",
+          detail: String(cause),
+        }),
+    });
 
 /** Decode the payload, exchange it for a session, attach the cookie. */
 const respondWithSession = <E>(
@@ -60,31 +71,48 @@ const respondWithSession = <E>(
   >,
 ) =>
   Effect.gen(function* () {
-    const login = yield* session
+    const login = yield* session;
+
     const response = yield* HttpServerResponse.schemaJson(LoginResponse)(
       login.response,
-    ).pipe(Effect.mapError(encodeFailure("login response encode")))
-    return HttpServerResponse.setHeader("set-cookie", login.setCookie)(response)
-  })
+    ).pipe(Effect.mapError(encodeFailure("login response encode")));
+
+    return HttpServerResponse.setHeader(
+      "set-cookie",
+      login.setCookie,
+    )(response);
+  });
 
 export const AuthGroupLive = HttpApiBuilder.group(NfiApi, "Auth", (handlers) =>
   handlers
     .handle("capabilities", () => runCapabilityForHttp("auth.capabilities", {}))
     .handleRaw("login", ({ request }) =>
       Effect.gen(function* () {
-        const body = yield* request.json.pipe(Effect.mapError(encodeFailure("login body read")))
-        const payload = yield* decodePayload(LoginRequest)(body)
-        const auth = yield* SessionAuth
+        const body = yield* request.text.pipe(
+          Effect.mapError(encodeFailure("login body read")),
+        );
+
+        const payload = yield* decodePayload(LoginRequest)(body);
+        const auth = yield* SessionAuth;
+
         return yield* respondWithSession(
-          auth.login(payload.username, payload.password, requestIsSecure(request)),
-        )
+          auth.login(
+            payload.username,
+            payload.password,
+            requestIsSecure(request),
+          ),
+        );
       }),
     )
     .handleRaw("setupRoot", ({ request }) =>
       Effect.gen(function* () {
-        const body = yield* request.json.pipe(Effect.mapError(encodeFailure("setup body read")))
-        const payload = yield* decodePayload(SetupRootRequest)(body)
-        const auth = yield* SessionAuth
+        const body = yield* request.text.pipe(
+          Effect.mapError(encodeFailure("setup body read")),
+        );
+
+        const payload = yield* decodePayload(SetupRootRequest)(body);
+        const auth = yield* SessionAuth;
+
         return yield* respondWithSession(
           auth.setupRoot(
             payload.username,
@@ -92,17 +120,22 @@ export const AuthGroupLive = HttpApiBuilder.group(NfiApi, "Auth", (handlers) =>
             payload.setupToken,
             requestIsSecure(request),
           ),
-        )
+        );
       }),
     )
     .handleRaw("logout", ({ request }) =>
       Effect.gen(function* () {
-        const auth = yield* SessionAuth
-        yield* auth.logout(sessionTokenFromRequest(request))
-        const response = yield* HttpServerResponse.schemaJson(LogoutResponse)({ ok: true }).pipe(
-          Effect.mapError(encodeFailure("logout response encode")),
-        )
-        return HttpServerResponse.setHeader("set-cookie", clearedSessionCookie())(response)
+        const auth = yield* SessionAuth;
+        yield* auth.logout(sessionTokenFromRequest(request));
+
+        const response = yield* HttpServerResponse.schemaJson(LogoutResponse)({
+          ok: true,
+        }).pipe(Effect.mapError(encodeFailure("logout response encode")));
+
+        return HttpServerResponse.setHeader(
+          "set-cookie",
+          clearedSessionCookie(),
+        )(response);
       }),
     ),
-)
+);

@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Store } from "@tanstack/store"
-import { useStore } from "@tanstack/react-store"
-import { ALL_CAPABILITIES, type Capability } from "@nfi/api-contract"
-import { canEnableWidget, type AnyWidgetDefinition } from "@nfi/widget-sdk"
-import { formatQueryError, runApi } from "../api"
+import { Store } from "@tanstack/store";
+import { useStore } from "@tanstack/react-store";
+import { ALL_CAPABILITIES, type Capability } from "@nfi/api-contract";
+import { canEnableWidget, type AnyWidgetDefinition } from "@nfi/widget-sdk";
+import { formatQueryError, runApi } from "../api";
 
 /**
  * Capability store — frontend half of the widget <-> backend auth contract.
@@ -21,19 +21,19 @@ import { formatQueryError, runApi } from "../api"
  */
 
 export interface CapabilitiesState {
-  readonly granted: ReadonlyArray<Capability>
-  readonly status: "loading" | "ready" | "offline"
-  readonly detail: string | null
-  readonly authenticated: boolean
-  readonly userId: string | undefined
-  readonly username: string | undefined
-  readonly role: "root" | "user" | "anonymous" | undefined
+  readonly granted: ReadonlyArray<Capability>;
+  readonly status: "loading" | "ready" | "offline";
+  readonly detail: string | null;
+  readonly authenticated: boolean;
+  readonly userId: string | undefined;
+  readonly username: string | undefined;
+  readonly role: "root" | "user" | "anonymous" | undefined;
   /**
    * Whether an always-privileged root account exists (env or first-run
    * setup). `undefined` while loading/offline — the first-run gate only
    * redirects on an explicit `false`.
    */
-  readonly rootProvisioned: boolean | undefined
+  readonly rootProvisioned: boolean | undefined;
 }
 
 export const capabilitiesStore = new Store<CapabilitiesState>({
@@ -45,21 +45,26 @@ export const capabilitiesStore = new Store<CapabilitiesState>({
   username: undefined,
   role: undefined,
   rootProvisioned: undefined,
-})
+});
 
-let hydrated = false
+let hydrated = false;
 
 export function resetCapabilitiesHydration(): void {
-  hydrated = false
+  hydrated = false;
 }
 
 /** Fetch the granted set once (idempotent; safe to call on backend switch). */
 export async function hydrateCapabilities(): Promise<void> {
-  if (hydrated) return
-  hydrated = true
-  capabilitiesStore.setState((state) => ({ ...state, status: "loading", detail: null }))
+  if (hydrated) return;
+  hydrated = true;
+  capabilitiesStore.setState((state) => ({
+    ...state,
+    status: "loading",
+    detail: null,
+  }));
+
   try {
-    const response = await runApi((client) => client.Auth.capabilities())
+    const response = await runApi((client) => client.Auth.capabilities());
     capabilitiesStore.setState(() => ({
       granted: [...response.capabilities],
       status: "ready",
@@ -69,7 +74,7 @@ export async function hydrateCapabilities(): Promise<void> {
       username: response.username,
       role: response.role,
       rootProvisioned: response.rootProvisioned,
-    }))
+    }));
   } catch (error) {
     // Offline fallback: grant everything locally so widgets stay usable.
     // Real enforcement lives server-side.
@@ -82,22 +87,27 @@ export async function hydrateCapabilities(): Promise<void> {
       username: undefined,
       role: undefined,
       rootProvisioned: undefined,
-    }))
+    }));
   }
 }
 
 export function useCapabilities(): CapabilitiesState {
-  return useStore(capabilitiesStore, (state) => state)
+  return useStore(capabilitiesStore, (state) => state);
 }
 
-export function useCanEnable(definition: Pick<AnyWidgetDefinition, "capabilities">): boolean {
-  const granted = useStore(capabilitiesStore, (state) => state.granted)
-  return canEnableWidget(definition, granted)
+export function useCanEnable(
+  definition: Pick<AnyWidgetDefinition, "capabilities">,
+): boolean {
+  const granted = useStore(capabilitiesStore, (state) => state.granted);
+
+  return canEnableWidget(definition, granted);
 }
 
 /** Registry-level: only definitions the caller may enable. */
 export function selectAvailableWidgets(
   definitions: ReadonlyArray<AnyWidgetDefinition>,
 ): AnyWidgetDefinition[] {
-  return definitions.filter((definition) => canEnableWidget(definition, capabilitiesStore.state.granted))
+  return definitions.filter((definition) =>
+    canEnableWidget(definition, capabilitiesStore.state.granted),
+  );
 }

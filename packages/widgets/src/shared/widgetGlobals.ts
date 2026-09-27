@@ -1,7 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Store } from "@tanstack/store"
+import { Store } from "@tanstack/store";
+import { Schema } from "effect";
+
+/** Parsed JSON — exactly what `JSON.parse` can return. */
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ReadonlyArray<JsonValue>
+  | { readonly [key: string]: JsonValue };
 
 /**
  * Global widget settings — per-widget-TYPE overrides applied on top of every
@@ -20,80 +30,99 @@ import { Store } from "@tanstack/store"
  * write-through on every mutation, guards for non-browser environments.
  */
 
-export const WIDGET_GLOBALS_STORAGE_KEY = "nfi-widget-globals-v1"
+export const WIDGET_GLOBALS_STORAGE_KEY = "nfi-widget-globals-v1";
 
-/** widgetType -> overrides (a plain JSON object of config-key -> value). */
-export type WidgetGlobalsState = Record<
-  string,
-  Readonly<Record<string, unknown>>
->
+/**
+ * A single globally-overridden config value. Settings forms write JSON
+ * primitives only — anything else cannot round-trip localStorage.
+ */
+export type WidgetGlobalValue = string | number | boolean | null;
+
+/** One widget TYPE's overrides: config-key -> primitive value. */
+export type WidgetGlobalOverrides = Readonly<
+  Record<string, WidgetGlobalValue>
+>;
+
+/** widgetType -> overrides. */
+export type WidgetGlobalsState = Readonly<
+  Record<string, WidgetGlobalOverrides>
+>;
+
+const GlobalValueSchema = Schema.Union(
+  Schema.String,
+  Schema.Number,
+  Schema.Boolean,
+  Schema.Null,
+);
+
+/** A single override value — the JSON primitives settings forms can write. */
+const isGlobalValue = Schema.is(GlobalValueSchema);
+
+/** A whole override layer: keyed object of JSON primitives (arrays rejected). */
+const isOverrideLayer = Schema.is(
+  Schema.Record({ key: Schema.String, value: GlobalValueSchema }),
+);
+
+/** Any parsed JSON object (maps, arrays and null all fail). */
+const isJsonObject = Schema.is(
+  Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+);
 
 export const widgetGlobalsStore = new Store<WidgetGlobalsState>(
   hydrateWidgetGlobals(),
-)
+);
 
 function readStoredGlobals(): WidgetGlobalsState {
-  if (typeof localStorage === "undefined") return {}
+  if (typeof localStorage === "undefined") return {};
+
   try {
-    const raw = localStorage.getItem(WIDGET_GLOBALS_STORAGE_KEY)
-    if (!raw) return {}
-    return sanitizeWidgetGlobals(JSON.parse(raw))
+    const raw = localStorage.getItem(WIDGET_GLOBALS_STORAGE_KEY);
+
+    if (!raw) return {};
+
+    return sanitizeWidgetGlobals(JSON.parse(raw));
   } catch {
-    return {}
+    return {};
   }
 }
 
 function hydrateWidgetGlobals(): WidgetGlobalsState {
-  return readStoredGlobals()
+  return readStoredGlobals();
 }
 
 function persistWidgetGlobals(): void {
-  if (typeof localStorage === "undefined") return
+  if (typeof localStorage === "undefined") return;
+
   try {
     localStorage.setItem(
       WIDGET_GLOBALS_STORAGE_KEY,
       JSON.stringify(widgetGlobalsStore.state),
-    )
+    );
   } catch {
     // Storage full/blocked — global settings stay session-only.
   }
 }
 
-/** Coerce unknown parsed JSON into a valid globals state (drop junk). */
-export function sanitizeWidgetGlobals(input: unknown): WidgetGlobalsState {
-  if (typeof input !== "object" || input === null) return {}
-  const out: WidgetGlobalsState = {}
-  for (const [widgetType, overrides] of Object.entries(
-    input as Record<string, unknown>,
-  )) {
-    if (typeof overrides !== "object" || overrides === null || Array.isArray(overrides)) {
-      continue
-    }
-    const clean: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(
-      overrides as Record<string, unknown>,
-    )) {
-      // Only JSON-primitive overrides survive: settings forms write
-      // strings/numbers/booleans, anything else is stale junk.
-      if (
-        typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean" ||
-        value === null
-      ) {
-        clean[key] = value
+/** Coerce parsed persisted JSON into a valid globals state (drop junk). */
+export function sanitizeWidgetGlobals(input: JsonValue): WidgetGlobalsState {
+  const entries = new Map<string, WidgetGlobalOverrides>();
+
+  if (isJsonObject(input)) {
+    for (const [widgetType, overrides] of Object.entries(input)) {
+      if (isOverrideLayer(overrides) && Object.keys(overrides).length > 0) {
+        entries.set(widgetType, overrides);
       }
     }
-    if (Object.keys(clean).length > 0) out[widgetType] = clean
   }
-  return out
+
+  return Object.fromEntries(entries);
 }
 
 /** The type's global overrides (empty object when none are set). */
 export function widgetGlobalOverrides(
   widgetType: string,
-): Readonly<Record<string, unknown>> {
-  return widgetGlobalsStore.state[widgetType] ?? {}
+): WidgetGlobalOverrides {
+  return widgetGlobalsStore.state[widgetType] ?? {};
 }
 
 /**
@@ -102,10 +131,11 @@ export function widgetGlobalOverrides(
  */
 export function mergeWidgetSettings<T extends object>(
   base: T,
-  globals: Readonly<Record<string, unknown>> | undefined,
+  globals: WidgetGlobalOverrides | undefined,
 ): T {
-  if (!globals || Object.keys(globals).length === 0) return base
-  return { ...base, ...globals }
+  if (!globals || Object.keys(globals).length === 0) return base;
+
+  return { ...base, ...globals };
 }
 
 /**
@@ -114,30 +144,39 @@ export function mergeWidgetSettings<T extends object>(
  * layer. A `undefined` value deletes that key; an empty result removes the
  * entry entirely.
  */
-export function setWidgetGlobalSettings(
+export function setWidgetGlobalSettings<T extends object>(
   widgetType: string,
-  patch: Readonly<Record<string, unknown>>,
+  patch: Partial<T>,
 ): void {
-  const current = { ...widgetGlobalOverrides(widgetType) }
+  // Settings forms write JSON primitives; the same Schema predicate that
+  // guards the localStorage boundary keeps non-primitives out here too.
+  const current = new Map<string, WidgetGlobalValue>(
+    Object.entries(widgetGlobalOverrides(widgetType)),
+  );
+
   for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) delete current[key]
-    else current[key] = value
+    if (value === undefined) current.delete(key);
+    else if (isGlobalValue(value)) current.set(key, value);
   }
+
   widgetGlobalsStore.setState((state) => {
-    const next = { ...state }
-    if (Object.keys(current).length === 0) delete next[widgetType]
-    else next[widgetType] = current
-    return next
-  })
-  persistWidgetGlobals()
+    const next = { ...state };
+
+    if (current.size === 0) delete next[widgetType];
+    else next[widgetType] = Object.fromEntries(current);
+
+    return next;
+  });
+  persistWidgetGlobals();
 }
 
 /** Drop the type's global overrides — every instance falls back to its own config. */
 export function clearWidgetGlobalSettings(widgetType: string): void {
-  if (!widgetGlobalsStore.state[widgetType]) return
+  if (!widgetGlobalsStore.state[widgetType]) return;
   widgetGlobalsStore.setState((state) => {
-    const { [widgetType]: _removed, ...rest } = state
-    return rest
-  })
-  persistWidgetGlobals()
+    const { [widgetType]: _removed, ...rest } = state;
+
+    return rest;
+  });
+  persistWidgetGlobals();
 }

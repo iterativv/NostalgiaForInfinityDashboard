@@ -11,24 +11,46 @@
  * capabilities state into `capabilitiesGrantStore` whenever it changes.
  */
 
-import { Store } from "@tanstack/store"
-import { ALL_CAPABILITIES, type Capability } from "@nfi/api-contract"
+import { Store } from "@tanstack/store";
+import { ALL_CAPABILITIES, type Capability } from "@nfi/api-contract";
 import type {
   CapabilityName,
   CapabilityOptions,
   CapabilityResult,
-} from "@nfi/capabilities"
+} from "@nfi/capabilities";
 
 export type CapabilityTransport = <N extends CapabilityName>(
   name: N,
   options: CapabilityOptions<N>,
-) => Promise<CapabilityResult<N>>
+) => Promise<CapabilityResult<N>>;
 
-let transport: CapabilityTransport | null = null
+let transport: CapabilityTransport | null = null;
 
 /** Register the app's unary capability caller (idempotent, last call wins). */
 export function setCapabilityTransport(fn: CapabilityTransport): void {
-  transport = fn
+  transport = fn;
+}
+
+let streamBaseUrl = "";
+
+/**
+ * Register the backend base URL for the SSE stream (`GET /api/stream`).
+ * Same contract as the unary transport: empty = same-origin (Vite `/api`
+ * proxy in dev), otherwise an http(s) origin. The live pool builds its
+ * `EventSource` URL from this so custom-base deployments stream from the
+ * same backend the REST calls hit — previously the stream was hardcoded to
+ * same-origin and broke on custom base URLs while unary calls worked.
+ */
+export function setStreamBaseUrl(baseUrl: string): void {
+  streamBaseUrl = baseUrl.trim().replace(/\/$/, "");
+}
+
+/** Absolute-or-relative stream URL for one SSE connection attempt. */
+export function resolveStreamUrl(pathAndQuery: string): string {
+  if (streamBaseUrl === "") return pathAndQuery;
+  const path = pathAndQuery.startsWith("/") ? pathAndQuery : `/${pathAndQuery}`;
+
+  return `${streamBaseUrl}${path}`;
 }
 
 /**
@@ -45,16 +67,17 @@ export function callCapability<N extends CapabilityName>(
       new Error(
         "Capability transport not registered — call setCapabilityTransport at app boot.",
       ),
-    )
+    );
   }
-  return transport(name, options)
+
+  return transport(name, options);
 }
 
 export interface CapabilitiesGrantState {
   /** Granted capability ids (lenient offline default: everything). */
-  readonly granted: ReadonlyArray<Capability>
+  readonly granted: ReadonlyArray<Capability>;
   /** Whether the caller is signed in (drives the sign-in error hint). */
-  readonly authenticated: boolean
+  readonly authenticated: boolean;
 }
 
 /**
@@ -65,7 +88,7 @@ export interface CapabilitiesGrantState {
 export const capabilitiesGrantStore = new Store<CapabilitiesGrantState>({
   granted: [...ALL_CAPABILITIES],
   authenticated: false,
-})
+});
 
 /** Write-through from the app's auth bootstrap. */
 export function setCapabilitiesGrant(
@@ -75,5 +98,5 @@ export function setCapabilitiesGrant(
   capabilitiesGrantStore.setState(() => ({
     granted: [...granted],
     authenticated,
-  }))
+  }));
 }

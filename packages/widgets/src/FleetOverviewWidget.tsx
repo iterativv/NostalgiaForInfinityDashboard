@@ -7,16 +7,32 @@
  * Backed by `instances.overview`: one server-side fan-out per instance
  * (health, status, capacity, profit, balance) with per-instance error
  * tolerance — one unreachable bot becomes an error row, never a failed
- * widget. Totals bar summarizes the whole fleet.
+ * widget. Totals bar summarizes the whole fleet. The comparison table runs
+ * on the TanStack row model (`NfiDataTable`) in fixed server order.
  */
 
+import { shallow as shallowStore } from "@tanstack/react-store";
 import { Schema } from "effect";
-import type { Capability } from "@nfi/api-contract";
+import type { Capability, FleetInstanceSummary } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
-import { EmptyState, ModeBadge, PnlPill, Stat, WidgetFrame } from "@nfi/ui";
+import {
+  EmptyState,
+  ModeBadge,
+  NfiDataTable,
+  PnlPill,
+  Stat,
+  useDerived,
+  WidgetFrame,
+  type NfiColumnDef,
+} from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { booleanWithDefault } from "./shared/config";
 import { fmt, pnlTone } from "./shared/format";
+import {
+  InstanceDot,
+  useInstanceColors,
+  type InstanceColors,
+} from "./shared/instanceColors";
 import { queryState } from "./shared/query";
 
 export const FLEET_OVERVIEW_CAPABILITIES: ReadonlyArray<Capability> = [
@@ -27,10 +43,160 @@ export const FleetOverviewConfigSchema = Schema.Struct({
   showVersion: booleanWithDefault(false),
   showBalance: booleanWithDefault(true),
 });
+
 export type FleetOverviewConfig = typeof FleetOverviewConfigSchema.Type;
 
 export const FLEET_OVERVIEW_DEFAULTS: FleetOverviewConfig =
   Schema.decodeUnknownSync(FleetOverviewConfigSchema)({});
+
+/** Column set depends on config flags + instance colors. */
+function buildColumns([
+  cfg,
+  colors,
+]: readonly [
+  FleetOverviewConfig,
+  InstanceColors,
+]): NfiColumnDef<FleetInstanceSummary>[] {
+  const defs: (NfiColumnDef<FleetInstanceSummary> | null)[] = [
+    {
+      id: "bot",
+      header: "Bot Name",
+      cell: ({ row }) => {
+        const color = colors.colorOf(row.original.id);
+
+        return (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.375rem",
+              minWidth: 0,
+            }}
+          >
+            {color ? (
+              <InstanceDot color={color} title={row.original.name} />
+            ) : null}
+            <ModeBadge dryRun={row.original.dryRun} />
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                color:
+                  row.original.error === undefined &&
+                  row.original.state !== "running"
+                    ? "var(--cds-text-secondary)"
+                    : undefined,
+              }}
+            >
+              {row.original.error !== undefined ? (
+                <span title={row.original.error}>
+                  {row.original.name} · down
+                </span>
+              ) : (
+                row.original.name
+              )}
+            </span>
+          </span>
+        );
+      },
+      meta: { className: "nfi-mono", style: { textAlign: "left" } },
+      enableSorting: false,
+    },
+    {
+      id: "trades",
+      header: "Trades",
+      cell: ({ row }) =>
+        row.original.error !== undefined
+          ? "—"
+          : `${row.original.openCount ?? 0} / ${
+              row.original.maxOpenTrades ?? "—"
+            }`,
+      meta: { className: "nfi-mono", style: { textAlign: "right" } },
+      enableSorting: false,
+    },
+    {
+      id: "openProfit",
+      header: "Open Profit",
+      cell: ({ row }) =>
+        row.original.error !== undefined ? (
+          "—"
+        ) : row.original.openProfitCoin !== undefined ? (
+          <PnlPill
+            value={row.original.openProfitCoin}
+            absolute={row.original.openProfitCoin}
+          />
+        ) : (
+          "—"
+        ),
+      meta: { style: { textAlign: "right" } },
+      enableSorting: false,
+    },
+    {
+      id: "closedProfit",
+      header: "Closed Profit",
+      cell: ({ row }) =>
+        row.original.error !== undefined ? (
+          "—"
+        ) : row.original.profitClosedPercent !== undefined ? (
+          <PnlPill
+            value={row.original.profitClosedPercent}
+            percent={row.original.profitClosedPercent}
+            absolute={row.original.profitClosedCoin}
+          />
+        ) : row.original.profitClosedCoin !== undefined ? (
+          <PnlPill
+            value={row.original.profitClosedCoin}
+            absolute={row.original.profitClosedCoin}
+          />
+        ) : (
+          "—"
+        ),
+      meta: { style: { textAlign: "right" } },
+      enableSorting: false,
+    },
+    cfg.showBalance
+      ? {
+          id: "balance",
+          header: "Balance",
+          cell: ({ row }) =>
+            row.original.totalStake !== undefined
+              ? `${fmt(row.original.totalStake, 2)}${
+                  row.original.stakeCurrency
+                    ? ` ${row.original.stakeCurrency}`
+                    : ""
+                }`
+              : "—",
+          meta: { className: "nfi-mono", style: { textAlign: "right" } },
+          enableSorting: false,
+        }
+      : null,
+    {
+      id: "wl",
+      header: "W/L",
+      cell: ({ row }) => (
+        <>
+          <span className="nfi-pnl-positive">{row.original.wins ?? 0}</span>
+          {" / "}
+          <span className="nfi-pnl-negative">{row.original.losses ?? 0}</span>
+        </>
+      ),
+      meta: { className: "nfi-mono", style: { textAlign: "right" } },
+      enableSorting: false,
+    },
+    cfg.showVersion
+      ? {
+          id: "version",
+          header: "Ver",
+          cell: ({ row }) => row.original.version ?? "—",
+          meta: { className: "nfi-mono", style: { textAlign: "right" } },
+          enableSorting: false,
+        }
+      : null,
+  ];
+
+  return defs.flatMap((entry) => (entry ? [entry] : []));
+}
 
 export function FleetOverviewWidget({
   config,
@@ -38,7 +204,14 @@ export function FleetOverviewWidget({
   const cfg = config;
   const { data, error, isLoading } = useCapability("instances.overview", {});
   const state = queryState(error, isLoading);
+  const colors = useInstanceColors();
   const stake = data?.totals.stakeCurrency;
+
+  // Column set derived through a store: rebuilt only when the widget config
+  // or instance colors actually change.
+  const columns = useDerived([cfg, colors] as const, buildColumns, {
+    inputs: shallowStore,
+  });
 
   return (
     <WidgetFrame
@@ -78,117 +251,21 @@ export function FleetOverviewWidget({
               />
             ) : null}
           </div>
-          <div className="nfi-table-scroll">
-            <table style={{ width: "100%", fontSize: "0.8125rem" }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left" }}>Bot Name</th>
-                  <th style={{ textAlign: "right" }}>Trades</th>
-                  <th style={{ textAlign: "right" }}>Open Profit</th>
-                  <th style={{ textAlign: "right" }}>Closed Profit</th>
-                  {cfg.showBalance ? (
-                    <th style={{ textAlign: "right" }}>Balance</th>
-                  ) : null}
-                  <th style={{ textAlign: "right" }}>W/L</th>
-                  {cfg.showVersion ? (
-                    <th style={{ textAlign: "right" }}>Ver</th>
-                  ) : null}
-                </tr>
-              </thead>
-              <tbody>
-                {data.instances.map((row) => (
-                  <tr key={row.id}>
-                    <td className="nfi-mono">
-                      <span
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "0.375rem",
-                          minWidth: 0,
-                        }}
-                      >
-                        <ModeBadge dryRun={row.dryRun} />
-                        <span
-                          style={{
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            color:
-                              row.error === undefined && row.state !== "running"
-                                ? "var(--cds-text-secondary)"
-                                : undefined,
-                          }}
-                        >
-                          {row.error !== undefined ? (
-                            <span title={row.error}>{row.name} · down</span>
-                          ) : (
-                            row.name
-                          )}
-                        </span>
-                      </span>
-                    </td>
-                    <td style={{ textAlign: "right" }} className="nfi-mono">
-                      {row.error !== undefined
-                        ? "—"
-                        : `${row.openCount ?? 0} / ${row.maxOpenTrades ?? "—"}`}
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      {row.error !== undefined ? (
-                        "—"
-                      ) : row.openProfitCoin !== undefined ? (
-                        <PnlPill
-                          value={row.openProfitCoin}
-                          absolute={row.openProfitCoin}
-                        />
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      {row.error !== undefined ? (
-                        "—"
-                      ) : row.profitClosedPercent !== undefined ? (
-                        <PnlPill
-                          value={row.profitClosedPercent}
-                          percent={row.profitClosedPercent}
-                          absolute={row.profitClosedCoin}
-                        />
-                      ) : row.profitClosedCoin !== undefined ? (
-                        <PnlPill
-                          value={row.profitClosedCoin}
-                          absolute={row.profitClosedCoin}
-                        />
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    {cfg.showBalance ? (
-                      <td style={{ textAlign: "right" }} className="nfi-mono">
-                        {row.totalStake !== undefined
-                          ? `${fmt(row.totalStake, 2)}${row.stakeCurrency ? ` ${row.stakeCurrency}` : ""}`
-                          : "—"}
-                      </td>
-                    ) : null}
-                    <td style={{ textAlign: "right" }} className="nfi-mono">
-                      <span className="nfi-pnl-positive">{row.wins ?? 0}</span>
-                      {" / "}
-                      <span className="nfi-pnl-negative">{row.losses ?? 0}</span>
-                    </td>
-                    {cfg.showVersion ? (
-                      <td style={{ textAlign: "right" }} className="nfi-mono">
-                        {row.version ?? "—"}
-                      </td>
-                    ) : null}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div
+            className="nfi-table-scroll"
+            style={{ width: "100%", fontSize: "0.8125rem" }}
+          >
+            <NfiDataTable
+              columns={columns}
+              data={data.instances}
+              getRowId={(row) => row.id}
+            />
           </div>
         </div>
       ) : (
         <EmptyState
           title="No instances"
-          hint="Connect freqtrade instances on the System page → Freqtrade Instances."
+          hint="Connect freqtrade instances on the aside → Manage freqtrade instances."
         />
       )}
     </WidgetFrame>
@@ -205,6 +282,9 @@ export const FleetOverviewWidgetDef = defineWidget({
   defaultConfig: FLEET_OVERVIEW_DEFAULTS,
   component: FleetOverviewWidget,
   capabilities: [...FLEET_OVERVIEW_CAPABILITIES],
-  minWidth: 380,
-  minHeight: 160,
+  minWidth: 760,
+  // Summary tiles + header + two bot rows; more instances scroll vertically.
+  minHeight: 170,
+  defaultWidth: 640,
+  defaultHeight: 400,
 });

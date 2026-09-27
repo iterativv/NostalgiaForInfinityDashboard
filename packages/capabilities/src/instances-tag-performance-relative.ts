@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Schema } from "effect"
-import { Effect } from "effect"
-import { RelativeTagPerformanceResponse, type TagGroupBy } from "@nfi/api-contract"
-import { defineCapability, parseLimitParam } from "./definition.js"
-import { asBackendError } from "./errors.js"
-import { toRelativeTagPerformance } from "./relative.js"
+import { Schema } from "effect";
+import { Effect } from "effect";
+import {
+  RelativeTagPerformanceResponse,
+  type TagGroupBy,
+} from "@nfi/api-contract";
+import { defineCapability, parseLimitParam } from "./definition.js";
+import { asBackendError } from "./errors.js";
+import { toRelativeTagPerformance } from "./relative.js";
 
 /**
  * `instances.tag-performance.relative` — per-tag winrate/avg% (shareable).
@@ -28,9 +31,18 @@ export const InstancesTagPerformanceRelativeCapability = defineCapability({
   exposes: ["relative-values"],
   run: (options, ctx) =>
     Effect.gen(function* () {
-      const service = yield* ctx.resolveInstance(options.id)
-      const groupBy: TagGroupBy = options.groupBy === "exit" ? "exit" : "enter"
-      const absolute = yield* service.getTagPerformance(parseLimitParam(options.limit, 200, 1000), groupBy)
-      return toRelativeTagPerformance(absolute)
-    }).pipe(Effect.mapError((cause) => asBackendError("instance tag-performance.relative", cause))),
-})
+      const service = yield* ctx.resolveInstance(options.id);
+      const groupBy: TagGroupBy = options.groupBy === "exit" ? "exit" : "enter";
+
+      const absolute = yield* service.getTagPerformance(
+        parseLimitParam(options.limit, 200, 1000),
+        groupBy,
+      );
+
+      return toRelativeTagPerformance(absolute);
+    }).pipe(
+      Effect.mapError((cause) =>
+        asBackendError("instance tag-performance.relative", cause),
+      ),
+    ),
+});

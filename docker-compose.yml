@@ -41,6 +41,11 @@ services:
       # Only needed when the browser talks to a DIFFERENT origin than this
       # server (same-origin deployments like this one don't need it).
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Headless container: never auto-open a browser on boot.
+      OPEN_BROWSER: ${OPEN_BROWSER:-0}
+      # Verbose logging: Info (default), Debug or Trace. Set Debug to chase
+      # a 500 — the full fiber cause (type + message + stack) is logged.
+      LOG_LEVEL: ${LOG_LEVEL:-Info}
     volumes:
       - nfi-desk-data:/data
     restart: unless-stopped

@@ -3,7 +3,6 @@
   "version": "0.2.0",
   "type": "module",
   "private": true,
-  "license": "SSPL-1.0",
   "scripts": {
     "dev": "vite --port 3000",
     "build": "tsc -b && vite build",
@@ -29,6 +28,7 @@
     "@tanstack/react-query": "^5.0.0",
     "@tanstack/react-router": "^1.0.0",
     "@tanstack/react-store": "^0.9.0",
+    "@tanstack/react-table": "^9.2.4",
     "@tanstack/store": "^0.9.0",
     "effect": "^3.17.14",
     "react": "19.2.8",

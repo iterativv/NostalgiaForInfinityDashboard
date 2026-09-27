@@ -44,6 +44,7 @@ const asBackendError =
 /** Corrupt/absent rows fall back to the built-in defaults. */
 const decodeKinds = (raw: string | null): ReadonlyArray<InfoKind> => {
   if (raw === null) return [...DEFAULT_SENSITIVE_INFO_KINDS];
+
   try {
     return Schema.decodeUnknownSync(Schema.Array(InfoKind))(JSON.parse(raw));
   } catch {
@@ -54,6 +55,7 @@ const decodeKinds = (raw: string | null): ReadonlyArray<InfoKind> => {
 const readResponse = Effect.gen(function* () {
   const repo = yield* SettingsRepo;
   const raw = yield* repo.getSetting(SETTING_KEY);
+
   return {
     sensitiveKinds: decodeKinds(raw),
     defaults: [...DEFAULT_SENSITIVE_INFO_KINDS],
@@ -78,14 +80,17 @@ export const updateSensitivity = (
 > =>
   Effect.gen(function* () {
     const auth = yield* SessionAuth;
+
     const requestOption = yield* Effect.serviceOption(
       HttpServerRequest.HttpServerRequest,
     );
+
     const principal = yield* Effect.matchEffect(requestOption, {
       onSuccess: (request) => auth.principalFromRequest(request),
       onFailure: () =>
         Effect.succeed<Principal>({ kind: "anonymous", granted: [] }),
     });
+
     if (!isRoot(principal)) {
       return yield* Effect.fail(
         ForbiddenError.make({
@@ -94,6 +99,7 @@ export const updateSensitivity = (
         }),
       );
     }
+
     // Dedupe while preserving order; an empty set is legitimate (root says
     // nothing is sensitive — labels only, grants still gate access).
     const kinds = [...new Set(payload.sensitiveKinds)];
@@ -101,6 +107,7 @@ export const updateSensitivity = (
     yield* repo
       .saveSetting(SETTING_KEY, JSON.stringify(kinds))
       .pipe(Effect.mapError(asBackendError("sensitivity settings save")));
+
     return {
       sensitiveKinds: kinds,
       defaults: [...DEFAULT_SENSITIVE_INFO_KINDS],

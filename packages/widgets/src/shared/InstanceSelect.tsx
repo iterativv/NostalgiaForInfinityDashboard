@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 import { useCapability } from "../live/live";
+import {
+  AllInstancesDot,
+  InstanceDot,
+  instanceColorByIndex,
+} from "./instanceColors";
 import { SettingsSelect } from "./SettingsSelect";
 
 /** Reserved `instanceId` meaning "every configured instance at once". */
@@ -64,21 +69,73 @@ export function InstanceSelect({
         ? `default · ${i.baseUrl} (env)`
         : `${i.name} · ${i.baseUrl}`,
   }));
+
   if (allowAll) {
     items.unshift({ id: ALL_INSTANCES, text: "All instances (fleet)" });
   }
+
   // Honesty first: a stored id that no longer exists stays selected and is
   // labeled as unavailable — never silently swap in a different bot.
   if (!items.some((i) => i.id === value)) {
     items.push({ id: value, text: `${value} (unavailable)` });
   }
+
   return (
-    <SettingsSelect
-      id={id}
-      label="Freqtrade instance"
-      items={items}
-      value={value}
-      onChange={onChange}
-    />
+    <div>
+      <SettingsSelect
+        id={id}
+        label="Freqtrade instance"
+        items={items}
+        value={value}
+        onChange={onChange}
+      />
+      <ColorHint value={value} instances={instances} />
+    </div>
+  );
+}
+
+/**
+ * The selected instance's color — the same hue its series and rows carry
+ * across fleet widgets (a custom stored color when set, otherwise the
+ * automatic assignment). Native `<option>`s cannot be colored, so the dot
+ * rides as a hint line under the select.
+ */
+function ColorHint({
+  value,
+  instances,
+}: {
+  value: string;
+  instances: ReadonlyArray<{ id: string; name: string; color?: string }>;
+}) {
+  const instance = instances.find((i) => i.id === value);
+
+  if (value === ALL_INSTANCES) {
+    return (
+      <span
+        className="nfi-settings-hint"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "0.375rem",
+        }}
+      >
+        <AllInstancesDot /> All instances — fleet views color one hue per bot.
+      </span>
+    );
+  }
+
+  if (!instance) return null;
+
+  const color =
+    instance.color ?? instanceColorByIndex(instances.indexOf(instance));
+
+  return (
+    <span
+      className="nfi-settings-hint"
+      style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}
+    >
+      <InstanceDot color={color} /> This bot&apos;s color in fleet charts and
+      tables.
+    </span>
   );
 }

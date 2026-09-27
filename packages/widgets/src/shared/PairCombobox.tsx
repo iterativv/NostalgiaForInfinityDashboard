@@ -1,15 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
+import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { TextInput } from "@carbon/react";
+import {
+  shallow,
+  useDerived,
+  useElementStore,
+  useLocalStore,
+  useStore,
+  useStoreEffect,
+} from "@nfi/ui";
 
 /**
  * PairCombobox — searchable pair picker for whitelists of any size.
@@ -26,7 +28,9 @@ import { TextInput } from "@carbon/react";
  */
 
 const POPUP_WIDTH_PX = 16 * 16;
+
 const POPUP_MAX_HEIGHT_PX = 18 * 16;
+
 /** Long whitelists render capped; the note tells the user to keep typing. */
 const MAX_SHOWN = 300;
 
@@ -46,47 +50,82 @@ export function PairCombobox({
   /** Optional field label (settings-form usage; the toolbar omits it). */
   label?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [anchor, setAnchor] = useState<DOMRect | null>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const popupRef = useRef<HTMLDivElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
+  // One store for the popup's UI state: open flag, search text, and the
+  // trigger rect the popup anchors to.
+  interface ComboState {
+    open: boolean;
+    query: string;
+    anchor: DOMRect | null;
+  }
 
-  const options = useMemo(
-    () => (pairs.includes(value) ? pairs : [value, ...pairs]),
-    [pairs, value],
+  const comboStore = useLocalStore<ComboState>({
+    open: false,
+    query: "",
+    anchor: null,
+  });
+
+  const open = useStore(comboStore, (s) => s.open);
+  const query = useStore(comboStore, (s) => s.query);
+  const anchor = useStore(comboStore, (s) => s.anchor);
+
+  const { store: triggerStore, setElement: setTriggerElement } =
+    useElementStore<HTMLButtonElement>();
+
+  const { store: popupStore, setElement: setPopupElement } =
+    useElementStore<HTMLDivElement>();
+
+  const { store: searchStore, setElement: setSearchElement } =
+    useElementStore<HTMLInputElement>();
+
+  const options = useDerived(
+    [pairs, value] as const,
+    ([pairs, value]) => (pairs.includes(value) ? pairs : [value, ...pairs]),
+    { inputs: shallow },
   );
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return q.length === 0
-      ? options
-      : options.filter((p) => p.toLowerCase().includes(q));
-  }, [options, query]);
+
+  const filtered = useDerived(
+    [options, query] as const,
+    ([options, query]) => {
+      const q = query.trim().toLowerCase();
+
+      return q.length === 0
+        ? options
+        : options.filter((p) => p.toLowerCase().includes(q));
+    },
+    { inputs: shallow },
+  );
+
   const shown = filtered.slice(0, MAX_SHOWN);
 
-  useEffect(() => {
+  // Popup-open wiring is an external system (window listeners + focus); the
+  // element stores are read at event time, exactly like the old refs.
+  useStoreEffect(() => {
     if (!open) return;
-    searchRef.current?.focus();
+    searchStore.state?.focus();
+
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        setOpen(false);
-        triggerRef.current?.focus();
+        comboStore.setState((p) => ({ ...p, open: false }));
+        triggerStore.state?.focus();
       }
     };
+
     const onPointer = (event: PointerEvent) => {
-      const target = event.target as Node | null;
+      const target = event.target instanceof Node ? event.target : null;
+
       if (
         target &&
-        !popupRef.current?.contains(target) &&
-        !triggerRef.current?.contains(target)
+        !popupStore.state?.contains(target) &&
+        !triggerStore.state?.contains(target)
       ) {
-        setOpen(false);
+        comboStore.setState((p) => ({ ...p, open: false }));
       }
     };
+
     window.addEventListener("keydown", onKey);
     window.addEventListener("pointerdown", onPointer);
+
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("pointerdown", onPointer);
@@ -108,37 +147,42 @@ export function PairCombobox({
   }
 
   const toggle = () => {
-    setQuery("");
-    setAnchor(triggerRef.current?.getBoundingClientRect() ?? null);
-    setOpen((v) => !v);
+    const rect = triggerStore.state?.getBoundingClientRect() ?? null;
+
+    comboStore.setState((p) => ({ ...p, query: "", anchor: rect, open: !p.open }));
   };
 
   const pick = (pair: string) => {
-    setOpen(false);
-    triggerRef.current?.focus();
+    comboStore.setState((p) => ({ ...p, open: false }));
+    triggerStore.state?.focus();
+
     if (pair !== value) onChange(pair);
   };
 
   // Below the trigger (flipped above near the viewport bottom), clamped.
   const style: CSSProperties = (() => {
     if (!anchor) return { top: 0, left: 0, visibility: "hidden" };
+
     const height = Math.min(
       POPUP_MAX_HEIGHT_PX,
       Math.max(160, window.innerHeight - anchor.bottom - 16),
     );
+
     const below = anchor.bottom + 4;
     const flip = below + height > window.innerHeight;
     const top = flip ? Math.max(8, anchor.top - height - 4) : below;
+
     const left = Math.max(
       8,
       Math.min(window.innerWidth - POPUP_WIDTH_PX - 8, anchor.left),
     );
+
     return { top, left, height };
   })();
 
   const trigger = (
     <button
-      ref={triggerRef}
+      ref={setTriggerElement}
       type="button"
       id={id}
       className="nfi-pair-combo-trigger"
@@ -164,19 +208,21 @@ export function PairCombobox({
       {open
         ? createPortal(
             <div
-              ref={popupRef}
+              ref={setPopupElement}
               role="listbox"
               aria-label="Pairs"
               className="nfi-pair-combo-popup"
               style={style}
             >
               <input
-                ref={searchRef}
+                ref={setSearchElement}
                 type="text"
                 className="nfi-pair-combo-search"
                 placeholder="Search pair…"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) =>
+                  comboStore.setState((p) => ({ ...p, query: event.target.value }))
+                }
                 aria-label="Search pair"
               />
               <div className="nfi-pair-combo-list">

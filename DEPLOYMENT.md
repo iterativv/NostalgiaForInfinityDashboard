@@ -171,6 +171,7 @@ All optional; empty means unset.
 | `SNAPSHOT_INTERVAL_MS`                      | `60000`                                       | SQLite snapshot throttle                                                                               |
 | `STATIC_DIR`                                | `../web/dist` (Node boots)                    | Web shell directory; the compiled binary ignores it (shell is embedded)                                |
 | `OPEN_BROWSER`                              | `1` (binary)                                  | Auto-open the terminal in the browser on boot; set `0` for headless servers                            |
+| `LOG_LEVEL`                                 | `Info`                                        | Verbose logging: `Debug`/`Trace` print platform spans and the full fiber cause for 500s                |
 
 ## HTTPS / reverse proxy
 

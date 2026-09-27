@@ -16,32 +16,45 @@ import { readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { join, relative, sep } from "node:path"
 
 const ROOT = new URL("..", import.meta.url).pathname
+
 const DIST = join(ROOT, "apps/web/dist")
+
 const OUT = join(ROOT, "apps/server/src/web-assets.generated.ts")
 
 const walk = async (dir) => {
   const entries = await readdir(dir, { withFileTypes: true })
+
   const files = []
+
   for (const entry of entries) {
     const full = join(dir, entry.name)
-    if (entry.isDirectory()) files.push(...(await walk(full)))
-    else if ((await stat(full)).isFile()) files.push(full)
+
+    if (entry.isDirectory()) {
+      files.push(...(await walk(full)))
+    } else if ((await stat(full)).isFile()) {
+      files.push(full)
+    }
   }
+
   return files
 }
 
 const files = (await walk(DIST)).sort()
+
 if (files.length === 0) {
   console.error(`no files under ${DIST} — build the web app first (pnpm --filter @nfi/web build)`)
+
   process.exit(1)
 }
 
 const entries = []
+
 for (const file of files) {
   // URL-style keys ("/assets/index-AbC.js"); base64 keeps the generated
   // module free of escaping hazards regardless of file type.
   const key = "/" + relative(DIST, file).split(sep).join("/")
   const body = (await readFile(file)).toString("base64")
+
   entries.push(`  ${JSON.stringify(key)}: { body: ${JSON.stringify(body)}, base64: true },`)
 }
 
@@ -58,4 +71,5 @@ ${entries.join("\n")}
 `
 
 await writeFile(OUT, out)
+
 console.log(`embedded ${files.length} web files into ${relative(ROOT, OUT)}`)

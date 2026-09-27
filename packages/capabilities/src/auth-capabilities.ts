@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Effect } from "effect"
-import { ALL_CAPABILITIES, CapabilitiesResponse } from "@nfi/api-contract"
-import { defineCapability, NoOptions } from "./definition.js"
+import { Effect } from "effect";
+import { ALL_CAPABILITIES, CapabilitiesResponse } from "@nfi/api-contract";
+import { defineCapability, NoOptions } from "./definition.js";
 
 /**
  * `auth.capabilities` — the caller's granted capability set (public bootstrap).
@@ -23,7 +23,8 @@ export const AuthCapabilitiesCapability = defineCapability({
   pollMs: 60_000,
   exposes: ["session-identity"],
   run: (_options, ctx) => {
-    const principal = ctx.principal
+    const principal = ctx.principal;
+
     if (principal.kind === "system") {
       // Internal caller (poller/self-test): mirror the unrestricted truth.
       return Effect.succeed({
@@ -33,8 +34,9 @@ export const AuthCapabilitiesCapability = defineCapability({
         username: undefined,
         role: undefined,
         rootProvisioned: ctx.rootProvisioned,
-      } satisfies CapabilitiesResponse)
+      } satisfies CapabilitiesResponse);
     }
+
     if (principal.kind === "anonymous") {
       return Effect.succeed({
         capabilities: [...principal.granted],
@@ -43,8 +45,9 @@ export const AuthCapabilitiesCapability = defineCapability({
         username: undefined,
         role: "anonymous",
         rootProvisioned: ctx.rootProvisioned,
-      } satisfies CapabilitiesResponse)
+      } satisfies CapabilitiesResponse);
     }
+
     return Effect.succeed({
       capabilities: [...principal.granted],
       userId: principal.userId,
@@ -52,6 +55,6 @@ export const AuthCapabilitiesCapability = defineCapability({
       username: principal.username,
       role: principal.role,
       rootProvisioned: ctx.rootProvisioned,
-    } satisfies CapabilitiesResponse)
+    } satisfies CapabilitiesResponse);
   },
-})
+});

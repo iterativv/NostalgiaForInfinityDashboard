@@ -1,14 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import {
   FleetOpenPositionsResponse,
   type TaggedOpenPosition,
 } from "@nfi/api-contract";
-import { defineCapability, NoOptions } from "./definition.js";
+import { defineCapability } from "./definition.js";
 import { toBackendError } from "./errors.js";
 import { fleetInstances, perInstance } from "./fleet.js";
+import { applySearch } from "./search.js";
+
+const PositionsAllOptions = Schema.Struct({
+  /** Free-text filter applied server-side, before any slicing. */
+  search: Schema.optional(Schema.String),
+});
 
 /**
  * `instances.positions-all` — open positions across every configured
@@ -18,21 +24,24 @@ import { fleetInstances, perInstance } from "./fleet.js";
  */
 export const InstancesPositionsAllCapability = defineCapability({
   name: "instances.positions-all",
-  optionsSchema: NoOptions,
+  optionsSchema: PositionsAllOptions,
   resultSchema: FleetOpenPositionsResponse,
   description: "Open positions across all instances, tagged per instance.",
   streamable: true,
   pollMs: 10_000,
   exposes: ["trade-details"],
-  run: (_options, ctx) =>
+  run: (options, ctx) =>
     Effect.gen(function* () {
       const instances = yield* fleetInstances(ctx);
+
       const outcomes = yield* perInstance(instances, (instance) =>
         instance.service.getOpenPositions(),
       );
+
       const positions: TaggedOpenPosition[] = [];
       let failures = 0;
       let firstError: string | null = null;
+
       for (const outcome of outcomes) {
         if (outcome.data !== undefined) {
           for (const position of outcome.data.positions) {
@@ -47,6 +56,7 @@ export const InstancesPositionsAllCapability = defineCapability({
           firstError = firstError ?? outcome.error ?? "unreachable";
         }
       }
+
       if (
         positions.length === 0 &&
         failures > 0 &&
@@ -59,9 +69,23 @@ export const InstancesPositionsAllCapability = defineCapability({
           ),
         );
       }
+
       // Most-recently-opened first for tape-style views.
       positions.sort((a, b) => b.openDate.localeCompare(a.openDate));
-      return { positions };
+
+      return {
+        positions: applySearch(
+          positions,
+          (p) => [
+            p.pair,
+            p.instanceName,
+            p.strategy,
+            p.enterTag,
+            p.exitReason,
+          ],
+          options.search,
+        ),
+      };
     }).pipe(
       Effect.mapError((cause) => toBackendError("fleet positions", cause)),
     ),

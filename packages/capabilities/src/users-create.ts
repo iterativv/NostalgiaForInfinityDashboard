@@ -1,17 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Effect, Schema } from "effect"
+import { Effect, Schema } from "effect";
 import {
   Capability,
   CreateUserResponse,
   ForbiddenError,
   ManagedUser,
-  type UserRole,
-} from "@nfi/api-contract"
-import type { StoredUser } from "@nfi/db"
-import { defineCapability } from "./definition.js"
-import { asBackendError } from "./errors.js"
+} from "@nfi/api-contract";
+import type { StoredUser } from "@nfi/db";
+import { defineCapability } from "./definition.js";
+import { asBackendError } from "./errors.js";
 
 /**
  * `users.create` — create a user with a password and granted capabilities.
@@ -26,18 +25,18 @@ import { asBackendError } from "./errors.js"
 const toManaged = (row: StoredUser): ManagedUser => ({
   id: row.id,
   username: row.username,
-  role: row.role as UserRole,
+  role: row.role,
   capabilities: [...row.capabilities],
   hasPassword: row.hasPassword,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
-})
+});
 
 const escalationError = (ids: ReadonlyArray<Capability>) =>
   ForbiddenError.make({
     error: "cannot grant capabilities you do not hold",
     detail: ids.join(", "),
-  })
+  });
 
 export const UsersCreateCapability = defineCapability({
   name: "users.create",
@@ -53,28 +52,45 @@ export const UsersCreateCapability = defineCapability({
   exposes: ["user-accounts"],
   run: (options, ctx) =>
     Effect.gen(function* () {
-      const principal = ctx.principal
+      const principal = ctx.principal;
+
       if (principal.kind === "anonymous") {
         return yield* Effect.fail(
           ForbiddenError.make({ error: "sign in required to manage users" }),
-        )
+        );
       }
-      const grant = options.capabilities
-      const limited = principal.kind === "user" && principal.role !== "root"
-      const missing = limited ? grant.filter((id) => !principal.granted.includes(id)) : []
-      if (missing.length > 0) return yield* Effect.fail(escalationError(missing))
-      if (options.username.trim().toLowerCase() === ctx.rootUsername.trim().toLowerCase()) {
+
+      const grant = options.capabilities;
+      const limited = principal.kind === "user" && principal.role !== "root";
+
+      const missing = limited
+        ? grant.filter((id) => !principal.granted.includes(id))
+        : [];
+
+      if (missing.length > 0)
+        return yield* Effect.fail(escalationError(missing));
+
+      if (
+        options.username.trim().toLowerCase() ===
+        ctx.rootUsername.trim().toLowerCase()
+      ) {
         return yield* Effect.fail(
-          ForbiddenError.make({ error: "username is reserved by the root user" }),
-        )
+          ForbiddenError.make({
+            error: "username is reserved by the root user",
+          }),
+        );
       }
+
       const row = yield* ctx.users
         .createUser({
           username: options.username.trim(),
           password: options.password,
           capabilities: grant,
         })
-        .pipe(Effect.mapError((cause) => asBackendError("users.create", cause)))
-      return { user: toManaged(row) } satisfies CreateUserResponse
+        .pipe(
+          Effect.mapError((cause) => asBackendError("users.create", cause)),
+        );
+
+      return { user: toManaged(row) } satisfies CreateUserResponse;
     }),
-})
+});

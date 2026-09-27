@@ -13,6 +13,7 @@ import { createRequire } from "node:module";
 // boundary), so the JSX syntax plugin rides along as an absolute PATH string
 // rather than an imported module.
 const require = createRequire(import.meta.url);
+
 const syntaxJsxPath = require.resolve("@babel/plugin-syntax-jsx");
 
 /**

@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "license": "SSPL-1.0",
   "main": "./src/index.tsx",
   "types": "./src/index.tsx",
   "exports": {
@@ -16,6 +15,9 @@
   "dependencies": {
     "@carbon/icons-react": "^11.88.0",
     "@carbon/react": "^1.94.0",
+    "@tanstack/react-store": "^0.9.3",
+    "@tanstack/react-table": "^9.2.4",
+    "@tanstack/store": "^0.9.3",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

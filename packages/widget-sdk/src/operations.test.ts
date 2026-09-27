@@ -5,8 +5,11 @@ import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 import {
   decodeWorkspace,
+  type LayoutNode,
+  type LayoutNodeId,
+  LayoutNodeId as LayoutNodeIdSchema,
   type PanelId,
-  type TabsLayoutNode,
+  PanelId as PanelIdSchema,
   type Workspace,
 } from "@nfi/api-contract";
 import {
@@ -29,6 +32,34 @@ import {
   splitGridCell,
 } from "./operations.js";
 import { defineWidget } from "./widgets.js";
+
+/** Brand a fixture id through the real api-contract schema (validates it). */
+const panelIdOf = (id: string): PanelId => Schema.decodeSync(PanelIdSchema)(id);
+
+const nodeIdOf = (id: string): LayoutNodeId =>
+  Schema.decodeSync(LayoutNodeIdSchema)(id);
+
+/** Tabs fixture with branded ids — the same shape a decoded workspace holds. */
+const tabsNode = (
+  id: string,
+  panels: string[],
+  activePanelId: string | null,
+): LayoutNode => ({
+  type: "tabs",
+  id: nodeIdOf(id),
+  panels: panels.map(panelIdOf),
+  activePanelId: activePanelId === null ? null : panelIdOf(activePanelId),
+});
+
+/** Legacy split fixture (`replaceWorkspaceLayout` / `replaceTabsSubtree` trees). */
+const splitNode = (first: LayoutNode, second: LayoutNode): LayoutNode => ({
+  type: "split",
+  id: nodeIdOf("split-9"),
+  direction: "horizontal",
+  ratio: 0.5,
+  first,
+  second,
+});
 
 /** Minimal deterministic fixture: one tab group with two panels. */
 function makeWorkspace(): Workspace {
@@ -62,12 +93,14 @@ function makeWorkspace(): Workspace {
 describe("openWidget", () => {
   it("opens into the active tab group and focuses the new panel", () => {
     const prev = makeWorkspace();
+
     const { workspace, panelId } = openWidget(
       prev,
       "development.welcome",
       {},
       { panelId: "panel-c" },
     );
+
     expect(panelId).toBe("panel-c");
     expect(workspace.panels["panel-c"]).toMatchObject({
       widgetType: "development.welcome",
@@ -90,12 +123,14 @@ describe("openWidget", () => {
       activePanelId: null,
     });
     const tabsId = emptied.layout.type === "tabs" ? emptied.layout.id : "";
+
     const { workspace } = openWidget(
       emptied,
       "development.welcome",
       {},
       { panelId: "panel-c", targetTabsId: tabsId },
     );
+
     expect(workspace.layout).toMatchObject({
       panels: ["panel-c"],
       activePanelId: "panel-c",
@@ -128,6 +163,7 @@ describe("closePanel", () => {
 
   it("keeps emptied cells instead of collapsing the grid", () => {
     const prev = makeWorkspace();
+
     const { workspace: split } = splitGridCell(
       prev,
       "panel-a",
@@ -135,11 +171,13 @@ describe("closePanel", () => {
       { widgetType: "development.welcome", config: {} },
       { panelId: "panel-c", nodeId: "grid-1" },
     );
+
     // Group was split as a whole: grid(tabs[a,b], welcome[c]).
     const closed = closePanel(split, "panel-c");
     expect(collectPanelIds(closed.layout)).toEqual(["panel-a", "panel-b"]);
     // The emptied cell stays: geometry is stable, the placeholder refills it.
     expect(closed.layout.type).toBe("grid");
+
     if (closed.layout.type === "grid") {
       expect(closed.layout.items).toHaveLength(2);
       expect(closed.layout.columns).toHaveLength(2);
@@ -147,6 +185,7 @@ describe("closePanel", () => {
       expect(emptied.type).toBe("tabs");
       expect(emptied.type === "tabs" && emptied.panels).toEqual([]);
     }
+
     expect(integrityErrors(closed)).toEqual([]);
   });
 
@@ -190,6 +229,7 @@ describe("activatePanel / activateTab / cycleTab", () => {
 describe("splitGridCell", () => {
   it("wraps a tab group in a 2-column nested grid, focusing the new panel", () => {
     const prev = makeWorkspace();
+
     const { workspace, panelId } = splitGridCell(
       prev,
       "panel-a",
@@ -197,6 +237,7 @@ describe("splitGridCell", () => {
       { widgetType: "development.welcome", config: {} },
       { panelId: "panel-c", nodeId: "grid-1" },
     );
+
     expect(panelId).toBe("panel-c");
     expect(workspace.layout).toMatchObject({
       type: "grid",
@@ -226,12 +267,14 @@ describe("splitGridCell", () => {
 
   it("splits a bare panel leaf vertically", () => {
     const prev = makeWorkspace();
+
     const leafFirst: Workspace = {
       ...prev,
-      layout: { type: "panel", panelId: "panel-a" as PanelId },
+      layout: { type: "panel", panelId: panelIdOf("panel-a") },
       panels: { "panel-a": prev.panels["panel-a"]! },
-      activePanelId: "panel-a" as PanelId,
+      activePanelId: panelIdOf("panel-a"),
     };
+
     const { workspace } = splitGridCell(
       leafFirst,
       "panel-a",
@@ -239,6 +282,7 @@ describe("splitGridCell", () => {
       { widgetType: "development.log", config: { source: "y" } },
       { panelId: "panel-c", nodeId: "grid-2" },
     );
+
     expect(workspace.layout).toMatchObject({
       type: "grid",
       columns: [1],
@@ -253,6 +297,7 @@ describe("splitGridCell", () => {
 
   it("supports multi-nested grids and keeps emptied cells", () => {
     const prev = makeWorkspace();
+
     const first = splitGridCell(
       prev,
       "panel-a",
@@ -260,6 +305,7 @@ describe("splitGridCell", () => {
       { widgetType: "development.welcome", config: {} },
       { panelId: "panel-c", nodeId: "grid-1" },
     ).workspace;
+
     // Split the freshly created cell again — grid inside grid.
     const second = splitGridCell(
       first,
@@ -268,9 +314,12 @@ describe("splitGridCell", () => {
       { widgetType: "development.log", config: {} },
       { panelId: "panel-d", nodeId: "grid-2" },
     ).workspace;
+
     expect(second.layout.type).toBe("grid");
+
     const nested =
       second.layout.type === "grid" ? second.layout.items[1]?.child : undefined;
+
     expect(nested?.type).toBe("grid");
     expect(collectPanelIds(second.layout)).toEqual([
       "panel-a",
@@ -290,6 +339,7 @@ describe("splitGridCell", () => {
 describe("setGridTracks", () => {
   it("replaces one axis of a grid and validates the values", () => {
     const prev = makeWorkspace();
+
     const { workspace } = splitGridCell(
       prev,
       "panel-a",
@@ -297,6 +347,7 @@ describe("setGridTracks", () => {
       { widgetType: "development.welcome", config: {} },
       { panelId: "panel-c", nodeId: "grid-1" },
     );
+
     expect(
       setGridTracks(workspace, "grid-1", "columns", [3, 1]).layout,
     ).toMatchObject({
@@ -369,7 +420,9 @@ describe("movePanelToTabs", () => {
       },
       activePanelId: "panel-a",
     });
+
     expect(integrityErrors(rebuilt)).toEqual([]);
+
     return rebuilt;
   }
 
@@ -390,6 +443,7 @@ describe("movePanelToTabs", () => {
       "panel-a",
       "panel-b",
     ]);
+
     // Out-of-range indices clamp instead of corrupting the group.
     const clamped = movePanelToTabs(
       makeSplitWorkspace(),
@@ -397,6 +451,7 @@ describe("movePanelToTabs", () => {
       "tabs-2",
       99,
     );
+
     expect(findTabsById(clamped.layout, "tabs-2")?.panels).toEqual([
       "panel-b",
       "panel-a",
@@ -420,12 +475,14 @@ describe("movePanelToTabs", () => {
     const prev = makeSplitWorkspace();
     expect(movePanelToTabs(prev, "nope", "tabs-2")).toBe(prev);
     expect(movePanelToTabs(prev, "panel-a", "nope")).toBe(prev);
+
     const lone = decodeWorkspace({
-      ...(JSON.parse(JSON.stringify(prev)) as Record<string, unknown>),
+      ...prev,
       layout: { type: "panel", panelId: "panel-a" },
       panels: { "panel-a": prev.panels["panel-a"] },
       activePanelId: "panel-a",
     });
+
     expect(movePanelToTabs(lone, "panel-a", "tabs-2")).toBe(lone);
   });
 });
@@ -433,25 +490,13 @@ describe("movePanelToTabs", () => {
 describe("replaceWorkspaceLayout", () => {
   it("swaps the tree when every instance is placed exactly once", () => {
     const prev = makeWorkspace();
-    const layout = {
-      type: "split",
-      id: "split-9",
-      direction: "horizontal",
-      ratio: 0.5,
-      first: {
-        type: "tabs",
-        id: "g-1",
-        panels: ["panel-a"],
-        activePanelId: null,
-      },
-      second: {
-        type: "tabs",
-        id: "g-2",
-        panels: ["panel-b"],
-        activePanelId: "panel-b",
-      },
-    } as const;
-    const next = replaceWorkspaceLayout(prev, layout as never);
+
+    const layout = splitNode(
+      tabsNode("g-1", ["panel-a"], null),
+      tabsNode("g-2", ["panel-b"], "panel-b"),
+    );
+
+    const next = replaceWorkspaceLayout(prev, layout);
     expect(next.layout).toMatchObject({
       type: "split",
       first: { panels: ["panel-a"], activePanelId: "panel-a" },
@@ -464,52 +509,37 @@ describe("replaceWorkspaceLayout", () => {
 
   it("refuses partial, duplicated, or dangling placements", () => {
     const prev = makeWorkspace();
-    const single = {
-      type: "tabs",
-      id: "g-1",
-      panels: ["panel-a"],
-      activePanelId: "panel-a",
-    } as const;
-    expect(replaceWorkspaceLayout(prev, single as never)).toBe(prev);
-    const dup = {
-      type: "tabs",
-      id: "g-1",
-      panels: ["panel-a", "panel-a", "panel-b"],
-      activePanelId: "panel-a",
-    } as const;
-    expect(replaceWorkspaceLayout(prev, dup as never)).toBe(prev);
-    const dangling = {
-      type: "tabs",
-      id: "g-1",
-      panels: ["panel-a", "ghost"],
-      activePanelId: "panel-a",
-    } as const;
-    expect(replaceWorkspaceLayout(prev, dangling as never)).toBe(prev);
+
+    expect(
+      replaceWorkspaceLayout(prev, tabsNode("g-1", ["panel-a"], "panel-a")),
+    ).toBe(prev);
+
+    expect(
+      replaceWorkspaceLayout(
+        prev,
+        tabsNode("g-1", ["panel-a", "panel-a", "panel-b"], "panel-a"),
+      ),
+    ).toBe(prev);
+
+    expect(
+      replaceWorkspaceLayout(
+        prev,
+        tabsNode("g-1", ["panel-a", "ghost"], "panel-a"),
+      ),
+    ).toBe(prev);
   });
 });
 
 describe("replaceTabsSubtree", () => {
   it("swaps one group for a subtree with the same panels", () => {
     const prev = makeWorkspace();
-    const layout = {
-      type: "split",
-      id: "split-9",
-      direction: "horizontal",
-      ratio: 0.5,
-      first: {
-        type: "tabs",
-        id: "g-1",
-        panels: ["panel-a"],
-        activePanelId: null,
-      },
-      second: {
-        type: "tabs",
-        id: "g-2",
-        panels: ["panel-b"],
-        activePanelId: "panel-b",
-      },
-    } as const;
-    const next = replaceTabsSubtree(prev, "tabs-1", layout as never);
+
+    const layout = splitNode(
+      tabsNode("g-1", ["panel-a"], null),
+      tabsNode("g-2", ["panel-b"], "panel-b"),
+    );
+
+    const next = replaceTabsSubtree(prev, "tabs-1", layout);
     expect(next).not.toBe(prev);
     expect(next.layout).toMatchObject({
       type: "split",
@@ -523,55 +553,70 @@ describe("replaceTabsSubtree", () => {
 
   it("refuses unknown groups and membership changes", () => {
     const prev = makeWorkspace();
-    const single = {
-      type: "tabs",
-      id: "g-1",
-      panels: ["panel-a", "panel-b"],
-      activePanelId: "panel-a",
-    } as const;
-    expect(replaceTabsSubtree(prev, "nope", single as never)).toBe(prev);
-    const partial = {
-      type: "tabs",
-      id: "g-1",
-      panels: ["panel-a"],
-      activePanelId: "panel-a",
-    } as const;
-    expect(replaceTabsSubtree(prev, "tabs-1", partial as never)).toBe(prev);
-    const dup = {
-      type: "tabs",
-      id: "g-1",
-      panels: ["panel-a", "panel-a", "panel-b", "panel-b"],
-      activePanelId: "panel-a",
-    } as const;
-    expect(replaceTabsSubtree(prev, "tabs-1", dup as never)).toBe(prev);
-    const foreign = {
-      type: "tabs",
-      id: "g-1",
-      panels: ["panel-a", "ghost"],
-      activePanelId: "panel-a",
-    } as const;
-    expect(replaceTabsSubtree(prev, "tabs-1", foreign as never)).toBe(prev);
+
+    expect(
+      replaceTabsSubtree(
+        prev,
+        "nope",
+        tabsNode("g-1", ["panel-a", "panel-b"], "panel-a"),
+      ),
+    ).toBe(prev);
+
+    expect(
+      replaceTabsSubtree(
+        prev,
+        "tabs-1",
+        tabsNode("g-1", ["panel-a"], "panel-a"),
+      ),
+    ).toBe(prev);
+
+    expect(
+      replaceTabsSubtree(
+        prev,
+        "tabs-1",
+        tabsNode(
+          "g-1",
+          ["panel-a", "panel-a", "panel-b", "panel-b"],
+          "panel-a",
+        ),
+      ),
+    ).toBe(prev);
+
+    expect(
+      replaceTabsSubtree(
+        prev,
+        "tabs-1",
+        tabsNode("g-1", ["panel-a", "ghost"], "panel-a"),
+      ),
+    ).toBe(prev);
   });
 });
 
 describe("integrityErrors", () => {
   it("flags dangling tab references and unplaced instances", () => {
     const prev = makeWorkspace();
+
     const dangling: Workspace = {
       ...prev,
       layout: {
         type: "tabs",
-        id: "tabs-1" as TabsLayoutNode["id"],
-        panels: ["panel-a" as PanelId, "ghost" as PanelId],
-        activePanelId: "panel-a" as PanelId,
+        id: nodeIdOf("tabs-1"),
+        panels: [panelIdOf("panel-a"), panelIdOf("ghost")],
+        activePanelId: panelIdOf("panel-a"),
       },
     };
+
     const errors = integrityErrors(dangling);
     expect(errors.some((e) => e.includes("ghost"))).toBe(true);
+
     const unplaced: Workspace = {
       ...prev,
-      panels: { ...prev.panels, ...{ orphan: createPanelInstance("x", {}) } },
+      panels: {
+        ...prev.panels,
+        orphan: createPanelInstance("x", {}),
+      },
     };
+
     expect(integrityErrors(unplaced).some((e) => e.includes("orphan"))).toBe(
       true,
     );
@@ -583,7 +628,7 @@ describe("serialization", () => {
     const prev = makeWorkspace();
     const encoded = Schema.encodeSync(Schema.parseJson())(JSON.stringify(prev));
     void encoded;
-    const json = JSON.parse(JSON.stringify(prev)) as unknown;
+    const json: unknown = JSON.parse(JSON.stringify(prev));
     expect(decodeWorkspace(json)).toEqual(prev);
   });
 
@@ -611,6 +656,7 @@ describe("serialization", () => {
         activePanelId: null,
       }),
     ).not.toThrow(); // schema-valid shape; referential check is integrityErrors' job
+
     const dangling = decodeWorkspace({
       id: "x",
       name: "x",
@@ -620,6 +666,7 @@ describe("serialization", () => {
       panels: {},
       activePanelId: null,
     });
+
     expect(integrityErrors(dangling).length).toBeGreaterThan(0);
   });
 });
@@ -654,7 +701,9 @@ describe("setPanelTitle", () => {
     const prev = setPanelTitle(makeWorkspace(), "panel-a", "Renamed");
     const cleared = setPanelTitle(prev, "panel-a", "   ");
     expect(cleared.panels["panel-a"]).not.toHaveProperty("title");
-    expect(setPanelTitle(prev, "panel-a", null).panels["panel-a"]).not.toHaveProperty("title");
+    expect(
+      setPanelTitle(prev, "panel-a", null).panels["panel-a"],
+    ).not.toHaveProperty("title");
   });
 
   it("is a no-op for unknown panels", () => {

@@ -1,24 +1,34 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { HttpLayerRouter } from "@effect/platform"
-import { NodeContext, NodeHttpClient, NodeHttpPlatform, NodeHttpServer, NodeRuntime } from "@effect/platform-node"
-import { Duration, Effect, Layer } from "effect"
-import { spawn } from "node:child_process"
-import { createServer } from "node:http"
-import { FreqtradeClientLive, FreqtradeConfigLive } from "@nfi/freqtrade-client"
-import { NfiApi } from "@nfi/api-contract"
-import { BotGroupLive, SystemGroupLive } from "./routes.js"
-import { WorkspaceGroupLive } from "./workspaces.js"
-import { InstancesGroupLive } from "./instances.js"
-import { UsersGroupLive } from "./users.js"
-import { AuthGroupLive } from "./auth.js"
-import { DbLive, MigrateLive } from "./snapshots.js"
-import { LivePollerLive } from "./capabilities/poller.js"
-import { streamRouteHandler } from "./capabilities/stream.js"
-import { readCorsOrigins } from "./config.js"
-import { SessionAuthLive } from "./auth/session.js"
-import { StaticSiteLive, type StaticSource } from "./static.js"
+import { HttpLayerRouter } from "@effect/platform";
+import {
+  NodeContext,
+  NodeHttpClient,
+  NodeHttpPlatform,
+  NodeHttpServer,
+  NodeRuntime,
+} from "@effect/platform-node";
+import { Duration, Effect, Layer, Logger, LogLevel, Match } from "effect";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import {
+  FreqtradeClientLive,
+  FreqtradeConfigLive,
+} from "@nfi/freqtrade-client";
+import { NfiApi } from "@nfi/api-contract";
+import { BotGroupLive, SystemGroupLive } from "./routes.js";
+import { MacroGroupLive } from "./macro.js";
+import { WorkspaceGroupLive } from "./workspaces.js";
+import { InstancesGroupLive } from "./instances.js";
+import { UsersGroupLive } from "./users.js";
+import { AuthGroupLive } from "./auth.js";
+import { DbLive, MigrateLive } from "./snapshots.js";
+import { LivePollerLive } from "./capabilities/poller.js";
+import { streamRouteHandler } from "./capabilities/stream.js";
+import { readCorsOrigins } from "./config.js";
+import { SessionAuthLive } from "./auth/session.js";
+import { StaticSiteLive, type StaticSource } from "./static.js";
 
 /**
  * Shared layer composition for every entry point (`index.ts` for dev/Node
@@ -41,7 +51,7 @@ import { StaticSiteLive, type StaticSource } from "./static.js"
  */
 
 export interface BootOptions {
-  readonly static: StaticSource
+  readonly static: StaticSource;
 }
 
 // Docker/compose deployments pass optional settings through as empty strings
@@ -54,6 +64,7 @@ const EMPTY_MEANS_UNSET = [
   "FREQTRADE_URL",
   "FREQTRADE_USERNAME",
   "FREQTRADE_PASSWORD",
+  "LOG_LEVEL",
   "ROOT_USERNAME",
   "ROOT_PASSWORD",
   "NFI_SETUP_TOKEN",
@@ -61,56 +72,83 @@ const EMPTY_MEANS_UNSET = [
   "SNAPSHOT_INTERVAL_MS",
   "STATIC_DIR",
   "OPEN_BROWSER",
-] as const
+] as const;
 
 const normalizeEmptyEnv = (): void => {
   for (const key of EMPTY_MEANS_UNSET) {
-    if (process.env[key] === "") delete process.env[key]
+    if (process.env[key] === "") delete process.env[key];
   }
-}
+};
 
 /**
  * Best-effort browser open for local boots — a headless server has no
  * `xdg-open` (or no display): the spawn failure is swallowed silently.
  */
 const openInBrowser = (url: string): void => {
-  const command =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "cmd"
-        : "xdg-open"
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url]
+  const command = Match.value(process.platform).pipe(
+    Match.when("darwin", () => "open"),
+    Match.when("win32", () => "cmd"),
+    Match.orElse(() => "xdg-open"),
+  );
+
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+
   try {
-    const child = spawn(command, args, { stdio: "ignore", detached: true })
-    child.on("error", () => {}) // missing command / no display — ignore
-    child.unref()
+    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    child.on("error", () => {}); // missing command / no display — ignore
+    child.unref();
   } catch {
     // best effort only
   }
-}
+};
+
+/**
+ * Verbose logging knob (`LOG_LEVEL`, default `Info`): `Debug`/`Trace` turn
+ * on Effect platform span details and dependency logs. This is the setting
+ * for chasing a 500 with a terse message (e.g. a dying login handler):
+ * the full fiber cause — error type, message AND stack — prints instead of
+ * the one-line `Error: An error has occurred` summary. Unknown values fall
+ * back to `Info` rather than failing the boot.
+ */
+const parseLogLevel = (raw: string | undefined): LogLevel.LogLevel =>
+  Match.value((raw ?? "Info").trim().toLowerCase()).pipe(
+    Match.when("all", () => LogLevel.All),
+    Match.when("trace", () => LogLevel.Trace),
+    Match.when("debug", () => LogLevel.Debug),
+    Match.when("warning", () => LogLevel.Warning),
+    Match.when("warn", () => LogLevel.Warning),
+    Match.when("error", () => LogLevel.Error),
+    Match.when("fatal", () => LogLevel.Fatal),
+    Match.when("none", () => LogLevel.None),
+    Match.orElse(() => LogLevel.Info),
+  );
 
 export const launchServer = (options: BootOptions): void => {
-  normalizeEmptyEnv()
+  normalizeEmptyEnv();
+
+  const rawLogLevel = process.env["LOG_LEVEL"];
+
+  const logLevel = parseLogLevel(rawLogLevel);
   // The root user is OPTIONAL at boot: set `ROOT_USERNAME`/`ROOT_PASSWORD` for
   // a virtual env root, or leave them unset and provision root interactively
   // through `Auth.setupRoot` (the web first-run setup screen). Either way the
   // always-privileged account exists before anything privileged is served.
-  const port = Number(process.env["PORT"] ?? 4000)
+  const port = Number(process.env["PORT"] ?? 4000);
   // Default to loopback so a laptop/server boot is not silently exposed to
   // the LAN (first-run setup is reachable by ANYONE until root exists).
   // Docker/the container image sets HOST=0.0.0.0 explicitly; LAN/remote
   // deployments opt in via HOST (see DEPLOYMENT.md).
-  const host = process.env["HOST"] ?? "127.0.0.1"
+  const host = process.env["HOST"] ?? "127.0.0.1";
 
   const GroupsLive = Layer.mergeAll(
     BotGroupLive,
     SystemGroupLive,
+    MacroGroupLive,
     WorkspaceGroupLive,
     InstancesGroupLive,
     UsersGroupLive,
     AuthGroupLive,
-  )
+  );
 
   // SessionAuthLive appears once here but backs BOTH the REST groups and the
   // SSE stream route — Effect memoizes layers by reference inside a single
@@ -130,33 +168,51 @@ export const launchServer = (options: BootOptions): void => {
     // `credentials: true`: the session cookie must survive the cross-origin
     // case (browser shell pointed at a remote backend URL).
     Layer.provide(
-      HttpLayerRouter.cors({ allowedOrigins: readCorsOrigins(), credentials: true }),
+      HttpLayerRouter.cors({
+        allowedOrigins: readCorsOrigins(),
+        credentials: true,
+      }),
     ),
-  )
+  );
 
   // Local URL banner + browser auto-open. `OPEN_BROWSER` defaults ON for
   // the compiled binary (set `OPEN_BROWSER=0` to disable) and OFF for dev
   // / Node boots (`OPEN_BROWSER=1` to enable) — watch-mode restarts would
   // otherwise open a new tab on every file save, and servers are headless.
-  const isLoopback = host === "127.0.0.1" || host === "localhost" || host === "::1"
-  const localUrl = `http://${isLoopback ? "localhost" : host}:${port}`
+  const isLoopback =
+    host === "127.0.0.1" || host === "localhost" || host === "::1";
+
+  const localUrl = `http://${isLoopback ? "localhost" : host}:${port}`;
+
   const BannerLive = Layer.effectDiscard(
     Effect.gen(function* () {
       // Give the bind + first-boot migrations a moment before announcing.
-      yield* Effect.sleep(Duration.seconds(1))
-      yield* Effect.log(`nfi-desk is running → ${localUrl}`)
+      yield* Effect.sleep(Duration.seconds(1));
+      yield* Effect.log(`nfi-desk is running → ${localUrl}`);
+
+      if (logLevel !== LogLevel.Info) {
+        yield* Effect.log(
+          `verbose logging on (LOG_LEVEL=${rawLogLevel}) — platform spans and full fiber causes enabled`,
+        );
+      }
+
       if (!isLoopback) {
         yield* Effect.log(
           `listening on ${host} — reachable beyond this machine (HOST=127.0.0.1 to restrict)`,
-        )
+        );
       }
-      if (process.env["OPEN_BROWSER"] === "1") openInBrowser(localUrl)
+
+      if (process.env["OPEN_BROWSER"] === "1") openInBrowser(localUrl);
     }),
-  )
+  );
 
   const MainLive = Layer.mergeAll(
     BannerLive,
-    Layer.mergeAll(HttpLayerRouter.serve(AppLive), MigrateLive, LivePollerLive).pipe(
+    Layer.mergeAll(
+      HttpLayerRouter.serve(AppLive),
+      MigrateLive,
+      LivePollerLive,
+    ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port, host })),
       Layer.provide(NodeHttpPlatform.layer),
       Layer.provide(NodeContext.layer),
@@ -165,7 +221,10 @@ export const launchServer = (options: BootOptions): void => {
       Layer.provide(FreqtradeConfigLive),
       Layer.provide(NodeHttpClient.layer),
     ),
-  )
+  );
 
-  Layer.launch(MainLive).pipe(NodeRuntime.runMain)
-}
+  Layer.launch(MainLive).pipe(
+    Logger.withMinimumLogLevel(logLevel),
+    NodeRuntime.runMain,
+  );
+};

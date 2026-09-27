@@ -6,17 +6,21 @@ import { defineWidget } from "@nfi/widget-sdk";
 import { Stat, WidgetFrame } from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { EmptyConfigSchema } from "./shared/config";
+import { formatTimePrecise, useTimeFormat } from "./shared/timeFormat";
 
 export function ConnectionWidget() {
+  useTimeFormat();
   const health = useCapability("system.health", {});
   const backend = useCapability("system.backend-config", {});
   const isLoading = health.isLoading || backend.isLoading;
   const error = health.error ?? backend.error;
   const up = !health.error && health.data?.status === "ok";
   const reachable = health.data?.freqtrade === "reachable";
+
   const checkedAt = health.data?.timestamp
     ? new Date(health.data.timestamp)
     : undefined;
+
   return (
     <WidgetFrame title="Connection" isLoading={isLoading} error={error}>
       <div
@@ -54,17 +58,8 @@ export function ConnectionWidget() {
           />
           <Stat
             label="Last check"
-            value={
-              checkedAt
-                ? checkedAt.toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                    hour12: false,
-                  })
-                : "—"
-            }
-            sub="health poll every 10s"
+            value={checkedAt ? formatTimePrecise(checkedAt) : "—"}
+            sub="health stream · live"
           />
         </div>
       </div>
@@ -80,6 +75,8 @@ export const ConnectionWidgetDef = defineWidget({
   defaultConfig: {},
   component: ConnectionWidget,
   capabilities: ["system.health", "system.backend-config"],
-  minWidth: 260,
-  minHeight: 100,
+  minWidth: 466,
+  minHeight: 152,
+  defaultWidth: 480,
+  defaultHeight: 340,
 });

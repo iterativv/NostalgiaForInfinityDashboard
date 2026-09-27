@@ -27,9 +27,20 @@ type Invoker<N extends CapabilityName> = (
   options: CapabilityOptions<N>,
 ) => Effect.Effect<CapabilityResult<N>, unknown>;
 
-const INVOKERS: { [N in CapabilityName]: Invoker<N> } = {
+const INVOKERS = {
   "system.health": (client) => client.System.health(),
   "system.backend-config": (client) => client.System.backendConfig(),
+  "system.page-defaults": (client, options) =>
+    client.System.pageDefaults({ urlParams: { userId: options.userId } }),
+  "system.page-defaults.update": (client, options) =>
+    client.System.pageDefaultsUpdate({
+      payload: {
+        globalDefaultPageId: options.globalDefaultPageId,
+        userId: options.userId,
+        defaults: options.defaults,
+      },
+    }),
+  "macro.fed-rate": (client) => client.Macro.fedRate(),
   "bot.status": (client) => client.Bot.status(),
   "bot.balance": (client) => client.Bot.balance(),
   "bot.profit": (client) => client.Bot.profit(),
@@ -68,6 +79,7 @@ const INVOKERS: { [N in CapabilityName]: Invoker<N> } = {
         baseUrl: options.baseUrl,
         username: options.username,
         password: options.password,
+        color: options.color,
       },
     }),
   "instances.remove": (client, options) =>
@@ -81,11 +93,18 @@ const INVOKERS: { [N in CapabilityName]: Invoker<N> } = {
   "instances.profit": (client, options) =>
     client.Instances.profit({ path: { id: options.id } }),
   "instances.open-positions": (client, options) =>
-    client.Instances.openPositions({ path: { id: options.id } }),
+    client.Instances.openPositions({
+      path: { id: options.id },
+      urlParams: { search: options.search },
+    }),
   "instances.closed-positions": (client, options) =>
     client.Instances.closedPositions({
       path: { id: options.id },
-      urlParams: { limit: options.limit, offset: options.offset },
+      urlParams: {
+        limit: options.limit,
+        offset: options.offset,
+        search: options.search,
+      },
     }),
   "instances.tag-performance": (client, options) =>
     client.Instances.tagPerformance({
@@ -119,11 +138,18 @@ const INVOKERS: { [N in CapabilityName]: Invoker<N> } = {
   "instances.profit.relative": (client, options) =>
     client.Instances.profitRelative({ path: { id: options.id } }),
   "instances.open-positions.relative": (client, options) =>
-    client.Instances.openPositionsRelative({ path: { id: options.id } }),
+    client.Instances.openPositionsRelative({
+      path: { id: options.id },
+      urlParams: { search: options.search },
+    }),
   "instances.closed-positions.relative": (client, options) =>
     client.Instances.closedPositionsRelative({
       path: { id: options.id },
-      urlParams: { limit: options.limit, offset: options.offset },
+      urlParams: {
+        limit: options.limit,
+        offset: options.offset,
+        search: options.search,
+      },
     }),
   "instances.tag-performance.relative": (client, options) =>
     client.Instances.tagPerformanceRelative({
@@ -135,9 +161,20 @@ const INVOKERS: { [N in CapabilityName]: Invoker<N> } = {
   "instances.locks": (client, options) =>
     client.Instances.locks({ path: { id: options.id } }),
   "instances.blacklist": (client, options) =>
-    client.Instances.blacklist({ path: { id: options.id } }),
+    client.Instances.blacklist({
+      path: { id: options.id },
+      urlParams: { search: options.search },
+    }),
   "instances.whitelist": (client, options) =>
-    client.Instances.whitelist({ path: { id: options.id } }),
+    client.Instances.whitelist({
+      path: { id: options.id },
+      urlParams: { search: options.search },
+    }),
+  "instances.locks-all": (client) => client.Instances.locksAll(),
+  "instances.blacklist-all": (client, options) =>
+    client.Instances.blacklistAll({ urlParams: { search: options.search } }),
+  "instances.whitelist-all": (client, options) =>
+    client.Instances.whitelistAll({ urlParams: { search: options.search } }),
   "instances.trade-count": (client, options) =>
     client.Instances.tradeCount({ path: { id: options.id } }),
   "instances.profit-daily": (client, options) =>
@@ -151,18 +188,35 @@ const INVOKERS: { [N in CapabilityName]: Invoker<N> } = {
       urlParams: { limit: options.limit },
     }),
   "instances.overview": (client) => client.Instances.overview(),
-  "instances.positions-all": (client) => client.Instances.positionsAll(),
+  "instances.positions-all": (client, options) =>
+    client.Instances.positionsAll({ urlParams: { search: options.search } }),
   "instances.closed-all": (client, options) =>
-    client.Instances.closedAll({ urlParams: { limit: options.limit } }),
+    client.Instances.closedAll({
+      urlParams: { limit: options.limit, search: options.search },
+    }),
   "instances.profit-daily-all": (client, options) =>
     client.Instances.profitDailyAll({
       urlParams: { bucket: options.bucket, days: options.days },
     }),
   "instances.balance-history": (client, options) =>
-    client.Instances.balanceHistoryAll({ urlParams: { limit: options.limit } }),
+    client.Instances.balanceHistoryAll({
+      urlParams: { limit: options.limit, bucket: options.bucket },
+    }),
   "instances.balance-history.relative": (client, options) =>
     client.Instances.balanceHistoryAllRelative({
       urlParams: { limit: options.limit },
+    }),
+  "instances.profit-history-all.relative": (client, options) =>
+    client.Instances.profitHistoryAllRelative({
+      urlParams: { limit: options.limit },
+    }),
+  "instances.profit-history-all": (client, options) =>
+    client.Instances.profitHistoryAll({
+      urlParams: { limit: options.limit },
+    }),
+  "instances.tag-performance-all": (client, options) =>
+    client.Instances.tagPerformanceAll({
+      urlParams: { limit: options.limit, groupBy: options.groupBy },
     }),
   "users.list": (client) => client.Users.list(),
   "users.create": (client, options) =>
@@ -187,12 +241,21 @@ const INVOKERS: { [N in CapabilityName]: Invoker<N> } = {
   "users.remove": (client, options) =>
     client.Users.remove({ path: { id: options.id } }),
   "auth.capabilities": (client) => client.Auth.capabilities(),
-};
+} satisfies { [N in CapabilityName]: Invoker<N> };
+
+/** Precisely indexable owner view of the invoker map. */
+type InvokerMap = { [N in CapabilityName]: Invoker<N> };
+
+// SAFETY: identity re-narrowing — the satisfies check above proves every
+// entry matches its per-id Invoker<N>; this view only gives the generic
+// callCapability a precisely indexable type.
+const INVOKERS_BY_ID = INVOKERS as InvokerMap;
 
 export function callCapability<N extends CapabilityName>(
   name: N,
   options: CapabilityOptions<N>,
 ): Promise<CapabilityResult<N>> {
-  const invoke = INVOKERS[name] as Invoker<N>;
+  const invoke = INVOKERS_BY_ID[name];
+
   return runApi((client) => invoke(client, options));
 }

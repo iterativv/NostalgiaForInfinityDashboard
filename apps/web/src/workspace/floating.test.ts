@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 import { describe, expect, it } from "vitest";
-import { collectPanelIds, findTabsById, integrityErrors } from "@nfi/widget-sdk";
+import {
+  collectPanelIds,
+  findTabsById,
+  integrityErrors,
+} from "@nfi/widget-sdk";
 import type { TabsLayoutNode } from "@nfi/api-contract";
 import {
   FLOATING_MIN_HEIGHT,
@@ -15,6 +19,7 @@ import {
   removeFloatingTab,
   sanitizeFloatingState,
   setFloatingWidgetConfig,
+  isWidgetConfig,
 } from "./floating";
 import {
   dockFloatingTab,
@@ -27,16 +32,26 @@ import {
 /** All tab-group nodes of the store's current workspace, tree order. */
 function allGroups(): TabsLayoutNode[] {
   const out: TabsLayoutNode[] = [];
-  const visit = (node: (typeof workspaceStore.state.workspace)["layout"]): void => {
+
+  const visit = (
+    node: (typeof workspaceStore.state.workspace)["layout"],
+  ): void => {
     if (node.type === "tabs") out.push(node);
     else if (node.type === "split") {
       visit(node.first);
       visit(node.second);
-    } else if (node.type === "grid") {
+    } else if (
+      node.type === "grid" ||
+      node.type === "flow" ||
+      node.type === "masonry" ||
+      node.type === "auto"
+    ) {
       for (const item of node.items) visit(item.child);
     }
   };
+
   visit(workspaceStore.state.workspace.layout);
+
   return out;
 }
 
@@ -65,14 +80,21 @@ describe("floating helpers", () => {
     // shrinking the window on every persist until it hit the minimums.
     // The persisted size must be the element's border box — exactly what
     // the inline style sets — so re-measuring a persisted size is a no-op.
+    // SAFETY: deliberate DOM double — floatWindowSize reads only
+    // offsetWidth/offsetHeight from the element.
     const el = { offsetWidth: 420, offsetHeight: 300 } as HTMLElement;
     const measured = floatWindowSize(el);
     expect(measured).toEqual({ width: 420, height: 300 });
     // Sub-integer boxes round; sub-minimum boxes clamp instead of shrinking
     // below the floor.
+    // SAFETY: deliberate DOM doubles — only the offset box is read.
     expect(
-      floatWindowSize({ offsetWidth: 300.4, offsetHeight: 199.6 } as HTMLElement),
+      floatWindowSize({
+        offsetWidth: 300.4,
+        offsetHeight: 199.6,
+      } as HTMLElement),
     ).toEqual({ width: 300, height: 200 });
+    // SAFETY: deliberate DOM doubles — only the offset box is read.
     expect(
       floatWindowSize({ offsetWidth: 10, offsetHeight: 10 } as HTMLElement),
     ).toEqual({ width: FLOATING_MIN_WIDTH, height: FLOATING_MIN_HEIGHT });
@@ -97,6 +119,7 @@ describe("floating helpers", () => {
       broken: "not-an-array",
       alsoBroken: 42,
     });
+
     expect(Object.keys(clean)).toEqual(["page-home"]);
     const [tab] = clean["page-home"] ?? [];
     expect(tab).toMatchObject({
@@ -122,23 +145,31 @@ describe("floating tab round-trip", () => {
     const first = groups[0]!;
     const second = groups[1]!;
 
-    // Same widget type into two different groups: both open.
-    const firstPanel = openWidgetPanel("development.inspector", {
-      title: "one",
-    });
+    // Same widget type into two different groups: both open. (Bento
+    // canvas-level opens always append, so target the groups explicitly.)
+    const firstPanel = openWidgetPanel(
+      "development.inspector",
+      { title: "one" },
+      { targetTabsId: first.id },
+    );
+
     expect(firstPanel).not.toBeNull();
+
     const secondPanel = openWidgetPanel(
       "development.inspector",
       { title: "two" },
       { targetTabsId: second.id },
     );
+
     expect(secondPanel).not.toBeNull();
     expect(secondPanel).not.toBe(firstPanel);
     let workspace = workspaceStore.state.workspace;
+
     const countType = () =>
       collectPanelIds(workspace.layout).filter(
         (id) => workspace.panels[id]?.widgetType === "development.inspector",
       ).length;
+
     expect(countType()).toBe(2);
     expect(integrityErrors(workspace)).toEqual([]);
 
@@ -148,6 +179,7 @@ describe("floating tab round-trip", () => {
       {},
       { targetTabsId: first.id },
     );
+
     expect(third).toBe(firstPanel);
     expect(countType()).toBe(2);
 
@@ -156,7 +188,7 @@ describe("floating tab round-trip", () => {
     const floatId = pinTabToFloating(firstPanel!);
     expect(floatId).not.toBeNull();
     workspace = workspaceStore.state.workspace;
-    expect(workspace.panels[firstPanel as string]).toBeUndefined();
+    expect(workspace.panels[firstPanel!]).toBeUndefined();
     expect(integrityErrors(workspace)).toEqual([]);
     const floats = floatingTabsForPage("page-home");
     const entry = floats.find((tab) => tab.id === floatId);
@@ -166,7 +198,7 @@ describe("floating tab round-trip", () => {
     expect(countType()).toBe(1);
 
     // Config writes route to the floating entry while it is detached.
-    updatePanelConfig(firstPanel as string, { title: "moved" });
+    updatePanelConfig(firstPanel!, { title: "moved" });
     expect(
       floatingTabsForPage("page-home").find((tab) => tab.id === floatId)
         ?.widgetConfig,
@@ -174,14 +206,14 @@ describe("floating tab round-trip", () => {
 
     // Docking restores the widget into the grid (fresh panel id, config
     // kept) and drops the floating window.
-    expect(dockFloatingTab(floatId as string)).toBe(true);
+    expect(dockFloatingTab(floatId!)).toBe(true);
     workspace = workspaceStore.state.workspace;
     expect(
       Object.values(workspace.panels).some(
         (panel) =>
           panel.widgetType === "development.inspector" &&
-          (panel.widgetConfig as { title?: string } | undefined)?.title ===
-            "moved",
+          isWidgetConfig(panel.widgetConfig) &&
+          panel.widgetConfig["title"] === "moved",
       ),
     ).toBe(true);
     expect(floatingTabsForPage("page-home")).toEqual([]);
@@ -191,6 +223,7 @@ describe("floating tab round-trip", () => {
     const leftover = collectPanelIds(workspace.layout).find(
       (id) => workspace.panels[id]?.widgetType === "development.inspector",
     );
+
     expect(leftover).toBeDefined();
     removeFloatingTab("page-home", "does-not-exist");
   });
@@ -216,8 +249,11 @@ describe("floating tab round-trip", () => {
 
   it("resolves tab groups by id after mutation", () => {
     const groups = allGroups();
+
     for (const group of groups) {
-      expect(findTabsById(workspaceStore.state.workspace.layout, group.id)?.id).toBe(group.id);
+      expect(
+        findTabsById(workspaceStore.state.workspace.layout, group.id)?.id,
+      ).toBe(group.id);
     }
   });
 });

@@ -1,11 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { useEffect, useState } from "react";
 import { useStore } from "@tanstack/react-store";
 import { Button, TextInput } from "@carbon/react";
 import { defineWidget } from "@nfi/widget-sdk";
-import { EmptyState, WidgetFrame } from "@nfi/ui";
+import { EmptyState, useLocalStore, useStoreEffect, WidgetFrame } from "@nfi/ui";
 import { formatQueryError } from "@nfi/api-contract";
 import {
   refreshAllCapabilities,
@@ -16,14 +15,17 @@ import { callCapability } from "./live/transport";
 import { credentialsFixStore } from "./live/credentialsFix";
 import { requestConfirm } from "./shared/dialogs";
 import { EmptyConfigSchema } from "./shared/config";
+import { useInstanceColors, InstanceColorPicker } from "./shared/instanceColors";
 import { queryState } from "./shared/query";
 import { InstanceHealthRow } from "./InstanceHealthRow";
 
-interface InstanceFormValues {
+export interface InstanceFormValues {
   readonly name: string;
   readonly baseUrl: string;
   readonly username: string;
   readonly password: string;
+  /** Fleet color: "" = automatic list assignment, otherwise `#rrggbb`. */
+  readonly color: string;
 }
 
 // No hardcoded localhost prefill — a deployment's freqtrade is rarely the
@@ -33,6 +35,7 @@ const EMPTY_FORM: InstanceFormValues = {
   baseUrl: "",
   username: "",
   password: "",
+  color: "",
 };
 
 /**
@@ -40,13 +43,16 @@ const EMPTY_FORM: InstanceFormValues = {
  * and validation; the parent's submit handler may throw — a failure keeps
  * the values on screen with the backend's message, a success clears them
  * (the edit form is unmounted by the parent instead).
+ *
+ * Also used by the dedicated manage page (`/instances`) — exported for it.
  */
-function InstanceForm({
+export function InstanceForm({
   idPrefix,
   heading,
   submitLabel,
   busyLabel,
   initial,
+  instanceId,
   passwordRequired,
   passwordLabel,
   onSubmit,
@@ -56,14 +62,47 @@ function InstanceForm({
   submitLabel: string;
   busyLabel: string;
   initial: InstanceFormValues;
+  /** Edited instance (absent on add) — previews its automatic color. */
+  instanceId?: string;
   /** Add requires a password; edit keeps the stored one when left empty. */
   passwordRequired: boolean;
   passwordLabel: string;
   onSubmit: (values: InstanceFormValues) => Promise<void>;
 }) {
-  const [values, setValues] = useState<InstanceFormValues>(initial);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  // One store for the whole form: draft values, validation error, and the
+  // saving flag (seeded once from `initial`, never re-seeded on re-render).
+  interface InstanceFormState {
+    values: InstanceFormValues;
+    error: string | null;
+    saving: boolean;
+  }
+
+  const formStore = useLocalStore<InstanceFormState>({
+    values: initial,
+    error: null,
+    saving: false,
+  });
+
+  const values = useStore(formStore, (s) => s.values);
+  const formError = useStore(formStore, (s) => s.error);
+  const saving = useStore(formStore, (s) => s.saving);
+  const { autoColorOf } = useInstanceColors();
+
+  const autoPreview = instanceId !== undefined ? autoColorOf(instanceId) : null;
+
+  const setValues = (
+    next: (current: InstanceFormValues) => InstanceFormValues,
+  ): void => {
+    formStore.setState((p) => ({ ...p, values: next(p.values) }));
+  };
+
+  const setFormError = (error: string | null): void => {
+    formStore.setState((p) => ({ ...p, error }));
+  };
+
+  const setSaving = (saving: boolean): void => {
+    formStore.setState((p) => ({ ...p, saving }));
+  };
 
   const set =
     (field: keyof InstanceFormValues) =>
@@ -73,46 +112,70 @@ function InstanceForm({
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setFormError(null);
+
     if (values.name.trim().length === 0) {
       setFormError("Name is required.");
+
       return;
     }
+
     try {
       const url = new URL(values.baseUrl.trim());
+
       if (url.protocol !== "http:" && url.protocol !== "https:") {
         setFormError("Base URL must be http(s)://host:port.");
+
         return;
       }
     } catch {
       setFormError("Base URL must be http(s)://host:port.");
+
       return;
     }
+
     if (passwordRequired && values.password.length === 0) {
       setFormError("Password is required.");
+
       return;
     }
+
+    // The picker only emits "" or valid lowercase hex; the guard keeps
+    // hand-crafted values honest before they hit the backend.
+    const color = values.color.trim().toLowerCase();
+
+    if (color !== "" && !/^#[0-9a-f]{6}$/.test(color)) {
+      setFormError("Fleet color must be a #rrggbb hex value.");
+
+      return;
+    }
+
     if (!passwordRequired && values.password.length === 0) {
       // Mirror of the backend repoint guard (`instances.update`): leaving
       // the password empty keeps the stored secret, so a changed URL or
       // username would forward the REAL credentials to the new host.
       const normalize = (url: string) => url.trim().replace(/\/$/, "");
+
       if (
         normalize(values.baseUrl) !== normalize(initial.baseUrl) ||
         values.username !== initial.username
       ) {
         setFormError("Password is required when changing the URL or username.");
+
         return;
       }
     }
+
     setSaving(true);
+
     try {
       await onSubmit({
         name: values.name.trim(),
         baseUrl: values.baseUrl.trim(),
         username: values.username,
         password: values.password,
+        color,
       });
-      setValues(EMPTY_FORM);
+      setValues(() => EMPTY_FORM);
     } catch (cause) {
       setFormError(formatQueryError(cause) ?? "Failed to save the instance.");
     } finally {
@@ -186,6 +249,12 @@ function InstanceForm({
           password is kept.
         </p>
       ) : null}
+      <InstanceColorPicker
+        id={`${idPrefix}-color`}
+        value={values.color}
+        autoPreview={autoPreview}
+        onChange={(color) => setValues((current) => ({ ...current, color }))}
+      />
       {formError ? (
         <p
           style={{
@@ -213,25 +282,45 @@ function InstanceForm({
 export function InstanceManagerWidget() {
   const { data, error, isLoading } = useCapability("instances.list", {});
   const state = queryState(error, isLoading);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+
+  // One store for the manager's row actions: which row is being edited,
+  // which is mid-delete, and the last action error.
+  interface InstanceActionsState {
+    editingId: string | null;
+    deletingId: string | null;
+    error: string | null;
+  }
+
+  const actionsStore = useLocalStore<InstanceActionsState>({
+    editingId: null,
+    deletingId: null,
+    error: null,
+  });
+
+  const editingId = useStore(actionsStore, (s) => s.editingId);
+  const deletingId = useStore(actionsStore, (s) => s.deletingId);
+  const actionError = useStore(actionsStore, (s) => s.error);
 
   // "Fix credentials" hand-off: a 401 elsewhere records the failing
   // instance id; pre-open that row's editor once the list has loaded. The
   // request is consumed once — a later data update must not re-open it.
   const fixRequest = useStore(credentialsFixStore, (s) => s);
-  useEffect(() => {
+  useStoreEffect(() => {
     const id = fixRequest.instanceId;
+
     if (id === null) return;
     const instances = data?.instances;
+
     if (instances === undefined) return;
     credentialsFixStore.setState(() => ({
       instanceId: null,
       seq: fixRequest.seq,
     }));
     const instance = instances.find((i) => i.id === id);
-    if (instance && instance.id !== "default") setEditingId(instance.id);
+
+    if (instance && instance.id !== "default") {
+      actionsStore.setState((p) => ({ ...p, editingId: instance.id }));
+    }
   }, [fixRequest.seq, fixRequest.instanceId, data]);
 
   const create = async (values: InstanceFormValues) => {
@@ -240,48 +329,74 @@ export function InstanceManagerWidget() {
       baseUrl: values.baseUrl,
       username: values.username,
       password: values.password,
+      color: values.color === "" ? undefined : values.color,
     });
     await refreshCapability("instances.list", {});
   };
 
+  /**
+   * `instances.update` payload: empty password keeps the stored secret;
+   * color is tri-state ("" sends null = back to automatic, otherwise hex).
+   */
+  interface InstanceUpdateInput {
+    id: string;
+    name: string;
+    baseUrl: string;
+    username: string;
+    password?: string;
+    color?: string | null;
+  }
+
   const update = async (id: string, values: InstanceFormValues) => {
     // Empty password keeps the stored secret (backend contract).
-    await callCapability("instances.update", {
+    const input: InstanceUpdateInput = {
       id,
       name: values.name,
       baseUrl: values.baseUrl,
       username: values.username,
-      ...(values.password.length > 0 ? { password: values.password } : {}),
-    });
-    setEditingId(null);
-    setActionError(null);
+      color: values.color === "" ? null : values.color,
+    };
+
+    if (values.password.length > 0) input.password = values.password;
+    await callCapability("instances.update", input);
+    actionsStore.setState((p) => ({ ...p, editingId: null, error: null }));
     await refreshCapability("instances.list", {});
     // Re-check reachability with the new credentials now, not on the next
-    // health poll; a failed re-check must not fail the save itself.
+    // stream tick; a failed re-check must not fail the save itself.
     refreshCapability("instances.health", { id }).catch(() => undefined);
   };
 
   const remove = async (id: string) => {
     if (id === "default") return;
+
     const confirmed = await requestConfirm({
       title: "Delete this freqtrade instance?",
       message: "Widgets using it will show an error until reconfigured.",
       confirmLabel: "Delete",
       danger: true,
     });
+
     if (!confirmed) return;
-    setDeletingId(id);
+    actionsStore.setState((p) => ({ ...p, deletingId: id }));
+
     try {
       await callCapability("instances.remove", { id });
-      if (editingId === id) setEditingId(null);
+
+      if (editingId === id) {
+        actionsStore.setState((p) => ({ ...p, editingId: null }));
+      }
+
       // Deleting an instance reshapes every widget: aggregates keyed on
       // "all" lose a bot, per-instance keys lose their source. Refresh the
       // whole live surface (this list included) instead of just instances.list.
       await refreshAllCapabilities();
     } catch (cause) {
-      setActionError(formatQueryError(cause) ?? "Failed to delete instance.");
+      actionsStore.setState((p) => ({
+        ...p,
+        error: formatQueryError(cause) ?? "Failed to delete instance.",
+      }));
     } finally {
-      setDeletingId(null);
+      actionsStore.setState((p) => ({ ...p, deletingId: null }));
     }
   };
 
@@ -306,8 +421,11 @@ export function InstanceManagerWidget() {
               deleting={deletingId === instance.id}
               editing={editingId === instance.id}
               onEdit={(id) => {
-                setActionError(null);
-                setEditingId(editingId === id ? null : id);
+                actionsStore.setState((p) => ({
+                  ...p,
+                  error: null,
+                  editingId: editingId === id ? null : id,
+                }));
               }}
             />
             {editingId === instance.id ? (
@@ -316,11 +434,13 @@ export function InstanceManagerWidget() {
                 heading={`Edit ${instance.name}`}
                 submitLabel="Save changes"
                 busyLabel="Saving…"
+                instanceId={instance.id}
                 initial={{
                   name: instance.name,
                   baseUrl: instance.baseUrl,
                   username: instance.username,
                   password: "",
+                  color: instance.color ?? "",
                 }}
                 passwordRequired={false}
                 passwordLabel="Password"
@@ -373,6 +493,8 @@ export const InstanceManagerWidgetDef = defineWidget({
     "instances.update",
     "instances.remove",
   ],
-  minWidth: 360,
-  minHeight: 160,
+  minWidth: 370,
+  minHeight: 561,
+  defaultWidth: 480,
+  defaultHeight: 520,
 });

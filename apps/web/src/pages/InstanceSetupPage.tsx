@@ -1,12 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { useEffect, useState } from "react"
-import { useNavigate } from "@tanstack/react-router"
-import { Button, InlineNotification, PasswordInput, TextInput, Tile } from "@carbon/react"
-import { createInstance, formatQueryError, queryClient } from "../api"
-import { hydrateCapabilities, useCapabilities } from "../auth/capabilities"
-import { dismissInstanceSetup } from "../auth/firstRun"
+import { useNavigate } from "@tanstack/react-router";
+import { useStore } from "@tanstack/react-store";
+import {
+  Button,
+  InlineNotification,
+  PasswordInput,
+  TextInput,
+  Tile,
+} from "@carbon/react";
+import { useLocalStore, useStoreEffect } from "@nfi/ui";
+import { createInstance, formatQueryError, queryClient } from "../api";
+import { hydrateCapabilities, useCapabilities } from "../auth/capabilities";
+import { dismissInstanceSetup } from "../auth/firstRun";
 
 /**
  * First freqtrade connection (`/setup/instances`). Shown by the first-run
@@ -17,67 +24,109 @@ import { dismissInstanceSetup } from "../auth/firstRun"
  * render the freqtrade-unreachable state until a connection exists).
  */
 export function InstanceSetupPage() {
-  const navigate = useNavigate()
-  const capabilities = useCapabilities()
-  const [name, setName] = useState("")
-  // No hardcoded localhost prefill — the deployment's freqtrade is usually
-  // elsewhere; the placeholder shows the expected shape instead.
-  const [baseUrl, setBaseUrl] = useState("")
-  const [username, setUsername] = useState("freqtrader")
-  const [password, setPassword] = useState("")
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const navigate = useNavigate();
+  const capabilities = useCapabilities();
 
-  useEffect(() => {
-    void hydrateCapabilities()
-  }, [])
+  // One form store: connection fields + submit status in a single object.
+  interface InstanceSetupFormState {
+    name: string;
+    baseUrl: string;
+    username: string;
+    password: string;
+    error: string | null;
+    busy: boolean;
+  }
+
+  const formStore = useLocalStore<InstanceSetupFormState>({
+    name: "",
+    // No hardcoded localhost prefill — the deployment's freqtrade is usually
+    // elsewhere; the placeholder shows the expected shape instead.
+    baseUrl: "",
+    username: "freqtrader",
+    password: "",
+    error: null,
+    busy: false,
+  });
+
+  const { name, baseUrl, username, password, error, busy } = useStore(
+    formStore,
+    (s) => s,
+  );
+
+  useStoreEffect(() => {
+    void hydrateCapabilities();
+  }, []);
 
   const skip = () => {
-    dismissInstanceSetup()
-    void navigate({ to: "/" })
-  }
+    dismissInstanceSetup();
+    void navigate({ to: "/" });
+  };
 
   // Not an instance manager? This screen has nothing to offer.
   const permitted =
     capabilities.status === "ready" &&
     capabilities.granted.includes("instances.list") &&
-    capabilities.granted.includes("instances.create")
-  useEffect(() => {
-    if (capabilities.status === "ready" && !permitted) void navigate({ to: "/", replace: true })
-  }, [capabilities.status, permitted, navigate])
+    capabilities.granted.includes("instances.create");
+
+  useStoreEffect(() => {
+    if (capabilities.status === "ready" && !permitted)
+      void navigate({ to: "/", replace: true });
+  }, [capabilities.status, permitted, navigate]);
 
   const submit = async (event: React.FormEvent) => {
-    event.preventDefault()
-    if (busy) return
-    setError(null)
-    if (name.trim().length === 0) {
-      setError("Give the connection a name.")
-      return
+    event.preventDefault();
+
+    // Latest values from the store, not the render-time closure.
+    const current = formStore.state;
+
+    if (current.busy) return;
+    formStore.setState((p) => ({ ...p, error: null }));
+
+    if (current.name.trim().length === 0) {
+      formStore.setState((p) => ({
+        ...p,
+        error: "Give the connection a name.",
+      }));
+
+      return;
     }
+
     try {
-      const url = new URL(baseUrl.trim())
-      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("protocol")
+      const url = new URL(current.baseUrl.trim());
+
+      if (url.protocol !== "http:" && url.protocol !== "https:")
+        throw new Error("protocol");
     } catch {
-      setError("Base URL must be an http(s)://host:port URL.")
-      return
+      formStore.setState((p) => ({
+        ...p,
+        error: "Base URL must be an http(s)://host:port URL.",
+      }));
+
+      return;
     }
-    setBusy(true)
+
+    formStore.setState((p) => ({ ...p, busy: true }));
+
     try {
       await createInstance({
-        name: name.trim(),
-        baseUrl: baseUrl.trim(),
-        username,
-        password,
-      })
+        name: current.name.trim(),
+        baseUrl: current.baseUrl.trim(),
+        username: current.username,
+        password: current.password,
+      });
       // Drop the gate's cached "no instances" answer, otherwise the fresh
       // entry can still look stale for a moment and bounce straight back.
-      queryClient.removeQueries({ queryKey: ["first-run"] })
-      void navigate({ to: "/" })
+      queryClient.removeQueries({ queryKey: ["first-run"] });
+      void navigate({ to: "/" });
     } catch (cause) {
-      setError(formatQueryError(cause) ?? "Failed to add the freqtrade connection.")
-      setBusy(false)
+      formStore.setState((p) => ({
+        ...p,
+        error:
+          formatQueryError(cause) ?? "Failed to add the freqtrade connection.",
+        busy: false,
+      }));
     }
-  }
+  };
 
   return (
     <div className="nfi-login-host">
@@ -94,14 +143,21 @@ export function InstanceSetupPage() {
             labelText="Name"
             placeholder="e.g. binance-main"
             value={name}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) =>
+              formStore.setState((p) => ({ ...p, name: event.target.value }))
+            }
           />
           <TextInput
             id="instance-url"
             labelText="Base URL"
             placeholder="http://freqtrade-host:8080"
             value={baseUrl}
-            onChange={(event) => setBaseUrl(event.target.value)}
+            onChange={(event) =>
+              formStore.setState((p) => ({
+                ...p,
+                baseUrl: event.target.value,
+              }))
+            }
           />
           <TextInput
             id="instance-username"
@@ -109,7 +165,12 @@ export function InstanceSetupPage() {
             placeholder="freqtrade api_server username"
             autoComplete="username"
             value={username}
-            onChange={(event) => setUsername(event.target.value)}
+            onChange={(event) =>
+              formStore.setState((p) => ({
+                ...p,
+                username: event.target.value,
+              }))
+            }
           />
           <PasswordInput
             id="instance-password"
@@ -117,7 +178,12 @@ export function InstanceSetupPage() {
             placeholder="freqtrade api_server password"
             autoComplete="current-password"
             value={password}
-            onChange={(event) => setPassword(event.target.value)}
+            onChange={(event) =>
+              formStore.setState((p) => ({
+                ...p,
+                password: event.target.value,
+              }))
+            }
           />
           {error ? (
             <InlineNotification
@@ -137,13 +203,16 @@ export function InstanceSetupPage() {
             </Button>
           </div>
         </form>
-        <p className="nfi-login-subtitle" style={{ marginTop: "0.75rem", fontSize: "0.75rem" }}>
-          Tip: enable freqtrade's <code>api_server</code> in your bot config
-          (<code>listen_ip</code>, <code>listen_port</code>, <code>username</code>,{" "}
-          <code>password</code>). You can add more connections later from the
-          Freqtrade Instances widget.
+        <p
+          className="nfi-login-subtitle"
+          style={{ marginTop: "0.75rem", fontSize: "0.75rem" }}
+        >
+          Tip: enable freqtrade's <code>api_server</code> in your bot config (
+          <code>listen_ip</code>, <code>listen_port</code>,{" "}
+          <code>username</code>, <code>password</code>). You can add more
+          connections later from the Freqtrade Instances widget.
         </p>
       </Tile>
     </div>
-  )
+  );
 }

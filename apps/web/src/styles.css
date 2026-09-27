@@ -156,6 +156,36 @@ html {
   background: var(--cds-background);
 }
 
+/* --- First-run loading overlay ------------------------------------------- */
+
+/* Full-screen loading layer shown while the workspace hydrates. It replaces
+   Carbon's `withOverlay` variant: only the spinner paints here, on the flat
+   app background — the spinner box and its SVG carry no background, border
+   or shadow of their own, so no square ever frames the progress circle. */
+.nfi-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--cds-background);
+}
+
+.nfi-loading-overlay .cds--loading,
+.nfi-loading-overlay .cds--loading__svg {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+.nfi-loading-overlay .cds--loading__svg {
+  display: block;
+  fill: transparent;
+}
+
 .nfi-topbar {
   display: flex;
   align-items: center;
@@ -189,94 +219,6 @@ html {
 }
 
 /* --- Aside (header drawer: search/layout/settings/connections/account) -- */
-
-/* Hangs below the 2.5rem topbar so the toggle stays clickable. */
-.nfi-aside-overlay {
-  position: fixed;
-  top: 2.5rem;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 8500;
-  background: rgb(0 0 0 / 0.25);
-}
-
-.nfi-aside {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  width: min(18rem, calc(100vw - 2rem));
-  padding: 0.875rem 0.625rem;
-  background: var(--cds-layer-01);
-  border-left: 1px solid var(--cds-border-strong);
-  box-shadow: -8px 0 24px rgb(0 0 0 / 0.35);
-  overflow-y: auto;
-  outline: none;
-}
-
-.nfi-aside-title {
-  margin: 0 0 0.25rem;
-  padding: 0 0.625rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--cds-text-secondary);
-}
-
-.nfi-aside-item {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  padding: 0.5rem 0.625rem;
-  font: inherit;
-  font-size: 0.8125rem;
-  color: var(--cds-text-primary);
-  text-align: left;
-  text-decoration: none;
-  background: none;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.nfi-aside-item:hover {
-  background: var(--cds-layer-hover, var(--cds-layer-02));
-  color: var(--cds-text-primary);
-}
-
-.nfi-aside-item svg {
-  flex: 0 0 auto;
-  color: var(--cds-text-secondary);
-}
-
-.nfi-aside-account {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--cds-border-subtle);
-}
-
-.nfi-aside-identity {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0 0.625rem 0.375rem;
-}
-
-.nfi-aside-signout {
-  width: 100%;
-  margin-top: 0.25rem;
-  justify-content: center;
-}
 
 .nfi-topbar-button {
   display: inline-flex;
@@ -493,6 +435,733 @@ html {
   background: var(--cds-border-strong);
 }
 
+/* Active gutter (drag in progress): Figma-like thick interactive line with
+   a soft glow. The preview itself is DOM-only (zero store commits). */
+.nfi-grid-gutter {
+  touch-action: none;
+}
+
+.nfi-grid-gutter-active,
+.nfi-grid-gutter[data-active="true"] {
+  z-index: 3;
+}
+
+.nfi-grid-gutter-active::after,
+.nfi-grid-gutter[data-active="true"]::after {
+  width: 3px;
+  background: var(--cds-border-interactive);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cds-border-interactive) 25%, transparent);
+  border-radius: 2px;
+}
+
+.nfi-grid-gutter-row.nfi-grid-gutter-active::after,
+.nfi-grid-gutter-row[data-active="true"]::after {
+  width: auto;
+  height: 3px;
+}
+
+/* While a gutter drags, dim the cells slightly so the moving divider reads
+   as a ghost over the layout. */
+.nfi-grid[data-resizing="true"] .nfi-grid-cell {
+  opacity: 0.92;
+}
+
+/* Minimum-width limit alert: the clamped track's cells glow yellow while
+   the gutter burns amber — this is the readability limit. */
+.nfi-grid[data-min] .nfi-grid-gutter[data-active="true"]::after {
+  background: var(--cds-support-warning, #f1c21b);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--cds-support-warning, #f1c21b) 30%, transparent);
+}
+
+.nfi-grid-cell-min {
+  opacity: 1;
+  outline: 2px solid var(--cds-support-warning, #f1c21b);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 999px
+    color-mix(in srgb, var(--cds-support-warning, #f1c21b) 10%, transparent);
+}
+
+/* Floating size tooltip that follows the pointer during a gutter drag. */
+.nfi-grid {
+  position: relative;
+}
+
+.nfi-grid-tip {
+  position: absolute;
+  z-index: 5;
+  transform: translate(-50%, -140%);
+  padding: 2px 8px;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--cds-text-on-color, #fff);
+  background: var(--cds-background-inverse, #393939);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+
+.nfi-grid-tip[data-visible="true"] {
+  opacity: 1;
+}
+
+/* Resize cursors for the gesture lifetime. */
+body[data-nfi-resizing="columns"] {
+  cursor: col-resize;
+}
+
+body[data-nfi-resizing="rows"] {
+  cursor: row-resize;
+}
+
+/* --- Flow (freeform wrapping cards) -------------------------------------- */
+
+.nfi-flow {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.nfi-flow-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--cds-border-subtle);
+  background: var(--cds-layer-01);
+}
+
+/* Wrap-freeze while a card resizes: siblings are pinned absolute at their
+   measured boxes, so no section auto-moves or wraps rows mid-gesture. */
+.nfi-flow-pinned {
+  position: relative;
+}
+
+.nfi-flow-pinned > .nfi-flow-item {
+  margin: 0;
+}
+
+/* The card being resized: lifted preview shadow on top of the pinned row. */
+.nfi-flow-item-resizing {
+  z-index: 3;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* Minimum-size limit alert: the preview sits at the content-minimum floor
+   on either axis — yellow border + translucent wash. */
+.nfi-flow-item[data-atmin="true"] {
+  border-color: var(--cds-support-warning, #f1c21b);
+  box-shadow:
+    0 0 0 2px var(--cds-support-warning, #f1c21b),
+    0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.nfi-flow-item[data-atmin="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: color-mix(
+    in srgb,
+    var(--cds-support-warning, #f1c21b) 12%,
+    transparent
+  );
+}
+
+.nfi-flow-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nfi-flow-body > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* SE-corner resize handle: a bare corner mark (no box, no background —
+   it is a grip, not a button). The zone is generous so it stays grabbable
+   where scrollbars narrow it; keyboard-focusable. */
+.nfi-flow-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  height: 24px;
+  cursor: nwse-resize;
+  z-index: 6;
+  touch-action: none;
+  background: none;
+  border: none;
+}
+
+.nfi-flow-handle::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid var(--cds-border-strong);
+  border-bottom: 2px solid var(--cds-border-strong);
+  border-bottom-right-radius: 2px;
+  opacity: 0.55;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+.nfi-flow-handle:hover::after,
+.nfi-flow-handle:focus-visible::after {
+  border-color: var(--cds-border-interactive);
+  opacity: 1;
+}
+
+.nfi-flow-handle:focus-visible {
+  outline: 1px solid var(--cds-border-interactive);
+  outline-offset: -1px;
+}
+
+/* --- Masonry (gap-free column packing) ------------------------------------ */
+
+/* The pane is its own scroll container (root mode fills the workspace host;
+   nested mode fills its cell/card). scrollbar-gutter stays reserved so the
+   packing width never oscillates when the wall height crosses the pane
+   boundary. The canvas div inside is position:relative with absolute
+   cards at packed positions. */
+.nfi-masonry {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+.nfi-masonry-item {
+  position: absolute;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--cds-border-subtle);
+  background: var(--cds-layer-01);
+}
+
+.nfi-masonry-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nfi-masonry-body > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* SE-corner resize handle: a bare corner mark (no box, no background —
+   it is a grip, not a button). The zone is generous so it stays grabbable
+   where scrollbars narrow it. Dy resizes height, dx snaps the column span. */
+.nfi-masonry-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  height: 24px;
+  cursor: nwse-resize;
+  z-index: 6;
+  touch-action: none;
+  background: none;
+  border: none;
+}
+
+.nfi-masonry-handle::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid var(--cds-border-strong);
+  border-bottom: 2px solid var(--cds-border-strong);
+  border-bottom-right-radius: 2px;
+  opacity: 0.55;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+.nfi-masonry-handle:hover::after,
+.nfi-masonry-handle:focus-visible::after {
+  border-color: var(--cds-border-interactive);
+  opacity: 1;
+}
+
+.nfi-masonry-handle:focus-visible {
+  outline: 1px solid var(--cds-border-interactive);
+  outline-offset: -1px;
+}
+
+/* Miniature masonry in the Layouts dialog preset cards — framed and
+   block-styled like `.nfi-grid-preview` so all previews read alike. */
+.nfi-masonry-preview {
+  display: flex;
+  gap: 3px;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 3px;
+  border: 1px solid var(--cds-border-subtle);
+  border-radius: 3px;
+  background: var(--cds-layer-01);
+  overflow: hidden;
+}
+
+.nfi-masonry-preview-col {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.nfi-masonry-preview-block {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--cds-border-strong);
+  border-radius: 2px;
+  background: var(--cds-layer-03);
+}
+
+/* --- Auto (bento row packing) --------------------------------------------- */
+
+/* Same scroll-container contract as `.nfi-masonry`: the pane owns scrolling,
+   scrollbar-gutter stays reserved so the packing width never oscillates. The
+   canvas div inside is position:relative with absolute cards at packed
+   positions. */
+.nfi-auto {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+.nfi-auto-item {
+  position: absolute;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--cds-border-subtle);
+  background: var(--cds-layer-01);
+}
+
+/* Progressive-mount placeholders: a card's real content mounts in a
+   scheduled idle chunk; the placeholder holds its exact slot so nothing
+   shifts (see progressiveMount.ts). Static, non-interactive, zero-cost —
+   no animation on purpose. */
+.nfi-auto-item-pending,
+.nfi-flow-item-pending,
+.nfi-masonry-item-pending {
+  pointer-events: none;
+  border: 1px solid var(--cds-border-subtle);
+  background: var(--cds-layer-01);
+}
+
+/* Smooth re-packs: cards glide to their new packed slot when a neighbor is
+   resized/reordered/dropped or the store commits. Armed shortly after the
+   first measured paint (`.nfi-auto-anim` on the canvas) so cards never fly
+   in from (0,0) on mount. The interacting card opts out (below) — it tracks
+   the pointer 1:1 and lands with a transform transition instead. */
+.nfi-auto-anim .nfi-auto-item {
+  transition:
+    top 300ms cubic-bezier(0.2, 0, 0, 1),
+    left 300ms cubic-bezier(0.2, 0, 0, 1),
+    width 300ms cubic-bezier(0.2, 0, 0, 1),
+    height 300ms cubic-bezier(0.2, 0, 0, 1),
+    transform 300ms cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 200ms ease-out;
+}
+
+/* The interacting card opts out of slot transitions (it tracks the pointer
+   1:1); only its lift fades in. On release the classes drop and the card
+   glides home via the transform transition above. */
+.nfi-auto-anim .nfi-auto-item.nfi-auto-item-resizing,
+.nfi-auto-anim .nfi-auto-item.nfi-auto-item-dragging {
+  transition:
+    box-shadow 160ms ease-out,
+    opacity 160ms ease-out;
+}
+
+/* LIVE drag re-pack: neighbors GLIDE on a short transition per card
+   crossing (their target slots change discretely, once per swap — not per
+   frame), while the DRAGGED card drops every motion transition: its
+   transform tracks the pointer 1:1 and any slot lag would visibly detach
+   it from the cursor. The 300ms glide returns for the settle after the
+   release commit. (Resize previews freeze neighbors instead — no live
+   class.) */
+.nfi-auto-anim.nfi-auto-live .nfi-auto-item {
+  transition:
+    top 160ms cubic-bezier(0.2, 0, 0, 1),
+    left 160ms cubic-bezier(0.2, 0, 0, 1),
+    width 160ms cubic-bezier(0.2, 0, 0, 1),
+    height 160ms cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 160ms ease-out;
+}
+
+.nfi-auto-anim.nfi-auto-live .nfi-auto-item.nfi-auto-item-dragging {
+  transition:
+    box-shadow 160ms ease-out,
+    opacity 160ms ease-out;
+  /* Own compositor layer while the transform is written per frame —
+     keeps the pointer-follow off the main paint path. */
+  will-change: transform;
+}
+
+/* The card being resized: blue ring + lifted preview shadow so the
+   interaction target reads at a glance (with a "release to keep" tag on
+   top). Neighbors stay pinned while resizing (frozen canvas) and settle
+   once on release. Must precede .nfi-auto-item-min: at the floor both
+   classes apply and the yellow limit state wins. */
+.nfi-auto-item-resizing {
+  z-index: 4;
+  border-color: var(--cds-border-interactive, #4589ff);
+  box-shadow:
+    0 0 0 2px var(--cds-border-interactive, #4589ff),
+    0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+/* Resize state tags: a centered stack over the card — the state pill
+   (what happened / what to do next) and, under it, the live size readout.
+   pointer-events none so the tab strip and grips underneath stay usable. */
+.nfi-auto-tags {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  max-width: calc(100% - 48px);
+}
+
+.nfi-auto-tag {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  padding: 4px 14px;
+  border-radius: 10px;
+}
+
+.nfi-auto-tag-resize {
+  color: #ffffff;
+  background: var(--cds-border-interactive, #4589ff);
+}
+
+.nfi-auto-tag-min {
+  color: #161616;
+  background: var(--cds-support-warning, #f1c21b);
+}
+
+/* Live size readout under the state tag (e.g. "412 × 280"). */
+.nfi-auto-tag-size {
+  color: #ffffff;
+  font-family: var(--cds-code-01, "IBM Plex Mono", monospace);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  padding: 2px 10px;
+  border-radius: 8px;
+  background: rgb(22 22 22 / 0.72);
+}
+
+/* Minimum-height limit alert: the resize preview pushes into the card's
+   content-minimum floor — yellow border + translucent wash (+ tag) so the
+   user sees the drag cannot shrink further. */
+.nfi-auto-item-min {
+  border-color: var(--cds-support-warning, #f1c21b);
+  box-shadow:
+    0 0 0 2px var(--cds-support-warning, #f1c21b),
+    0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+.nfi-auto-item-min::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: color-mix(
+    in srgb,
+    var(--cds-support-warning, #f1c21b) 12%,
+    transparent
+  );
+  /* Frosted wash: the widget underneath blurs while pinned at the floor. */
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+/* The card being dragged: lifted shadow (fades in/out through the
+   transition above) while the pane writes its pointer-follow transform
+   directly on the element. */
+.nfi-auto-item-dragging {
+  z-index: 5;
+  opacity: 0.92;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  cursor: grabbing;
+}
+
+.nfi-auto-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nfi-auto-body > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* SE-corner resize handle: the same affordance as a floating window's
+   native `resize: both` grip — the browser-drawn diagonal-lines corner.
+   The zone is generous so it stays grabbable where scrollbars narrow it.
+   Dragging both axes — dy resizes height, dx resizes the fractional
+   column span; each axis snaps to a neighbor edge within 5px. */
+.nfi-auto-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  height: 24px;
+  cursor: nwse-resize;
+  z-index: 6;
+  touch-action: none;
+  background: none;
+  border: none;
+}
+
+.nfi-auto-handle::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  /* The native resize grip: three 45° diagonal lines in the corner.
+     Drawn through a mask so the color follows the theme tokens. */
+  background-color: var(--cds-border-strong, #8d8d8d);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cg stroke='%23000' stroke-width='1.4' fill='none'%3E%3Cpath d='M13 1 1 13'/%3E%3Cpath d='M13 6 6 13'/%3E%3Cpath d='M13 11 11 13'/%3E%3C/g%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14'%3E%3Cg stroke='%23000' stroke-width='1.4' fill='none'%3E%3Cpath d='M13 1 1 13'/%3E%3Cpath d='M13 6 6 13'/%3E%3Cpath d='M13 11 11 13'/%3E%3C/g%3E%3C/svg%3E");
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  opacity: 0.75;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+.nfi-auto-handle:hover::after,
+.nfi-auto-handle:focus-visible::after {
+  background-color: var(--cds-border-interactive, #4589ff);
+  opacity: 1;
+}
+
+.nfi-auto-handle:focus-visible {
+  outline: 1px solid var(--cds-border-interactive);
+  outline-offset: -1px;
+}
+
+/* Figma-style smart guides: full-canvas hairlines drawn at the aligned
+   edge while a resize snap (5px threshold) is engaged — horizontal for a
+   row-mate height match, vertical for a column-mate width match. */
+.nfi-auto-snapline {
+  position: absolute;
+  z-index: 8;
+  pointer-events: none;
+  background: var(--cds-support-error, #da1e28);
+}
+
+.nfi-auto-snapline-h {
+  left: 0;
+  right: 0;
+  height: 1px;
+  box-shadow: 0 0 4px rgb(218 30 40 / 0.6);
+}
+
+.nfi-auto-snapline-v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  box-shadow: 0 0 4px rgb(218 30 40 / 0.6);
+}
+
+/* The card's tab-strip row is the reorder handle (see AutoPane's header),
+   so the strip keeps its full width — no NE grip lane to reserve. The
+   strip never text-selects: a press-and-move on it drags the card. */
+.nfi-tabstrip-row {
+  user-select: none;
+}
+
+/* Trailing "Add widget" tile: fills the free tail of the last packed row
+   (stretching to the pane edge and the row's height), or a wide band on a
+   fresh row below. Dashed border reads as "new", quiet until hovered.
+   Clicking appends a fresh card — the no-slot-booking add path of bento
+   mode. */
+.nfi-auto-add {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px dashed var(--cds-border-strong);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--cds-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.25;
+  text-align: center;
+  cursor: pointer;
+}
+
+.nfi-auto-add:hover,
+.nfi-auto-add:focus-visible {
+  border-color: var(--cds-border-interactive);
+  color: var(--cds-text-primary);
+  background: var(--cds-layer-hover, rgba(0 0 0 / 4%));
+}
+
+.nfi-auto-add:focus-visible {
+  outline: 1px solid var(--cds-border-interactive);
+  outline-offset: -1px;
+}
+
+/* Empty bento page: the same add affordance, full-width and taller so an
+   empty page still shows where widgets land. */
+.nfi-auto-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 220px;
+  margin: 8px 0;
+  padding: 16px;
+  border: 1px dashed var(--cds-border-strong);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--cds-text-secondary);
+  text-align: center;
+  cursor: pointer;
+}
+
+button.nfi-auto-empty:hover,
+button.nfi-auto-empty:focus-visible {
+  border-color: var(--cds-border-interactive);
+  color: var(--cds-text-primary);
+  background: var(--cds-layer-hover, rgba(0 0 0 / 4%));
+}
+
+button.nfi-auto-empty:focus-visible {
+  outline: 1px solid var(--cds-border-interactive);
+  outline-offset: -1px;
+}
+
+.nfi-auto-empty-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.nfi-auto-empty-hint {
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+/* Miniature auto (bento rows) in the Layouts dialog preset cards — framed
+   like the other previews; two justified rows of mixed-width blocks with a
+   wide hero in row one reads as "tidy, no gaps". */
+.nfi-auto-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 3px;
+  border: 1px solid var(--cds-border-subtle);
+  border-radius: 3px;
+  background: var(--cds-layer-01);
+  overflow: hidden;
+}
+
+.nfi-auto-preview-row {
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+}
+
+.nfi-auto-preview-block {
+  display: block;
+  min-width: 0;
+  border: 1px solid var(--cds-border-strong);
+  border-radius: 2px;
+  background: var(--cds-layer-03);
+}
+
+/* Miniature flow (wrapping cards) in the Layouts dialog preset cards —
+   framed and block-styled like `.nfi-grid-preview` so all previews read
+   alike; the short second row shows the ragged wrap. */
+.nfi-flow-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 3px;
+  border: 1px solid var(--cds-border-subtle);
+  border-radius: 3px;
+  background: var(--cds-layer-01);
+  overflow: hidden;
+}
+
+.nfi-flow-preview-row {
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+}
+
+.nfi-flow-preview-block {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  border: 1px solid var(--cds-border-strong);
+  border-radius: 2px;
+  background: var(--cds-layer-03);
+}
+
 /* --- Panels ------------------------------------------------------------- */
 
 .nfi-panel {
@@ -537,23 +1206,43 @@ html {
 .nfi-panel-body {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
-  overflow-x: auto;
+  overflow-x: hidden;
   padding: 0.375rem;
   font-size: 0.8125rem;
   container-type: inline-size;
+  overflow-wrap: break-word;
+}
+
+/* Widget roots must never force the grid cell wider: flex children default
+   to min-width:auto, which lets long tickers/pair names push the track out.
+   Every direct child (Tile, flex columns) shrinks instead and scrolls
+   internally via .nfi-table-scroll / ChartBox. */
+.nfi-panel-body > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.nfi-widget {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* Readable tables on narrow panels: horizontal scroll, sticky headers,
    no crushed columns. Wrap Carbon tables in `.nfi-table-scroll`. */
 .nfi-table-scroll {
   overflow-x: auto;
+  overflow-y: hidden;
   max-width: 100%;
+  min-width: 0;
   border: 1px solid transparent;
+  scrollbar-width: thin;
 }
 
 .nfi-table-scroll table {
-  min-width: 24rem;
+  min-width: min(24rem, 100%);
+  width: 100%;
   border-collapse: collapse;
 }
 
@@ -568,6 +1257,102 @@ html {
 .nfi-table-scroll td,
 .nfi-table-scroll th {
   white-space: nowrap;
+}
+
+/* --- Sub-orders (DataTable expansion content) ---------------------------- */
+
+/* Expanded child rows: a recessed layer under the parent row, so the
+   sub-order table reads as "inside" the position. The parent row keeps
+   the base layer; the child gets layer-01 with a subtle left rail. */
+.nfi-table-scroll tr[data-child-row] > td {
+  background: var(--cds-layer-01);
+  border-left: 2px solid var(--cds-border-subtle);
+  padding: 0.375rem 0.5rem;
+}
+
+/* The expander column stays narrow — a chevron, never a content column. */
+.nfi-table-scroll th.cds--table-expand,
+.nfi-table-scroll td.cds--table-expand {
+  width: 2.5rem;
+}
+
+.nfi-suborders {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+/* Nested table gets its own slim horizontal scroll so a wide sub-order
+   column set never stretches the OUTER table's cells. */
+.nfi-suborders .nfi-table-scroll {
+  max-width: 100%;
+}
+
+.nfi-suborders .nfi-table-scroll thead th {
+  position: static;
+  background: transparent;
+  font-size: 0.6875rem;
+}
+
+.nfi-suborders-empty {
+  margin: 0;
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
+
+/* In-table "load older" closing row: a quiet full-width button that reads
+   as the next batch of sub-orders, not footer chrome under the table. */
+.nfi-suborders-more-row > td {
+  padding: 0;
+  border-top: 1px solid var(--cds-border-subtle);
+}
+
+.nfi-suborders-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.nfi-suborders-more:hover {
+  color: var(--cds-text-primary);
+  background: var(--cds-layer-hover, var(--cds-layer-02));
+}
+
+.nfi-suborders-more:focus-visible {
+  outline: 2px solid var(--cds-focus, #4589ff);
+  outline-offset: -2px;
+}
+
+.nfi-suborders-more-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.nfi-suborders-more-count {
+  font-size: 0.6875rem;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+/* Order ids are long opaque strings: ellipsize to a fixed lane, full id on
+   hover via the title attribute. */
+.nfi-suborders-id {
+  display: inline-block;
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  opacity: 0.85;
 }
 
 /* Ticker tape: single-line marquee that scrolls without breaking layout.
@@ -589,6 +1374,8 @@ html {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
   gap: 0.5rem;
+  min-width: 0;
+  width: 100%;
 }
 
 /* Height-filling variant for stat-only widgets: tiles stretch so the cell
@@ -596,13 +1383,36 @@ html {
    `1fr` rows keep their content minimum when the cell is short. */
 .nfi-stat-grid--fill {
   flex: 1 1 auto;
-  grid-auto-rows: 1fr;
+  grid-auto-rows: minmax(0, 1fr);
+  align-content: stretch;
 }
 
-/* Narrow panels (<28rem): stack two-column settings/controls vertically. */
+/* Narrow panels (<28rem): two fixed columns so KPIs never crush. */
 @container (max-width: 28rem) {
   .nfi-stat-grid {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* Very narrow panels (<18rem): single column, no horizontal squeeze. */
+@container (max-width: 18rem) {
+  .nfi-stat-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Settings toggle grids (widget ⚙ modals): two columns on normal cells,
+   single column inside narrow panels via the same container query. */
+.nfi-settings-toggles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 0.75rem;
+  min-width: 0;
+}
+
+@container (max-width: 28rem) {
+  .nfi-settings-toggles {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -620,6 +1430,12 @@ html {
 
 .nfi-tape-row[data-kind="open"] {
   border-left-color: var(--cds-support-success);
+}
+
+/* The OPEN/CLOSE badge is the row's key status: never squeeze it — the
+   detail column (which already ellipsizes) absorbs the row's overflow. */
+.nfi-tape-row > .cds--tag {
+  flex-shrink: 0;
 }
 
 .nfi-tape-detail {
@@ -645,10 +1461,28 @@ html {
   .nfi-tab-button {
     max-width: 8rem;
   }
+
+  /* Stacked grid cells need less floor on phones so two widgets fit. */
+  .nfi-grid-stacked > .nfi-grid-cell {
+    min-height: 10rem;
+  }
+
+  .nfi-split-stacked > .nfi-split-child {
+    min-height: 10rem;
+  }
 }
 
 @media (max-width: 40rem) {
   .nfi-statusbar {
+    font-size: 0.6875rem;
+  }
+
+  .nfi-topbar-actions {
+    gap: 0;
+  }
+
+  /* Timeframe quick-switch stays one scrollable row on phones. */
+  .nfi-candle-toolbar {
     font-size: 0.6875rem;
   }
 }
@@ -753,24 +1587,6 @@ html {
   background: transparent;
 }
 
-/* Hover-opened menus: the overlay must not swallow clicks on the rest of
-   the app — only the menu itself receives pointers. */
-.nfi-tabmenu-overlay-passthrough {
-  pointer-events: none;
-}
-
-.nfi-tabmenu-overlay-passthrough .nfi-tabmenu,
-.nfi-tabmenu-overlay-passthrough .nfi-tabmenu-bridge {
-  pointer-events: auto;
-}
-
-/* Transparent continuity lane between the ⋯ trigger and its menu: hover
-   crossing it must not close the menu (see TabActionsMenu). */
-.nfi-tabmenu-bridge {
-  position: fixed;
-  z-index: 9001;
-}
-
 .nfi-tabmenu,
 .nfi-usermenu {
   position: fixed;
@@ -810,14 +1626,18 @@ html {
   background: #4c4c4c;
 }
 
-/* Destructive items (sign out) use the semantic error color. */
+/* Destructive items (delete page, sign out) use the semantic error color.
+   Hardcoded: these menus portal outside Carbon's Theme subtree (see the
+   block comment above), where `--cds-support-error` does not resolve —
+   the var() fallback left the item inheriting plain text color (black).
+   red-40 is Carbon's error color on the menu's hardcoded dark surface. */
 .nfi-tabmenu-item--danger {
-  color: var(--cds-support-error);
+  color: #ff7d69;
 }
 
 .nfi-tabmenu-item--danger:hover {
-  background: color-mix(in srgb, var(--cds-support-error) 15%, transparent);
-  color: var(--cds-support-error);
+  background: rgb(255 125 105 / 15%);
+  color: #ff7d69;
 }
 
 /* Account menu identity block (username + role, non-interactive). */
@@ -911,12 +1731,34 @@ html {
   inset-inline-end: 0;
 }
 
+/* Strip "Add widget" affordance: a browser-style new-tab button — a quiet
+   icon-only square (no dashed box, no label); the hover wash and the
+   tooltip carry the intent. Stays inside the strip height. */
 .nfi-tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
   height: var(--nfi-strip-h);
+  width: calc(var(--nfi-strip-h) + 4px);
   min-height: 0;
-  min-width: 1.5rem;
-  width: auto;
-  padding: 0 0.375rem;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--cds-text-secondary);
+  cursor: pointer;
+}
+
+.nfi-tab-add:hover,
+.nfi-tab-add:focus-visible {
+  color: var(--cds-text-primary);
+  background: var(--cds-layer-hover, rgba(0 0 0 / 4%));
+}
+
+.nfi-tab-add:focus-visible {
+  outline: 1px solid var(--cds-border-interactive);
+  outline-offset: -1px;
 }
 
 /* Drag-and-drop between grids: insert indicator on tabs, highlight on strips. */
@@ -1227,12 +2069,32 @@ html {
 }
 
 .nfi-picker-group {
-  padding: 0.5rem 0.625rem 0.125rem;
+  padding: 0.375rem 0.625rem 0.25rem;
   font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--cds-text-secondary);
+}
+
+/* Air between widget groups: every group after the first is separated by a
+   hairline plus breathing room — the previous 2px gap read as one wall. */
+.nfi-picker-list > div + div {
+  margin-top: 0.375rem;
+  border-top: 1px solid var(--cds-border-subtle);
+}
+
+.nfi-picker-list > div + div .nfi-picker-group {
+  padding-top: 0.75rem;
+}
+
+/* Safe-to-share mark: inline after the title (no margin-left:auto — the
+   description / open indicator keeps the far-right slot). */
+.nfi-picker-badge-safe {
+  margin-left: 0;
+  color: var(--cds-support-success);
+  border-color: var(--cds-support-success);
+  background: rgb(24 135 71 / 0.12);
 }
 
 .nfi-picker-open {
@@ -1257,14 +2119,14 @@ html {
 /* --- Layouts dialog ----------------------------------------------------- */
 
 .nfi-layouts {
-  width: min(44rem, calc(100vw - 2rem));
-  max-height: min(36rem, calc(100vh - 6rem));
+  width: min(56rem, calc(100vw - 2rem));
+  max-height: min(44rem, calc(100vh - 6rem));
   overflow-y: auto;
   background: var(--cds-layer-01);
   border: 1px solid var(--cds-border-strong);
   border-radius: 6px;
   box-shadow: 0 8px 32px rgb(0 0 0 / 0.45);
-  padding: 1rem 1.25rem 1.25rem;
+  padding: 1.5rem 1.75rem 1.75rem;
 }
 
 .nfi-layouts-head {
@@ -1272,42 +2134,43 @@ html {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.875rem;
 }
 
 .nfi-layouts-head h2 {
-  margin: 0 0 0.25rem;
-  font-size: 1rem;
+  margin: 0 0 0.375rem;
+  font-size: 1.125rem;
   font-weight: 600;
 }
 
 .nfi-layouts-head p {
   margin: 0;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
+  line-height: 1.45;
   color: var(--cds-text-secondary);
 }
 
 .nfi-layouts-section {
-  margin: 1rem 0 0.5rem;
-  font-size: 0.75rem;
+  margin: 1.5rem 0 0.625rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--cds-text-secondary);
 }
 
-/* Six preset cards, each with a viewport-scaled miniature preview. */
+/* Preset cards, each with a viewport-scaled miniature preview. */
 .nfi-grid-presets {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 1rem;
 }
 
 .nfi-grid-card {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
-  padding: 0.75rem;
+  gap: 0.5rem;
+  padding: 1rem;
   font: inherit;
   color: var(--cds-text-primary);
   text-align: left;
@@ -1327,11 +2190,12 @@ html {
 }
 
 .nfi-grid-card strong {
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
 }
 
 .nfi-grid-card span {
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
   color: var(--cds-text-secondary);
 }
 
@@ -1373,6 +2237,30 @@ html {
   margin: 0;
   font-size: 0.8125rem;
   color: var(--cds-text-secondary);
+}
+
+.nfi-addpage-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.nfi-addpage-preset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.75rem;
+  border: 1px solid var(--cds-border-subtle);
+  border-radius: 6px;
+  background: var(--cds-layer-02);
+}
+
+.nfi-addpage-preset-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
 }
 
 .nfi-addpage-custom {
@@ -1478,8 +2366,8 @@ html {
   white-space: nowrap;
 }
 
-/* Pages carrying a delete button keep a tight title-to-X gap. */
-.nfi-page:has(.nfi-page-close) .nfi-page-button {
+/* Pages carrying an actions menu keep a tight title-to-⋯ gap. */
+.nfi-page:has(.nfi-page-menu) .nfi-page-button {
   padding-right: 0.25rem;
 }
 
@@ -1492,7 +2380,7 @@ html {
   font-weight: 600;
 }
 
-.nfi-page-close {
+.nfi-page-menu {
   min-height: 1.5rem;
 }
 
@@ -1521,6 +2409,26 @@ html {
   width: 100%;
   margin: 0 auto;
   padding: 1.5rem;
+}
+
+/* The /settings page frame: heading, tab strip and the mounted panel. */
+.nfi-settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 64rem;
+  width: 100%;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.nfi-settings-panel {
+  min-width: 0;
+}
+
+/* Tab panels host their own .nfi-settings-inner — drop the double padding. */
+.nfi-settings-panel .nfi-settings-inner {
+  padding: 0;
 }
 
 /* --- PnL profit/loss colors ------------------------------------------------ */
@@ -1792,8 +2700,10 @@ html {
 .nfi-candle-toolbar {
   display: flex;
   align-items: center;
-  gap: 0.625rem;
+  gap: 0.5rem 0.625rem;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
   font-size: 0.75rem;
@@ -1941,7 +2851,16 @@ html {
   align-items: stretch;
   border: 1px solid var(--cds-border-subtle);
   border-radius: 3px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  flex: 0 1 auto;
+  min-width: 0;
+  scrollbar-width: none;
+}
+
+.nfi-tf-group::-webkit-scrollbar {
+  display: none;
 }
 
 .nfi-tf-btn {
@@ -1974,10 +2893,26 @@ html {
 .nfi-candle-quote {
   display: inline-flex;
   align-items: baseline;
-  gap: 0.625rem;
+  gap: 0.375rem 0.625rem;
   margin-left: auto;
   flex-wrap: wrap;
   white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  justify-content: flex-end;
+}
+
+/* Narrow panels: quote strip drops to its own row, left-aligned. */
+@container (max-width: 28rem) {
+  .nfi-candle-quote {
+    margin-left: 0;
+    justify-content: flex-start;
+    row-gap: 0.125rem;
+  }
+
+  .nfi-candle-toolbar {
+    gap: 0.375rem 0.5rem;
+  }
 }
 
 .nfi-candle-range {
@@ -2159,4 +3094,150 @@ html {
   gap: 0.25rem;
   border: 1px solid var(--cds-border-subtle);
   padding: 0.75rem;
+}
+
+/* --- View-as preview (account-menu picker row + banner) ------------------ */
+
+/* Picker row inside the user menu: eye icon + label + native select.
+   Amber tint while a preview is active so the mock is unmistakable. */
+.nfi-usermenu-viewas {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  font-size: 0.8125rem;
+  color: #f4f4f4;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.nfi-usermenu-viewas[data-active="true"] {
+  color: var(--cds-support-warning, #f1c21b);
+  background: color-mix(
+    in srgb,
+    var(--cds-support-warning, #f1c21b) 12%,
+    transparent
+  );
+}
+
+.nfi-usermenu-viewas > svg {
+  flex: 0 0 auto;
+  color: inherit;
+  opacity: 0.75;
+}
+
+.nfi-usermenu-viewas-label {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.nfi-usermenu-viewas select {
+  min-width: 0;
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: 0.75rem;
+  color: #f4f4f4;
+  background: #525252;
+  border: none;
+  border-bottom: 1px solid #8d8d8d;
+  border-radius: 2px;
+  padding: 0.1875rem 0.25rem;
+  cursor: pointer;
+}
+
+.nfi-usermenu-viewas select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Amber strip below the header while previewing: identity + actions. */
+.nfi-viewas-banner {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: #161616;
+  background: var(--cds-support-warning, #f1c21b);
+  border-bottom: 1px solid var(--cds-border-subtle);
+  overflow: hidden;
+}
+
+.nfi-viewas-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex: 0 0 auto;
+}
+
+.nfi-viewas-banner-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.625rem;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #161616;
+  background: transparent;
+  border: 1px solid #161616;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.nfi-viewas-banner-button:hover:not(:disabled) {
+  background: rgb(0 0 0 / 0.1);
+}
+
+.nfi-viewas-banner-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nfi-viewas-banner-exit {
+  background: #161616;
+  color: var(--cds-support-warning, #f1c21b);
+}
+
+/* Transient click feedback (already-on-landing / grant-refreshed) — both
+   banner actions can legitimately change nothing visible. */
+.nfi-viewas-banner-notice {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* --- Page defaults editors (manage users page) ---------------------------- */
+
+.nfi-defaults-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.nfi-defaults-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.nfi-defaults-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border: 1px solid var(--cds-border-subtle);
+  padding: 0.625rem 0.75rem;
+}
+
+.nfi-defaults-tabrow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
 }

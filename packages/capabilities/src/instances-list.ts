@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Effect } from "effect"
-import { ListInstancesResponse } from "@nfi/api-contract"
-import { DEFAULT_INSTANCE_ID, defineCapability, NoOptions } from "./definition.js"
-import { asBackendError } from "./errors.js"
+import { Effect } from "effect";
+import { ListInstancesResponse } from "@nfi/api-contract";
+import {
+  DEFAULT_INSTANCE_ID,
+  defineCapability,
+  NoOptions,
+} from "./definition.js";
+import { asBackendError } from "./errors.js";
 
 /**
  * `instances.list` — all known freqtrade instances (default + stored).
@@ -23,8 +27,9 @@ export const InstancesListCapability = defineCapability({
   exposes: ["infra-location"],
   run: (_options, ctx) =>
     Effect.gen(function* () {
-      const stored = yield* ctx.instances.listInstances()
-      const now = new Date().toISOString()
+      const stored = yield* ctx.instances.listInstances();
+      const now = new Date().toISOString();
+
       return {
         instances: [
           // The env `default` row only exists when the env default is
@@ -47,6 +52,6 @@ export const InstancesListCapability = defineCapability({
             : []),
           ...stored,
         ],
-      }
+      };
     }).pipe(Effect.mapError((cause) => asBackendError("instance list", cause))),
-})
+});

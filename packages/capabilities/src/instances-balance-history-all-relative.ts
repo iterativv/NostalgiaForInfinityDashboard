@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Effect, Schema } from "effect"
-import { RelativeFleetBalanceHistoryResponse } from "@nfi/api-contract"
-import { defineCapability, parseLimitParam } from "./definition.js"
-import { asBackendError } from "./errors.js"
-import { fleetInstances, perInstance } from "./fleet.js"
-import { toRelativeFleetBalanceHistory } from "./relative.js"
+import { Effect, Schema } from "effect";
+import { RelativeFleetBalanceHistoryResponse } from "@nfi/api-contract";
+import { defineCapability, parseLimitParam } from "./definition.js";
+import { asBackendError } from "./errors.js";
+import { fleetInstances, perInstance } from "./fleet.js";
+import { toRelativeFleetBalanceHistory } from "./relative.js";
 
 /**
  * `instances.balance-history.relative` — every instance's wallet history
@@ -27,11 +27,13 @@ export const InstancesBalanceHistoryAllRelativeCapability = defineCapability({
   exposes: ["relative-values"],
   run: (options, ctx) =>
     Effect.gen(function* () {
-      const limit = parseLimitParam(options.limit, 500, 500)
-      const instances = yield* fleetInstances(ctx)
+      const limit = parseLimitParam(options.limit, 500, 500);
+      const instances = yield* fleetInstances(ctx);
+
       const outcomes = yield* perInstance(instances, (instance) =>
         ctx.snapshots.balanceHistory(instance.id, limit),
-      )
+      );
+
       return toRelativeFleetBalanceHistory({
         instances: outcomes.map((outcome) =>
           outcome.data !== undefined
@@ -47,10 +49,10 @@ export const InstancesBalanceHistoryAllRelativeCapability = defineCapability({
                 error: outcome.error ?? "unreachable",
               },
         ),
-      })
+      });
     }).pipe(
       Effect.mapError((cause) =>
         asBackendError("balance-history.relative", cause),
       ),
     ),
-})
+});

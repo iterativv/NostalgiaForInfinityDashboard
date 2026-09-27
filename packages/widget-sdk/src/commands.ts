@@ -20,40 +20,46 @@
 
 export interface Command {
   /** Stable id, e.g. `workspace.splitHorizontal`. */
-  readonly id: string
-  readonly title: string
-  readonly category?: string
+  readonly id: string;
+  readonly title: string;
+  readonly category?: string;
   /** Human-readable shortcut for palette/sidebar display (shell wires keys). */
-  readonly shortcut?: string
-  readonly run: () => void
+  readonly shortcut?: string;
+  readonly run: () => void;
 }
 
 export interface CommandRegistry {
-  readonly registerCommand: (command: Command) => void
-  readonly getCommand: (id: string) => Command | undefined
-  readonly listCommands: () => ReadonlyArray<Command>
+  readonly registerCommand: (command: Command) => void;
+  readonly getCommand: (id: string) => Command | undefined;
+  readonly listCommands: () => ReadonlyArray<Command>;
   /** Runs the command; returns false when the id is unknown. */
-  readonly runCommand: (id: string) => boolean
+  readonly runCommand: (id: string) => boolean;
 }
 
-export function createCommandRegistry(initial: ReadonlyArray<Command> = []): CommandRegistry {
-  const entries = new Map<string, Command>()
+export function createCommandRegistry(
+  initial: ReadonlyArray<Command> = [],
+): CommandRegistry {
+  const entries = new Map<string, Command>();
+
   for (const command of initial) {
-    entries.set(command.id, command)
+    entries.set(command.id, command);
   }
+
   return {
     registerCommand: (command) => {
-      entries.set(command.id, command)
+      entries.set(command.id, command);
     },
     getCommand: (id) => entries.get(id),
     listCommands: () => [...entries.values()],
     runCommand: (id) => {
-      const command = entries.get(id)
-      if (!command) return false
-      command.run()
-      return true
+      const command = entries.get(id);
+
+      if (!command) return false;
+      command.run();
+
+      return true;
     },
-  }
+  };
 }
 
 /**
@@ -62,9 +68,9 @@ export function createCommandRegistry(initial: ReadonlyArray<Command> = []): Com
  * command that opens `development.inspector`.
  */
 export interface SidebarContribution {
-  readonly id: string
-  readonly label: string
+  readonly id: string;
+  readonly label: string;
   /** Icon key resolved to a Carbon icon by the shell (SDK stays Carbon-free). */
-  readonly icon: string
-  readonly commandId: string
+  readonly icon: string;
+  readonly commandId: string;
 }

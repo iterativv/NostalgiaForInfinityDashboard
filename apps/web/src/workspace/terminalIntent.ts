@@ -9,17 +9,18 @@
  * each grid's strip, so it needs no cross-route intent.)
  */
 
-export type TerminalIntent = "palette"
+export type TerminalIntent = "palette";
 
-let pending: TerminalIntent | null = null
+let pending: TerminalIntent | null = null;
 
 export function requestTerminalIntent(intent: TerminalIntent): void {
-  pending = intent
+  pending = intent;
 }
 
 /** Take the pending intent, clearing it (null when none was requested). */
 export function consumeTerminalIntent(): TerminalIntent | null {
-  const next = pending
-  pending = null
-  return next
+  const next = pending;
+  pending = null;
+
+  return next;
 }

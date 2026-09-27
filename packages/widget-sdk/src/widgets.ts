@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import type { ComponentType } from "react"
-import { Schema } from "effect"
-import type { Capability, PanelId } from "@nfi/api-contract"
+import type { ComponentType } from "react";
+import { Schema } from "effect";
+import type { Capability, PanelId, PanelInstance } from "@nfi/api-contract";
 
 /**
  * Canonical widget abstraction.
@@ -21,23 +21,23 @@ import type { Capability, PanelId } from "@nfi/api-contract"
 
 export interface WidgetProps<Config> {
   /** Panel hosting this instance (focus identity, commands, status bar). */
-  readonly panelId: PanelId
+  readonly panelId: PanelId;
   /** Config decoded through `configSchema` — always valid when rendered. */
-  readonly config: Config
+  readonly config: Config;
   /** Whether this panel currently holds workspace focus. */
-  readonly focused: boolean
+  readonly focused: boolean;
 }
 
 export interface WidgetDefinition<Type extends string, Config> {
   /** Stable identifier persisted in workspace state. Never rename once shipped. */
-  readonly type: Type
-  readonly title: string
-  readonly description: string
+  readonly type: Type;
+  readonly title: string;
+  readonly description: string;
   /** Single source of truth for config validation AND the TypeScript type. */
-  readonly configSchema: Schema.Schema<Config, any>
+  readonly configSchema: Schema.Schema<Config, any>;
   /** Default config for freshly opened instances. Must satisfy `configSchema`. */
-  readonly defaultConfig: Config
-  readonly component: ComponentType<WidgetProps<Config>>
+  readonly defaultConfig: Config;
+  readonly component: ComponentType<WidgetProps<Config>>;
   /**
    * Backend capabilities this widget needs to function (hard-coded ids from
    * `@nfi/api-contract`, one function per id — unknown ids are a compile
@@ -45,13 +45,13 @@ export interface WidgetDefinition<Type extends string, Config> {
    * listings, palette/sidebar and `Panel` all enforce the same
    * `canEnableWidget` check. Defaults to `[]` (no backend access).
    */
-  readonly capabilities?: ReadonlyArray<Capability>
+  readonly capabilities?: ReadonlyArray<Capability>;
   /**
    * Minimum readable width in px for responsive layouting. Splits derive
    * their drag minimums from these hints and stack vertically when the
    * container cannot fit both sides. Defaults to 280.
    */
-  readonly minWidth?: number
+  readonly minWidth?: number;
   /**
    * Minimum readable height in px. The hosting panel measures its cell and
    * swaps the widget for a standardized "too small" warning state well
@@ -59,14 +59,25 @@ export interface WidgetDefinition<Type extends string, Config> {
    * ideal size — normal preset rows must never trigger the warning).
    * Defaults to 160.
    */
-  readonly minHeight?: number
+  readonly minHeight?: number;
+  /**
+   * Preferred width in px for auto-mode cards: the starting column span of
+   * a freshly added card derives from it (quantized to the live column
+   * step). Declare the size the content reads best at. Defaults to 360.
+   */
+  readonly defaultWidth?: number;
+  /**
+   * Preferred height in px for auto-mode cards: the starting height of a
+   * freshly added card. Defaults to 280.
+   */
+  readonly defaultHeight?: number;
   /**
    * True when this widget owns a settings form (opened from the tab strip
    * / panel header gear via the shared settings bus). The shell shows the
    * gear only for flagged widgets; content must not render its own.
    * Defaults to false.
    */
-  readonly hasSettings?: boolean
+  readonly hasSettings?: boolean;
 }
 
 /**
@@ -75,59 +86,90 @@ export interface WidgetDefinition<Type extends string, Config> {
  * `unknown` plus one explicit failure mode (invalid config -> placeholder).
  */
 export interface AnyWidgetDefinition {
-  readonly type: string
-  readonly title: string
-  readonly description: string
-  readonly defaultConfig: unknown
-  /** Throws on invalid input; the Panel boundary converts this to UI. */
-  readonly decodeConfig: (input: unknown) => unknown
-  readonly component: ComponentType<WidgetProps<unknown>>
+  readonly type: string;
+  readonly title: string;
+  readonly description: string;
+  readonly defaultConfig: unknown;
+  /**
+   * Decodes a persisted panel config (`PanelInstance["widgetConfig"]`) through
+   * `configSchema`, returning the erased `config` a type-unknown component
+   * accepts. Throws on invalid input; the Panel boundary converts this to UI.
+   */
+  readonly decodeConfig: (
+    input: PanelInstance["widgetConfig"],
+  ) => WidgetProps<unknown>["config"];
+  readonly component: ComponentType<WidgetProps<unknown>>;
   /** Backend capabilities required to enable this widget (empty = public). */
-  readonly capabilities: ReadonlyArray<Capability>
+  readonly capabilities: ReadonlyArray<Capability>;
   /** Minimum readable width in px (responsive layout hint). */
-  readonly minWidth: number
+  readonly minWidth: number;
   /** Minimum readable height in px (too-small warning hint). */
-  readonly minHeight: number
+  readonly minHeight: number;
+  /** Preferred width in px (auto-mode starting card span). */
+  readonly defaultWidth: number;
+  /** Preferred height in px (auto-mode starting card height). */
+  readonly defaultHeight: number;
   /** True when the shell should offer a tab/panel settings gear. */
-  readonly hasSettings: boolean
+  readonly hasSettings: boolean;
 }
 
 export function defineWidget<Type extends string, Config>(
   definition: WidgetDefinition<Type, Config>,
 ): AnyWidgetDefinition {
-  const decodeSync = Schema.decodeUnknownSync(definition.configSchema)
-  const capabilities = [...(definition.capabilities ?? [])]
+  const decodeSync = Schema.decodeUnknownSync(definition.configSchema);
+  const capabilities = [...(definition.capabilities ?? [])];
+
   return {
     type: definition.type,
     title: definition.title,
     description: definition.description,
     defaultConfig: definition.defaultConfig,
-    decodeConfig: (input: unknown) => decodeSync(input),
-    component: definition.component as unknown as ComponentType<WidgetProps<unknown>>,
+    decodeConfig: (input) => decodeSync(input),
+    // SAFETY: erasing `ComponentType<WidgetProps<Config>>` to the unknown-config
+    // variant is sound because decodeConfig validates every payload against
+    // `configSchema` before a render — the component only ever receives
+    // configs of its own `Config` type at runtime.
+    component: definition.component as ComponentType<WidgetProps<unknown>>,
     capabilities,
     minWidth: definition.minWidth ?? 280,
     minHeight: definition.minHeight ?? 160,
+    defaultWidth:
+      definition.defaultWidth !== undefined &&
+      Number.isFinite(definition.defaultWidth) &&
+      definition.defaultWidth > 0
+        ? definition.defaultWidth
+        : 360,
+    defaultHeight:
+      definition.defaultHeight !== undefined &&
+      Number.isFinite(definition.defaultHeight) &&
+      definition.defaultHeight > 0
+        ? definition.defaultHeight
+        : 280,
     hasSettings: definition.hasSettings ?? false,
-  }
+  };
 }
 
 export interface WidgetRegistry {
   /** Idempotent: re-registering the same type replaces the previous entry. */
-  readonly registerWidget: (definition: AnyWidgetDefinition) => void
-  readonly getWidget: (type: string) => AnyWidgetDefinition | undefined
-  readonly listWidgets: () => ReadonlyArray<AnyWidgetDefinition>
+  readonly registerWidget: (definition: AnyWidgetDefinition) => void;
+  readonly getWidget: (type: string) => AnyWidgetDefinition | undefined;
+  readonly listWidgets: () => ReadonlyArray<AnyWidgetDefinition>;
 }
 
-export function createWidgetRegistry(initial: ReadonlyArray<AnyWidgetDefinition> = []): WidgetRegistry {
-  const entries = new Map<string, AnyWidgetDefinition>()
+export function createWidgetRegistry(
+  initial: ReadonlyArray<AnyWidgetDefinition> = [],
+): WidgetRegistry {
+  const entries = new Map<string, AnyWidgetDefinition>();
+
   for (const definition of initial) {
-    entries.set(definition.type, definition)
+    entries.set(definition.type, definition);
   }
+
   return {
     registerWidget: (definition) => {
-      entries.set(definition.type, definition)
+      entries.set(definition.type, definition);
     },
     getWidget: (type) => entries.get(type),
     listWidgets: () => [...entries.values()],
-  }
+  };
 }

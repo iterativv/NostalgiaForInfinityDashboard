@@ -27,8 +27,9 @@ import { ChartBox } from "./shared/ChartBox";
 import { InstanceIdField, numberWithDefault } from "./shared/config";
 import { useCompactMode } from "./shared/size";
 import { clampInt, fmt, pnlTone } from "./shared/format";
+import { chartTimeFormats, useTimeFormat } from "./shared/timeFormat";
 import { queryState } from "./shared/query";
-import { InstanceSelect } from "./shared/InstanceSelect";
+import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
 import {
   closeWidgetSettings,
@@ -37,6 +38,8 @@ import {
 
 export const DRAWDOWN_CAPABILITIES: ReadonlyArray<Capability> = [
   "instances.profit-history",
+  // Fleet mode: merged fleet-total snapshots instead of one bot's series.
+  "instances.profit-history-all",
 ];
 
 export const DrawdownConfigSchema = Schema.Struct({
@@ -45,6 +48,7 @@ export const DrawdownConfigSchema = Schema.Struct({
   /** Snapshot window (points) used for the curve. */
   limit: numberWithDefault(500),
 });
+
 export type DrawdownConfig = typeof DrawdownConfigSchema.Type;
 
 export const DRAWDOWN_DEFAULTS: DrawdownConfig = Schema.decodeUnknownSync(
@@ -61,12 +65,33 @@ export function DrawdownWidget({
   panelId,
 }: WidgetProps<DrawdownConfig>) {
   const cfg = config;
-  const { data, error, isLoading } = useCapability("instances.profit-history", {
-    id: cfg.instanceId,
-    limit: String(Math.max(50, Math.min(1000, Math.round(cfg.limit)))),
-  });
+  const fleet = cfg.instanceId === ALL_INSTANCES;
+
+  const windowLimit = String(
+    Math.max(50, Math.min(1000, Math.round(cfg.limit))),
+  );
+
+  const perInstance = useCapability(
+    "instances.profit-history",
+    { id: cfg.instanceId, limit: windowLimit },
+    { enabled: !fleet },
+  );
+
+  const fleetView = useCapability(
+    "instances.profit-history-all",
+    { limit: windowLimit },
+    { enabled: fleet },
+  );
+
+  const data = fleet ? fleetView.data : perInstance.data;
+  const error = fleet ? fleetView.error : perInstance.error;
+  const isLoading = fleet ? fleetView.isLoading : perInstance.isLoading;
+
   const state = queryState(error, isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
+  // Time axis ticks follow the globally configured time format.
+  const timeFormat = useTimeFormat();
+
   const patch = (p: Partial<DrawdownConfig>) =>
     applyWidgetSettings(panelId, "drawdown", cfg, p);
 
@@ -76,6 +101,7 @@ export function DrawdownWidget({
   let peak = Number.NEGATIVE_INFINITY;
   let maxDrawdown = 0;
   let peakValue = 0;
+
   for (const point of points) {
     const equity = point.profitAllCoin;
     peak = Math.max(peak, equity);
@@ -87,20 +113,27 @@ export function DrawdownWidget({
       drawdown: Number(drawdown.toFixed(2)),
     });
   }
+
   const current = curve[curve.length - 1]?.drawdown ?? 0;
   // Compact cells draw the underwater curve alone; the stat row needs the
   // full ~260px budget to stay above it without clipping the chart.
   const compact = useCompactMode(260);
+
   const chartData = curve.map((point) => ({
     group: "Drawdown %",
     date: point.date,
     value: point.drawdown,
   }));
+
   const options: LineChartOptions = {
     title: "Underwater curve (%)",
+    timeScale: { timeIntervalFormats: chartTimeFormats(timeFormat) },
     axes: {
       left: { mapsTo: "value", title: "Drawdown %" },
-      bottom: { mapsTo: "date", scaleType: ScaleTypes.TIME },
+      bottom: {
+        mapsTo: "date",
+        scaleType: ScaleTypes.TIME,
+      },
     },
     points: { radius: 1 },
     color: { scale: { "Drawdown %": "#fa4d56" } },
@@ -119,6 +152,7 @@ export function DrawdownWidget({
           id={`drawdown-inst-${panelId}`}
           value={cfg.instanceId}
           onChange={(instanceId) => patch({ instanceId })}
+          allowAll
         />
         <NumberInput
           id={`drawdown-limit-${panelId}`}
@@ -134,57 +168,57 @@ export function DrawdownWidget({
         />
       </WidgetSettingsModal>
       <WidgetFrame
-      title="Drawdown"
-      isLoading={state.isLoading}
-      error={state.error}
-    >
-      {curve.length > 1 ? (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "0.75rem",
-            flex: "1 1 auto",
-            minHeight: 0,
-          }}
-        >
-          {!compact ? (
-            <div className="nfi-stat-grid">
-              <Stat
-                label="Max drawdown"
-                value={`${maxDrawdown.toFixed(2)}%`}
-                tone="negative"
-                sub="from profit peak"
-              />
-              <Stat
-                label="Current"
-                value={`${current.toFixed(2)}%`}
-                tone={pnlTone(-current)}
-                sub="vs. peak now"
-              />
-              <Stat
-                label="All-time peak"
-                value={fmt(peakValue, 2)}
-                sub="profit high-water mark"
-              />
-            </div>
-          ) : null}
-          <ChartBox min={compact ? 150 : 200}>
-            {(height) => (
-              <LineChart
-                data={chartData}
-                options={{ ...options, height: `${height}px` }}
-              />
-            )}
-          </ChartBox>
-        </div>
-      ) : (
-        <EmptyState
-          title="No history yet"
-          hint="Drawdown appears once the panel records profit snapshots for this instance."
-        />
-      )}
-    </WidgetFrame>
+        title="Drawdown"
+        isLoading={state.isLoading}
+        error={state.error}
+      >
+        {curve.length > 1 ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+              flex: "1 1 auto",
+              minHeight: 0,
+            }}
+          >
+            {!compact ? (
+              <div className="nfi-stat-grid">
+                <Stat
+                  label="Max drawdown"
+                  value={`${maxDrawdown.toFixed(2)}%`}
+                  tone="negative"
+                  sub="from profit peak"
+                />
+                <Stat
+                  label="Current"
+                  value={`${current.toFixed(2)}%`}
+                  tone={pnlTone(-current)}
+                  sub="vs. peak now"
+                />
+                <Stat
+                  label="All-time peak"
+                  value={fmt(peakValue, 2)}
+                  sub="profit high-water mark"
+                />
+              </div>
+            ) : null}
+            <ChartBox min={compact ? 150 : 200}>
+              {(height) => (
+                <LineChart
+                  data={chartData}
+                  options={{ ...options, height: `${height}px` }}
+                />
+              )}
+            </ChartBox>
+          </div>
+        ) : (
+          <EmptyState
+            title="No history yet"
+            hint="Drawdown appears once the panel records profit snapshots for this instance."
+          />
+        )}
+      </WidgetFrame>
     </>
   );
 }
@@ -199,6 +233,8 @@ export const DrawdownWidgetDef = defineWidget({
   defaultConfig: DRAWDOWN_DEFAULTS,
   component: DrawdownWidget,
   capabilities: [...DRAWDOWN_CAPABILITIES],
-  minWidth: 320,
-  minHeight: 150,
+  minWidth: 475,
+  minHeight: 375,
+  defaultWidth: 360,
+  defaultHeight: 220,
 });
