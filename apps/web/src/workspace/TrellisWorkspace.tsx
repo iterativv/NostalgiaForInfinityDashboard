@@ -1,9 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
+// SPDX-License-Identifier: SSPL-1.0
+
 import {
-  useCallback,
   useEffect,
   useMemo,
-  useRef,
-  useState,
   type ReactNode,
 } from "react";
 import { Store } from "@tanstack/store";
@@ -18,6 +18,7 @@ import {
   Workspace,
   useView,
   useViewTitle,
+  useOptionalWorkspace,
   type ViewApi,
   type WorkspaceHandle,
 } from "@danfessler/trellis-react";
@@ -95,7 +96,7 @@ const trellisCanvasOpener: {
   current: ((anchor: DOMRect | null) => void) | null;
 } = { current: null };
 
-/** Live Trellis handle mirror (set by the Workspace ref callback). */
+/** Live Trellis handle mirror (set by the bridge below, read by chrome). */
 const trellisWsHandle: { current: WorkspaceHandle | null } = {
   current: null,
 };
@@ -215,6 +216,8 @@ function TrellisTabChrome({
   registry: WidgetRegistry;
 }) {
   const panelId = view.params.panelId;
+  // Null until the workspace mounts; the accessory only renders after that.
+  const ws = useOptionalWorkspace();
   const instance = useStore(
     workspaceStore,
     (s) => s.workspace.panels[panelId],
@@ -246,7 +249,6 @@ function TrellisTabChrome({
   // Fractal splits: tear this tab out beside its own group — Trellis drops
   // the emptied group automatically, so any layout nests arbitrarily deep.
   const splitTab = (edge: "right" | "bottom") => {
-    const ws = trellisWsHandle.current;
     if (!ws) return;
     try {
       ws.dock(view.id, { beside: view.panelId, edge, share: 0.5 });
@@ -406,6 +408,74 @@ const NFI_TOKENS: Record<string, string> = {
   "--trellis-tab-inset": "0px",
 };
 
+/**
+ * Store ↔ Trellis bridge. Lives in `Workspace.Chrome` so it can use the
+ * documented workspace hooks instead of a ref: null until the workspace
+ * mounts, then keeps the two in sync —
+ * - panels opened via the picker/palette/commands (store ops) are opened
+ *   as Trellis views;
+ * - Trellis views whose panel is gone from the store (a persisted document
+ *   outlived its panels) are closed;
+ * - with zero store panels left, Trellis resets to the empty workspace so
+ *   no degenerate skeleton (stuck splits, slivered empty slot) survives.
+ * Trellis-owned moves (drag/split/float) persist via `storageKey` and need
+ * no store round-trip.
+ */
+function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
+  const ws = useOptionalWorkspace();
+
+  useEffect(() => {
+    if (!ws) return;
+    trellisWsHandle.current = ws;
+    let cancelled = false;
+    // Surfaces settle a frame after mount; retry briefly if not ready.
+    let attempts = 0;
+    const attempt = () => {
+      if (cancelled) return;
+      try {
+        if (Object.keys(panels).length === 0) {
+          ws.reset();
+          return;
+        }
+        const snapshot = ws.getSnapshot();
+        const existing = new Set(snapshot.views.map((v) => v.id));
+        for (const panelId of Object.keys(panels)) {
+          const viewId = viewIdForPanel(panelId);
+          if (!existing.has(viewId)) {
+            ws.open("widget", {
+              id: viewId,
+              params: { panelId } satisfies TrellisWidgetParams,
+              focus: false,
+            });
+          }
+        }
+        for (const view of snapshot.views) {
+          if (view.type !== "widget") continue;
+          const params = view.params as Partial<TrellisWidgetParams> | undefined;
+          const panelId =
+            typeof params?.panelId === "string"
+              ? params.panelId
+              : panelIdForViewId(view.id);
+          if (panelId && !(panelId in panels)) {
+            void ws.close(view.id, { force: true });
+          }
+        }
+      } catch {
+        attempts += 1;
+        if (attempts < 20) window.setTimeout(attempt, 100);
+      }
+    };
+    const timer = window.setTimeout(attempt, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [ws, panels]);
+
+  return null;
+}
+
 export function TrellisWorkspace({
   workspace,
   registry,
@@ -428,103 +498,55 @@ export function TrellisWorkspace({
   isSplitLocked?: boolean;
   locked?: boolean;
 }) {
-  const wsRef = useRef<WorkspaceHandle | null>(null);
+  const colorTheme = useStore(prefsStore, (s) => s.colorTheme);
   // `isSplitLocked` mirrors `locked` from the shell today (read-only
   // surfaces); Trellis owns its dividers, so both collapse to read-only.
   const readOnly = locked || isSplitLocked;
-  const colorTheme = useStore(prefsStore, (s) => s.colorTheme);
-  // Trellis attaches the handle after mount; the tick re-runs the store
-  // bridge below once it exists (the bridge's first run would otherwise
-  // see a null handle and never clean up stale views). Stable identity is
-  // load-bearing: React detaches/reattaches the ref whenever it changes,
-  // and each attach ticks state — an inline callback would loop forever
-  // (React error #185).
-  const [wsTick, setWsTick] = useState(0);
-  const setWsHandle = useCallback((handle: WorkspaceHandle | null) => {
-    wsRef.current = handle;
-    trellisWsHandle.current = handle;
-    setWsTick((tick) => tick + 1);
-  }, []);
 
   trellisCanvasOpener.current = onOpenCanvas ?? null;
 
   const initialLayout = useMemo(
     () => toTrellis(workspace.layout, workspace),
-    // Compiled once per page (Trellis reads JSX layout on mount only).
+    // The NFI tree can gain/lose its first card while staying on the page
+    // (empty ↔ non-empty toggles the fallback below). Trellis itself reads
+    // the layout once per mount — the bridge opens later additions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activePageId],
+    [activePageId, workspace.layout],
   );
 
-  // Bridge store → Trellis: panels opened via the picker/palette/command
-  // (store ops) are opened as Trellis views; Trellis views whose panel is
-  // gone from the store (a persisted document outlived its panels) are
-  // closed. Trellis-owned moves (drag/split/float) persist via `storageKey`
-  // and need no store round-trip.
-  useEffect(() => {
-    let cancelled = false;
-    let attempts = 0;
-    // The handle attaches after mount and surfaces settle a frame later;
-    // retry briefly instead of running once against a null handle.
-    const attempt = () => {
-      if (cancelled) return;
-      const handle = wsRef.current;
-      if (!handle) {
-        attempts += 1;
-        if (attempts < 20) window.setTimeout(attempt, 100);
-        return;
-      }
-      try {
-        // No panels left (user deleted every tab): normalize Trellis to
-        // the empty workspace. Otherwise a degenerate skeleton (stuck
-        // splits, slivered empty slot) can survive in the persisted
-        // document — reset clears it and the Stage empty slot takes over
-        // from a clean root.
-        if (Object.keys(workspace.panels).length === 0) {
-          try {
-            handle.reset();
-          } catch {
-            // Trellis not ready yet — next panels commit retries.
-          }
-          return;
-        }
-        const snapshot = handle.getSnapshot();
-        const existing = new Set(snapshot.views.map((v) => v.id));
-        for (const panelId of Object.keys(workspace.panels)) {
-          const viewId = viewIdForPanel(panelId);
-          if (!existing.has(viewId)) {
-            handle.open("widget", {
-              id: viewId,
-              params: { panelId } satisfies TrellisWidgetParams,
-              focus: false,
-            });
-          }
-        }
-        for (const view of snapshot.views) {
-          if (view.type !== "widget") continue;
-          const params = view.params as Partial<TrellisWidgetParams> | undefined;
-          const panelId =
-            typeof params?.panelId === "string"
-              ? params.panelId
-              : panelIdForViewId(view.id);
-          if (panelId && !(panelId in workspace.panels)) {
-            void handle.close(view.id, { force: true });
-          }
-        }
-      } catch {
-        // Trellis not ready yet — next panels commit retries.
-      }
-    };
-    const timer = window.setTimeout(attempt, 0);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [workspace.panels, wsTick]);
+  // Empty page: don't mount Trellis at all — render the old bento empty
+  // state directly. Trellis only mounts with ≥1 view, so no degenerate
+  // skeleton can ever exist; adding the first widget mounts it fresh.
+  // (Corrupt non-empty trees still mount Trellis — the bridge opens the
+  // store panels with default placement and heals them live.)
+  if (!initialLayout && Object.keys(workspace.panels).length === 0) {
+    return (
+      <div className="nfi-trellis-empty">
+        <div className="nfi-panel" data-focused="false">
+          <div className="nfi-panel-body nfi-empty-group">
+            <p>No widgets yet.</p>
+            {readOnly || !onOpenCanvas ? null : (
+              <button
+                type="button"
+                className="cds--btn cds--btn--secondary cds--btn--sm"
+                onClick={(event) =>
+                  onOpenCanvas(event.currentTarget.getBoundingClientRect())
+                }
+              >
+                Add widget
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <Workspace
-      ref={setWsHandle}
+      // Trellis reads storageKey/version/layout once per mount — remount
+      // per page or every page would show the first-loaded layout.
+      key={activePageId}
       theme={CARBON_THEMES_DARK.has(colorTheme) ? "dark" : "light"}
       tokens={NFI_TOKENS}
       tabs={{ fill: false, inset: 0 }}
@@ -537,7 +559,7 @@ export function TrellisWorkspace({
       className="nfi-trellis"
       onFocus={(viewId) => {
         if (viewId === null) return;
-        const ws = wsRef.current;
+        const ws = trellisWsHandle.current;
         const params = ws
           ?.getSnapshot()
           .views.find((v) => v.id === viewId)?.params as
@@ -616,6 +638,10 @@ export function TrellisWorkspace({
           </div>
         </div>
       </Workspace.Empty>
+
+      <Workspace.Chrome>
+        <TrellisBridge panels={workspace.panels} />
+      </Workspace.Chrome>
     </Workspace>
   );
 }

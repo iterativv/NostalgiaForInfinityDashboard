@@ -3242,6 +3242,15 @@ button.nfi-auto-empty:focus-visible {
   font-size: 0.8125rem;
 }
 
+/* Empty page without Trellis mounted (zero panels): fills the host with
+   the old bento empty state. */
+.nfi-trellis-empty {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* --- Trellis workspace, NFI skin ---------------------------------------- */
 
 /* Trellis handles layout only: every visible pixel follows the previous
