@@ -1,79 +1,86 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import type { LayoutNode, Workspace } from "@nfi/api-contract";
-import { getLayoutMinWidth, type WidgetRegistry } from "@nfi/widget-sdk";
-import { AutoPane } from "./AutoPane";
-import { FlowPane } from "./FlowPane";
-import { MasonryPane } from "./MasonryPane";
-import { Panel } from "./Panel";
-import { SplitPane } from "./SplitPane";
-import { TabGroup } from "./TabGroup";
+import type { Workspace } from "@nfi/api-contract";
+import type { WidgetRegistry } from "@nfi/widget-sdk";
+import { TrellisWorkspace } from "./TrellisWorkspace";
 
 /**
  * WorkspaceRenderer — converts the declarative workspace model into React.
  *
+ * Layouting migrated to Trellis
+ * (https://trellisui.com/docs/quick-start-react):
+ *
  * ```text
- * Workspace → LayoutNode → Auto | Flow | Masonry | TabGroup | Panel → WidgetRegistry → Widget
+ * Workspace → TrellisWorkspace → Workspace/ViewType/Split/Stage/Panel/View → Panel → WidgetRegistry → Widget
  * ```
  *
- * Bento (`auto`) is the only page mode: exact-size masonry columns,
- * shortest-column gravity, stepless resize. Legacy `flow`/`masonry`/`split` documents still
- * decode (migrated to `auto` on load) and render through their panes when
- * encountered. Corrupt subtrees degrade to placeholders instead of crashing
- * the shell. `locked` renders everything read-only (signed out).
+ * The NFI `Workspace` document (panels record + layout tree) is compiled
+ * once per page to Trellis `<Split>/<Stage>/<Panel>/<View>` initial layout;
+ * after mount Trellis owns docking, splitting, tabbing, floating, hiding
+ * and zoom — every view stays mounted so iframes keep sessions and React
+ * keeps state. Layout persists per page via Trellis `storageKey`.
+ *
+ * Legacy bento/flow/masonry/split resize + move callbacks are Trellis-owned
+ * now (divider/tab drags): they stay on the prop interface as no-ops so
+ * callers migrate incrementally. `onOpenInto` (per-group "+") maps to the
+ * canvas add path — Trellis places new views via its default placement.
+ * `locked` renders everything read-only (signed out).
  */
 
 export function WorkspaceRenderer({
   workspace,
   registry,
+  activePageId,
   onActivatePanel,
   onActivateTab,
   onClosePanel,
-  onFlowItemResize,
-  onMasonryItemResize,
-  onAutoItemResize,
-  onAutoItemMove,
+  onFlowItemResize: _onFlowItemResize,
+  onMasonryItemResize: _onMasonryItemResize,
+  onAutoItemResize: _onAutoItemResize,
+  onAutoItemMove: _onAutoItemMove,
   onOpenInto,
   onOpenCanvas,
-  onMovePanel,
-  onPinPanel,
-  isPanelLocked,
+  onMovePanel: _onMovePanel,
+  onPinPanel: _onPinPanel,
+  isPanelLocked: _isPanelLocked,
   isSplitLocked = false,
   locked = false,
 }: {
   workspace: Workspace;
   registry: WidgetRegistry;
+  /** Scopes Trellis persistence per page; defaults to the workspace id. */
+  activePageId?: string;
   onActivatePanel: (panelId: string) => void;
   onActivateTab: (tabsId: string, panelId: string) => void;
   onClosePanel: (panelId: string) => void;
-  /** Flow card resize (SE-corner drag, clamped to content minimums). */
+  /** Legacy flow card resize — Trellis-owned via divider drags (no-op). */
   onFlowItemResize?: (
     flowId: string,
     itemId: string,
     width: number,
     height: number,
   ) => void;
-  /** Masonry card height resize (SE-corner drag, clamped to content minimums). */
+  /** Legacy masonry card height resize — Trellis-owned (no-op). */
   onMasonryItemResize?: (
     masonryId: string,
     itemId: string,
     height: number,
     span?: number,
   ) => void;
-  /** Auto card resize (SE-corner drag, clamped to content minimums). */
+  /** Legacy auto card resize — Trellis-owned (no-op). */
   onAutoItemResize?: (
     autoId: string,
     itemId: string,
     height: number,
     span?: number,
   ) => void;
-  /** Auto card drag-reorder commit. */
+  /** Legacy auto card drag-reorder — Trellis-owned (no-op). */
   onAutoItemMove?: (autoId: string, itemId: string, targetIndex: number) => void;
   onOpenInto: (tabsId: string, anchor: DOMRect | null) => void;
   /**
    * Auto pane canvas-level "add widget": opens the picker with no tab
-   * target so the pick appends as a fresh bento card (no slot booking).
+   * target so the pick appends as a fresh Trellis view.
    */
   onOpenCanvas?: (anchor: DOMRect | null) => void;
   onMovePanel: (
@@ -81,195 +88,32 @@ export function WorkspaceRenderer({
     targetTabsId: string,
     targetIndex?: number,
   ) => void;
-  /** Detach a tab into the floating layer (removes it from its group). */
+  /** Legacy detach-to-floating — Trellis float via panel menu (no-op). */
   onPinPanel?: (panelId: string) => void;
-  /** True for locked tabs: no drag, no close, no float. */
+  /** Legacy per-tab lock — read-only surfaces use `locked` (no-op). */
   isPanelLocked?: (panelId: string) => boolean;
-  /** True on non-editable pages: card grips and handles hide. */
+  /** True on non-editable pages: Trellis dividers stay user-owned. */
   isSplitLocked?: boolean;
-  /** True on read-only surfaces (signed out): tab add buttons and gears hide. */
+  /** True on read-only surfaces (signed out): menus and adds hide. */
   locked?: boolean;
 }) {
   return (
-    <LayoutNodeView
-      node={workspace.layout}
+    <TrellisWorkspace
       workspace={workspace}
       registry={registry}
+      activePageId={activePageId ?? workspace.id}
       onActivatePanel={onActivatePanel}
       onActivateTab={onActivateTab}
       onClosePanel={onClosePanel}
-      onFlowItemResize={onFlowItemResize}
-      onMasonryItemResize={onMasonryItemResize}
-      onAutoItemResize={onAutoItemResize}
-      onAutoItemMove={onAutoItemMove}
-      onOpenInto={onOpenInto}
-      onOpenCanvas={onOpenCanvas}
-      onMovePanel={onMovePanel}
-      onPinPanel={onPinPanel}
-      isPanelLocked={isPanelLocked}
+      onOpenCanvas={(anchor) => {
+        if (onOpenCanvas) {
+          onOpenCanvas(anchor);
+        } else {
+          onOpenInto("canvas", anchor);
+        }
+      }}
       isSplitLocked={isSplitLocked}
       locked={locked}
     />
   );
-}
-
-function LayoutNodeView(props: {
-  node: LayoutNode;
-  workspace: Workspace;
-  registry: WidgetRegistry;
-  onActivatePanel: (panelId: string) => void;
-  onActivateTab: (tabsId: string, panelId: string) => void;
-  onClosePanel: (panelId: string) => void;
-  onFlowItemResize?: (
-    flowId: string,
-    itemId: string,
-    width: number,
-    height: number,
-  ) => void;
-  onMasonryItemResize?: (
-    masonryId: string,
-    itemId: string,
-    height: number,
-    span?: number,
-  ) => void;
-  onAutoItemResize?: (
-    autoId: string,
-    itemId: string,
-    height: number,
-    span?: number,
-  ) => void;
-  onAutoItemMove?: (autoId: string, itemId: string, targetIndex: number) => void;
-  onOpenInto: (tabsId: string, anchor: DOMRect | null) => void;
-  onOpenCanvas?: (anchor: DOMRect | null) => void;
-  onMovePanel: (
-    panelId: string,
-    targetTabsId: string,
-    targetIndex?: number,
-  ) => void;
-  onPinPanel?: (panelId: string) => void;
-  isPanelLocked?: (panelId: string) => boolean;
-  isSplitLocked?: boolean;
-  /** True on read-only surfaces (signed out): tab add buttons and gears hide. */
-  locked?: boolean;
-}) {
-  const {
-    node,
-    workspace,
-    registry,
-    onActivatePanel,
-    onActivateTab,
-    onClosePanel,
-    onFlowItemResize,
-    onMasonryItemResize,
-    onAutoItemResize,
-    onAutoItemMove,
-    onOpenInto,
-    onOpenCanvas,
-    onMovePanel,
-    onPinPanel,
-  } = props;
-
-  const isPanelLocked = props.isPanelLocked;
-  const isSplitLocked = props.isSplitLocked ?? false;
-  const locked = props.locked ?? false;
-
-  switch (node.type) {
-    case "grid":
-      // Legacy grids migrate to `auto` on load — a grid reaching the
-      // renderer is a stale in-memory tree; render nothing rather than a
-      // resurrected grid UI.
-      return null;
-    case "flow":
-      return (
-        <FlowPane
-          flow={node}
-          panels={workspace.panels}
-          lookup={(type) => registry.getWidget(type)}
-          locked={isSplitLocked}
-          onItemResize={onFlowItemResize ?? (() => undefined)}
-          renderChild={(child) => <LayoutNodeView {...props} node={child} />}
-        />
-      );
-    case "masonry":
-      return (
-        <MasonryPane
-          masonry={node}
-          panels={workspace.panels}
-          lookup={(type) => registry.getWidget(type)}
-          locked={isSplitLocked}
-          onItemResize={onMasonryItemResize ?? (() => undefined)}
-          renderChild={(child) => <LayoutNodeView {...props} node={child} />}
-        />
-      );
-    case "auto":
-      return (
-        <AutoPane
-          auto={node}
-          panels={workspace.panels}
-          lookup={(type) => registry.getWidget(type)}
-          locked={isSplitLocked}
-          onItemResize={onAutoItemResize ?? (() => undefined)}
-          onItemMove={onAutoItemMove ?? (() => undefined)}
-          onOpenCanvas={onOpenCanvas}
-          renderChild={(child) => <LayoutNodeView {...props} node={child} />}
-        />
-      );
-    case "split": {
-      const lookup = (type: string) => registry.getWidget(type);
-      const minFirst = getLayoutMinWidth(node.first, workspace.panels, lookup);
-
-      const minSecond = getLayoutMinWidth(
-        node.second,
-        workspace.panels,
-        lookup,
-      );
-
-      return (
-        <SplitPane
-          splitId={node.id}
-          direction={node.direction}
-          ratio={node.ratio}
-          onRatioChange={() => undefined}
-          minFirst={minFirst}
-          minSecond={minSecond}
-          locked={isSplitLocked}
-          first={<LayoutNodeView {...props} node={node.first} />}
-          second={<LayoutNodeView {...props} node={node.second} />}
-        />
-      );
-    }
-
-    case "tabs":
-      return (
-        <TabGroup
-          node={node}
-          workspace={workspace}
-          registry={registry}
-          onActivatePanel={onActivatePanel}
-          onActivateTab={onActivateTab}
-          onClosePanel={onClosePanel}
-          onOpenInto={onOpenInto}
-          onMovePanel={onMovePanel}
-          onPinPanel={onPinPanel}
-          isPanelLocked={isPanelLocked}
-          locked={locked}
-        />
-      );
-    case "panel": {
-      const instance = workspace.panels[node.panelId];
-
-      return (
-        <Panel
-          panelId={node.panelId}
-          widgetType={instance?.widgetType}
-          widgetConfig={instance?.widgetConfig}
-          title={undefined}
-          focused={workspace.activePanelId === node.panelId}
-          registry={registry}
-          onActivate={onActivatePanel}
-          onClose={onClosePanel}
-        />
-      );
-    }
-  }
 }

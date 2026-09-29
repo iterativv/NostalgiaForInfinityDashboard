@@ -81,6 +81,12 @@ importers:
       '@carbon/styles':
         specifier: ^1.115.0
         version: 1.115.0(sass@1.104.1)
+      '@danfessler/trellis':
+        specifier: 0.3.0
+        version: 0.3.0
+      '@danfessler/trellis-react':
+        specifier: 0.3.0
+        version: 0.3.0(@danfessler/trellis@0.3.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@effect/platform':
         specifier: ^0.97.0
         version: 0.97.2(effect@3.22.2)
@@ -776,6 +782,16 @@ packages:
 
   '@carbon/utils-position@1.3.0':
     resolution: {integrity: sha512-bfar2dV+fQ15syIrH3n9ujY4PXd1Q+AF2VcTLJIC04IDe2f80zOnJlLNPc/RktHcWTZ7WSQm80cQo3abGcsfTA==}
+
+  '@danfessler/trellis-react@0.3.0':
+    resolution: {integrity: sha512-hQtAuTbe8JVL8lIniLNbmEiKio1D6MgUnl6WxRZLJWvztFiKxkO/QjBsZ8SVbLD9MTmaw0m/ExTRKAZ0NMSp/Q==}
+    peerDependencies:
+      '@danfessler/trellis': ^0.3.0
+      react: '>=18.3'
+      react-dom: '>=18.3'
+
+  '@danfessler/trellis@0.3.0':
+    resolution: {integrity: sha512-pvlexewXbyws7/l7oXEJt8/pdb7c5IECV/10Hm/zMIy1Hn4CweyL2fBrygj4BjxX/bE9nGx0V1dbhRccWqiC/A==}
 
   '@effect/cluster@0.60.2':
     resolution: {integrity: sha512-GEODN5kvFJ0L0XSkANcS8s6lfhjrrA8x/ezYUV/lXerqCHf5xo3ZTPUanGMHu5Byvikng0mZDcyNvke2sGjfSQ==}
@@ -3567,6 +3583,14 @@ snapshots:
   '@carbon/utils-position@1.3.0':
     dependencies:
       '@ibm/telemetry-js': 1.11.0
+
+  '@danfessler/trellis-react@0.3.0(@danfessler/trellis@0.3.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+    dependencies:
+      '@danfessler/trellis': 0.3.0
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+
+  '@danfessler/trellis@0.3.0': {}
 
   '@effect/cluster@0.60.2(@effect/platform@0.97.2(effect@3.22.2))(@effect/rpc@0.76.2(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2))(@effect/sql@0.52.1(@effect/experimental@0.61.1(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2))(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2))(@effect/workflow@0.19.1(@effect/experimental@0.61.1(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2))(@effect/platform@0.97.2(effect@3.22.2))(@effect/rpc@0.76.2(@effect/platform@0.97.2(effect@3.22.2))(effect@3.22.2))(effect@3.22.2))(effect@3.22.2)':
     dependencies:

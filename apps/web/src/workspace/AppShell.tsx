@@ -517,6 +517,7 @@ export function AppShell({
                 <WorkspaceRenderer
                   workspace={workspace}
                   registry={widgetRegistry}
+                  activePageId={activePageId}
                   onActivatePanel={activateWorkspacePanel}
                   onActivateTab={activateWorkspaceTab}
                   onClosePanel={(panelId) => {
