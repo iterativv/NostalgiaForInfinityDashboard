@@ -3258,9 +3258,13 @@ button.nfi-auto-empty:focus-visible {
   --nfi-strip-h: 1.4375rem;
 }
 
-/* Tabs: flat, 1px apart, 11px Plex labels like the old `.nfi-tab-button`. */
+/* Tabs: flat, 1px apart, 11px Plex labels like the old `.nfi-tab-button`.
+   The tab list hugs the left (no stretch) so the accessory (+ and ⋯) sits
+   right after the last tab — the old strip order. */
 .nfi-trellis [data-trellis-part="tabs"] {
   gap: 1px;
+  flex: none;
+  max-width: 100%;
 }
 
 .nfi-trellis [data-trellis-part="tab"] {

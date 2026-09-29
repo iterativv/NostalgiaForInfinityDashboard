@@ -199,12 +199,13 @@ function WidgetView({ registry }: { registry: WidgetRegistry }) {
 }
 
 /**
- * Trellis tab-bar chrome for the selected view: the strip "+" (canvas-level
- * add, like the old tab strip's) plus the full tab actions menu. Rendered
- * via `ViewType accessory`, so it sits in the tab bar exactly where the old
- * "+" and "⋯" lived. Module-level (no changing props): everything reactive
- * comes from stores, so it never goes stale even though Trellis reads the
- * initial layout once.
+ * Trellis tab-bar chrome for the selected view: the tab actions menu plus
+ * the strip "+" (canvas-level add, like the old tab strip's). Rendered via
+ * `ViewType accessory` at the end of the tab bar — with the tabs hugging
+ * the left (see `.nfi-trellis` CSS), the ⋯ sits right after the active tab
+ * and the + follows it, matching the old strip order. Module-level (no
+ * changing props): everything reactive comes from stores, so it never goes
+ * stale even though Trellis reads the initial layout once.
  */
 function TrellisTabChrome({
   view,
@@ -256,17 +257,6 @@ function TrellisTabChrome({
 
   return (
     <>
-      {locked ? null : (
-        <button
-          type="button"
-          className="nfi-tab-add"
-          title="Add widget"
-          aria-label="Add widget"
-          onClick={openCanvas}
-        >
-          <Add size={14} />
-        </button>
-      )}
       <TabActionsMenu
         title={label}
         panelId={panelId}
@@ -284,6 +274,17 @@ function TrellisTabChrome({
         onSplitRight={locked ? undefined : () => splitTab("right")}
         onSplitBelow={locked ? undefined : () => splitTab("bottom")}
       />
+      {locked ? null : (
+        <button
+          type="button"
+          className="nfi-tab-add"
+          title="Add widget"
+          aria-label="Add widget"
+          onClick={openCanvas}
+        >
+          <Add size={14} />
+        </button>
+      )}
     </>
   );
 }
@@ -473,6 +474,19 @@ export function TrellisWorkspace({
         return;
       }
       try {
+        // No panels left (user deleted every tab): normalize Trellis to
+        // the empty workspace. Otherwise a degenerate skeleton (stuck
+        // splits, slivered empty slot) can survive in the persisted
+        // document — reset clears it and the Stage empty slot takes over
+        // from a clean root.
+        if (Object.keys(workspace.panels).length === 0) {
+          try {
+            handle.reset();
+          } catch {
+            // Trellis not ready yet — next panels commit retries.
+          }
+          return;
+        }
         const snapshot = handle.getSnapshot();
         const existing = new Set(snapshot.views.map((v) => v.id));
         for (const panelId of Object.keys(workspace.panels)) {
