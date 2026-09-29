@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Store } from "@tanstack/store";
 import { useStore } from "@tanstack/react-store";
 import { Add } from "@carbon/icons-react";
@@ -427,13 +434,16 @@ export function TrellisWorkspace({
   const colorTheme = useStore(prefsStore, (s) => s.colorTheme);
   // Trellis attaches the handle after mount; the tick re-runs the store
   // bridge below once it exists (the bridge's first run would otherwise
-  // see a null handle and never clean up stale views).
+  // see a null handle and never clean up stale views). Stable identity is
+  // load-bearing: React detaches/reattaches the ref whenever it changes,
+  // and each attach ticks state — an inline callback would loop forever
+  // (React error #185).
   const [wsTick, setWsTick] = useState(0);
-  const setWsHandle = (handle: WorkspaceHandle | null) => {
+  const setWsHandle = useCallback((handle: WorkspaceHandle | null) => {
     wsRef.current = handle;
     trellisWsHandle.current = handle;
     setWsTick((tick) => tick + 1);
-  };
+  }, []);
 
   trellisCanvasOpener.current = onOpenCanvas ?? null;
 
