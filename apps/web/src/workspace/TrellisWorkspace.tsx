@@ -1,11 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import {
-  useEffect,
-  useMemo,
-  type ReactNode,
-} from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
+import { Either, Schema } from "effect";
 import { Store } from "@tanstack/store";
 import { useStore } from "@tanstack/react-store";
 import { Add } from "@carbon/icons-react";
@@ -19,6 +16,7 @@ import {
   useView,
   useViewTitle,
   useOptionalWorkspace,
+  type Params as TrellisParams,
   type ViewApi,
   type WorkspaceHandle,
 } from "@danfessler/trellis-react";
@@ -83,6 +81,25 @@ interface TrellisWidgetParams {
   panelId: string;
 }
 
+const TrellisWidgetParamsSchema = Schema.Struct({
+  panelId: Schema.String,
+});
+
+/**
+ * Decode Trellis view params at the Trellis I/O boundary: persisted
+ * documents outlive code, so params are unknown until validated here.
+ */
+function panelIdFromTrellisParams(
+  params: TrellisParams | undefined,
+  fallbackViewId: string,
+): string | null {
+  const decoded = Schema.decodeUnknownEither(TrellisWidgetParamsSchema)(params);
+
+  if (Either.isRight(decoded)) return decoded.right.panelId;
+
+  return panelIdForViewId(fallbackViewId);
+}
+
 function viewIdForPanel(panelId: string): string {
   return `view-${panelId}`;
 }
@@ -92,12 +109,18 @@ function panelIdForViewId(viewId: string): string | null {
 }
 
 /** Latest canvas-level picker opener (set by TrellisWorkspace each render). */
-const trellisCanvasOpener: {
+interface TrellisCanvasOpenerRef {
   current: ((anchor: DOMRect | null) => void) | null;
-} = { current: null };
+}
+
+const trellisCanvasOpener: TrellisCanvasOpenerRef = { current: null };
 
 /** Live Trellis handle mirror (set by the bridge below, read by chrome). */
-const trellisWsHandle: { current: WorkspaceHandle | null } = {
+interface TrellisWorkspaceHandleRef {
+  current: WorkspaceHandle | null;
+}
+
+const trellisWsHandle: TrellisWorkspaceHandleRef = {
   current: null,
 };
 
@@ -142,18 +165,19 @@ function WidgetView({ registry }: { registry: WidgetRegistry }) {
   const view = useView<TrellisWidgetParams>();
   const panelId = view.params.panelId;
 
-  const instance = useStore(
-    workspaceStore,
-    (s) => s.workspace.panels[panelId],
-  );
+  const instance = useStore(workspaceStore, (s) => s.workspace.panels[panelId]);
+
   const customTitle = instance?.title;
+
   const definition = instance
     ? registry.getWidget(instance.widgetType)
     : undefined;
+
   const focused = useStore(
     workspaceStore,
     (s) => s.workspace.activePanelId === panelId,
   );
+
   const fullscreen = useStore(trellisFullscreenStore, (s) => s);
 
   useViewTitle(customTitle ?? definition?.title ?? panelId);
@@ -218,10 +242,9 @@ function TrellisTabChrome({
   const panelId = view.params.panelId;
   // Null until the workspace mounts; the accessory only renders after that.
   const ws = useOptionalWorkspace();
-  const instance = useStore(
-    workspaceStore,
-    (s) => s.workspace.panels[panelId],
-  );
+
+  const instance = useStore(workspaceStore, (s) => s.workspace.panels[panelId]);
+
   const locked = useStore(capabilitiesStore, (s) => !s.authenticated);
 
   if (!instance) return null;
@@ -229,12 +252,11 @@ function TrellisTabChrome({
   const definition: AnyWidgetDefinition | undefined = registry.getWidget(
     instance.widgetType,
   );
+
   const label = instance.title ?? definition?.title ?? instance.widgetType;
 
   const openCanvas = (event: { currentTarget: HTMLElement }) => {
-    trellisCanvasOpener.current?.(
-      event.currentTarget.getBoundingClientRect(),
-    );
+    trellisCanvasOpener.current?.(event.currentTarget.getBoundingClientRect());
   };
 
   const openFullscreen = () => {
@@ -250,6 +272,7 @@ function TrellisTabChrome({
   // the emptied group automatically, so any layout nests arbitrarily deep.
   const splitTab = (edge: "right" | "bottom") => {
     if (!ws) return;
+
     try {
       ws.dock(view.id, { beside: view.panelId, edge, share: 0.5 });
     } catch {
@@ -301,7 +324,7 @@ function selectedIndex(
   return index >= 0 ? index : 0;
 }
 
-function toTrellis(node: LayoutNode, workspace: NfiWorkspace): ReactNode {
+function toTrellis(node: LayoutNode): ReactNode {
   switch (node.type) {
     case "panel":
       return (
@@ -330,23 +353,25 @@ function toTrellis(node: LayoutNode, workspace: NfiWorkspace): ReactNode {
           axis={node.direction === "horizontal" ? "x" : "y"}
           weights={[node.ratio, 1 - node.ratio]}
         >
-          {toTrellis(node.first, workspace)}
-          {toTrellis(node.second, workspace)}
+          {toTrellis(node.first)}
+          {toTrellis(node.second)}
         </TrellisSplit>
       );
     case "grid":
       // Legacy grids migrate to auto on load; a grid reaching Trellis is a
       // stale tree — flatten its cells in reading order into a column.
       if (node.items.length === 0) return null;
+
       if (node.items.length === 1 && node.items[0])
-        return toTrellis(node.items[0].child, workspace);
+        return toTrellis(node.items[0].child);
+
       return (
         <TrellisSplit axis="y">
           {[...node.items]
             .sort((a, b) => a.row - b.row || a.col - b.col)
             .map((item) => (
               <TrellisSplit axis="x" key={item.id}>
-                {toTrellis(item.child, workspace)}
+                {toTrellis(item.child)}
               </TrellisSplit>
             ))}
         </TrellisSplit>
@@ -355,9 +380,11 @@ function toTrellis(node: LayoutNode, workspace: NfiWorkspace): ReactNode {
     case "masonry":
     case "auto": {
       const children = node.items.map((item) => item.child);
+
       if (children.length === 0) return null;
-      if (children.length === 1 && children[0])
-        return toTrellis(children[0], workspace);
+
+      if (children.length === 1 && children[0]) return toTrellis(children[0]);
+
       // Bento/masonry/flow cards become Trellis panels in a column — Trellis
       // then owns packing via splits, docking, floating and zoom. Exact
       // persisted card geometry (px height, fractional span) stays in the
@@ -366,7 +393,7 @@ function toTrellis(node: LayoutNode, workspace: NfiWorkspace): ReactNode {
         <TrellisSplit axis="y">
           {node.items.map((item) => (
             <TrellisSplit axis="x" key={item.id}>
-              {toTrellis(item.child, workspace)}
+              {toTrellis(item.child)}
             </TrellisSplit>
           ))}
         </TrellisSplit>
@@ -382,7 +409,7 @@ function toTrellis(node: LayoutNode, workspace: NfiWorkspace): ReactNode {
  * Shape (square tabs, 23px strip, 8px gaps) matches the old tab strip and
  * bento cards; see the `.nfi-trellis` overrides in `styles.css`.
  */
-const NFI_TOKENS: Record<string, string> = {
+const NFI_TOKENS = {
   "--trellis-font": '"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif',
   "--trellis-font-size": "12px",
   "--trellis-bg": "var(--cds-background)",
@@ -406,7 +433,7 @@ const NFI_TOKENS: Record<string, string> = {
   "--trellis-tabbar-height": "23px",
   "--trellis-tab-max-width": "12rem",
   "--trellis-tab-inset": "0px",
-};
+} satisfies Record<string, string>;
 
 /**
  * Store ↔ Trellis bridge. Lives in `Workspace.Chrome` so it can use the
@@ -430,17 +457,23 @@ function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
     let cancelled = false;
     // Surfaces settle a frame after mount; retry briefly if not ready.
     let attempts = 0;
+
     const attempt = () => {
       if (cancelled) return;
+
       try {
         if (Object.keys(panels).length === 0) {
           ws.reset();
+
           return;
         }
+
         const snapshot = ws.getSnapshot();
         const existing = new Set(snapshot.views.map((v) => v.id));
+
         for (const panelId of Object.keys(panels)) {
           const viewId = viewIdForPanel(panelId);
+
           if (!existing.has(viewId)) {
             ws.open("widget", {
               id: viewId,
@@ -449,22 +482,23 @@ function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
             });
           }
         }
+
         for (const view of snapshot.views) {
           if (view.type !== "widget") continue;
-          const params = view.params as Partial<TrellisWidgetParams> | undefined;
-          const panelId =
-            typeof params?.panelId === "string"
-              ? params.panelId
-              : panelIdForViewId(view.id);
+
+          const panelId = panelIdFromTrellisParams(view.params, view.id);
+
           if (panelId && !(panelId in panels)) {
             void ws.close(view.id, { force: true });
           }
         }
       } catch {
         attempts += 1;
+
         if (attempts < 20) window.setTimeout(attempt, 100);
       }
     };
+
     const timer = window.setTimeout(attempt, 0);
 
     return () => {
@@ -506,7 +540,7 @@ export function TrellisWorkspace({
   trellisCanvasOpener.current = onOpenCanvas ?? null;
 
   const initialLayout = useMemo(
-    () => toTrellis(workspace.layout, workspace),
+    () => toTrellis(workspace.layout),
     // The NFI tree can gain/lose its first card while staying on the page
     // (empty ↔ non-empty toggles the fallback below). Trellis itself reads
     // the layout once per mount — the bridge opens later additions.
@@ -560,26 +594,21 @@ export function TrellisWorkspace({
       onFocus={(viewId) => {
         if (viewId === null) return;
         const ws = trellisWsHandle.current;
+
         const params = ws
           ?.getSnapshot()
-          .views.find((v) => v.id === viewId)?.params as
-          | Partial<TrellisWidgetParams>
-          | undefined;
-        const panelId =
-          typeof params?.panelId === "string"
-            ? params.panelId
-            : panelIdForViewId(viewId);
+          .views.find((v) => v.id === viewId)?.params;
+
+        const panelId = panelIdFromTrellisParams(params, viewId);
+
         if (panelId) {
           onActivatePanel(panelId);
           onActivateTab(viewId, panelId);
         }
       }}
       onClose={(view) => {
-        const params = view.params as Partial<TrellisWidgetParams> | undefined;
-        const panelId =
-          typeof params?.panelId === "string"
-            ? params.panelId
-            : panelIdForViewId(view.id);
+        const panelId = panelIdFromTrellisParams(view.params, view.id);
+
         if (panelId && panelId in workspace.panels) onClosePanel(panelId);
       }}
     >
@@ -587,6 +616,9 @@ export function TrellisWorkspace({
         id="widget"
         accessory={(view) => (
           <TrellisTabChrome
+            // SAFETY: this accessory belongs to ViewType id="widget", whose
+            // views are always created with TrellisWidgetParams (initial
+            // layout above plus ws.open in the bridge).
             view={view as ViewApi<TrellisWidgetParams>}
             registry={registry}
           />
@@ -605,9 +637,7 @@ export function TrellisWorkspace({
                   type="button"
                   className="cds--btn cds--btn--secondary cds--btn--sm"
                   onClick={(event) =>
-                    onOpenCanvas(
-                      event.currentTarget.getBoundingClientRect(),
-                    )
+                    onOpenCanvas(event.currentTarget.getBoundingClientRect())
                   }
                 >
                   Add widget
