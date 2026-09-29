@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Store } from "@tanstack/store";
 import { useStore } from "@tanstack/react-store";
 import { Add } from "@carbon/icons-react";
@@ -88,6 +88,11 @@ const trellisCanvasOpener: {
   current: ((anchor: DOMRect | null) => void) | null;
 } = { current: null };
 
+/** Live Trellis handle mirror (set by the Workspace ref callback). */
+const trellisWsHandle: { current: WorkspaceHandle | null } = {
+  current: null,
+};
+
 interface FullscreenRequest {
   panelId: string;
   aspect: number;
@@ -145,6 +150,13 @@ function WidgetView({ registry }: { registry: WidgetRegistry }) {
 
   useViewTitle(customTitle ?? definition?.title ?? panelId);
 
+  // A view without a store panel is stale (a persisted Trellis document
+  // outlived its panel): offer a close that drops the Trellis view itself
+  // instead of the store no-op, so stale tabs are always dismissible.
+  const closeStaleView = () => {
+    void view.close({ force: true });
+  };
+
   if (fullscreen?.panelId === panelId) {
     return (
       <TabFullScreen
@@ -173,7 +185,7 @@ function WidgetView({ registry }: { registry: WidgetRegistry }) {
       focused={focused}
       registry={registry}
       onActivate={activateWorkspacePanel}
-      onClose={guardedClose}
+      onClose={instance ? guardedClose : closeStaleView}
       showHeader={false}
     />
   );
@@ -223,6 +235,18 @@ function TrellisTabChrome({
     }));
   };
 
+  // Fractal splits: tear this tab out beside its own group — Trellis drops
+  // the emptied group automatically, so any layout nests arbitrarily deep.
+  const splitTab = (edge: "right" | "bottom") => {
+    const ws = trellisWsHandle.current;
+    if (!ws) return;
+    try {
+      ws.dock(view.id, { beside: view.panelId, edge, share: 0.5 });
+    } catch {
+      // Unknown ids (stale view): no-op.
+    }
+  };
+
   return (
     <>
       {locked ? null : (
@@ -250,6 +274,8 @@ function TrellisTabChrome({
         onClosePanel={guardedClose}
         onPinPanel={guardedPin}
         onFullScreen={openFullscreen}
+        onSplitRight={locked ? undefined : () => splitTab("right")}
+        onSplitBelow={locked ? undefined : () => splitTab("bottom")}
       />
     </>
   );
@@ -399,6 +425,15 @@ export function TrellisWorkspace({
   // surfaces); Trellis owns its dividers, so both collapse to read-only.
   const readOnly = locked || isSplitLocked;
   const colorTheme = useStore(prefsStore, (s) => s.colorTheme);
+  // Trellis attaches the handle after mount; the tick re-runs the store
+  // bridge below once it exists (the bridge's first run would otherwise
+  // see a null handle and never clean up stale views).
+  const [wsTick, setWsTick] = useState(0);
+  const setWsHandle = (handle: WorkspaceHandle | null) => {
+    wsRef.current = handle;
+    trellisWsHandle.current = handle;
+    setWsTick((tick) => tick + 1);
+  };
 
   trellisCanvasOpener.current = onOpenCanvas ?? null;
 
@@ -410,18 +445,23 @@ export function TrellisWorkspace({
   );
 
   // Bridge store → Trellis: panels opened via the picker/palette/command
-  // (store ops) are opened as Trellis views; panels closed in the store are
-  // closed in Trellis. Trellis-owned moves (drag/split/float) persist via
-  // `storageKey` and need no store round-trip.
+  // (store ops) are opened as Trellis views; Trellis views whose panel is
+  // gone from the store (a persisted document outlived its panels) are
+  // closed. Trellis-owned moves (drag/split/float) persist via `storageKey`
+  // and need no store round-trip.
   useEffect(() => {
-    const ws = wsRef.current;
-    if (!ws) return;
     let cancelled = false;
-    // Wait a frame so Trellis has mounted its initial layout.
-    const timer = window.setTimeout(() => {
+    let attempts = 0;
+    // The handle attaches after mount and surfaces settle a frame later;
+    // retry briefly instead of running once against a null handle.
+    const attempt = () => {
       if (cancelled) return;
       const handle = wsRef.current;
-      if (!handle) return;
+      if (!handle) {
+        attempts += 1;
+        if (attempts < 20) window.setTimeout(attempt, 100);
+        return;
+      }
       try {
         const snapshot = handle.getSnapshot();
         const existing = new Set(snapshot.views.map((v) => v.id));
@@ -449,23 +489,26 @@ export function TrellisWorkspace({
       } catch {
         // Trellis not ready yet — next panels commit retries.
       }
-    }, 0);
+    };
+    const timer = window.setTimeout(attempt, 0);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [workspace.panels]);
+  }, [workspace.panels, wsTick]);
 
   return (
     <Workspace
-      ref={wsRef}
+      ref={setWsHandle}
       theme={CARBON_THEMES_DARK.has(colorTheme) ? "dark" : "light"}
       tokens={NFI_TOKENS}
       tabs={{ fill: false, inset: 0 }}
       navigation="focus"
       storageKey={`nfi-trellis-${activePageId}`}
-      version={1}
+      // v2: v1 persisted documents predate the stale-view cleanup and the
+      // px tab-bar fix — discard them and rebuild from the NFI document.
+      version={2}
       panelMenu={false}
       className="nfi-trellis"
       onFocus={(viewId) => {

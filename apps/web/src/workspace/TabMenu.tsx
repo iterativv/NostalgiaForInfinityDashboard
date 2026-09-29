@@ -5,6 +5,7 @@ import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Button, InlineLoading } from "@carbon/react";
 import {
+  BottomPanelOpen,
   Close,
   Copy,
   Download,
@@ -17,6 +18,7 @@ import {
   PinFilled,
   Restart,
   Settings,
+  SidePanelOpen,
 } from "@carbon/icons-react";
 import { useStore } from "@tanstack/react-store";
 import {
@@ -77,6 +79,8 @@ export function TabActionsMenu({
   onClosePanel,
   onPinPanel,
   onFullScreen,
+  onSplitRight,
+  onSplitBelow,
   triggerClassName = "nfi-tab-menu",
 }: {
   title: string;
@@ -102,6 +106,10 @@ export function TabActionsMenu({
   onPinPanel?: (panelId: string) => void;
   /** Blow the tab up into the full-screen dialog. */
   onFullScreen?: (panelId: string) => void;
+  /** Tear the tab out into a new column to the right of its group. */
+  onSplitRight?: (panelId: string) => void;
+  /** Tear the tab out into a new row below its group. */
+  onSplitBelow?: (panelId: string) => void;
   triggerClassName?: string;
 }) {
   // Menu state in one component store: pinned open + anchor rect.
@@ -296,6 +304,8 @@ export function TabActionsMenu({
       (canInfo ? 1 : 0) +
       (canConfigure ? 1 : 0) +
       (canFullScreen ? 1 : 0) +
+      (onSplitRight ? 1 : 0) +
+      (onSplitBelow ? 1 : 0) +
       (canPin ? 1 : 0) +
       (canClose ? 1 : 0);
 
@@ -498,6 +508,36 @@ export function TabActionsMenu({
                   >
                     <Maximize size={16} />
                     Full screen
+                  </button>
+                ) : null}
+                {onSplitRight ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="nfi-tabmenu-item"
+                    title="Move this tab into a new column to the right — drop targets at any panel edge split the same way"
+                    onClick={() => {
+                      onSplitRight(panelId);
+                      close();
+                    }}
+                  >
+                    <SidePanelOpen size={16} />
+                    Split right (column)
+                  </button>
+                ) : null}
+                {onSplitBelow ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="nfi-tabmenu-item"
+                    title="Move this tab into a new row below — drop targets at any panel edge split the same way"
+                    onClick={() => {
+                      onSplitBelow(panelId);
+                      close();
+                    }}
+                  >
+                    <BottomPanelOpen size={16} />
+                    Split below (row)
                   </button>
                 ) : null}
                 {canPin && onPinPanel ? (
