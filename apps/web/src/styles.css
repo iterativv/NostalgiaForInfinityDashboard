@@ -3241,3 +3241,65 @@ button.nfi-auto-empty:focus-visible {
   gap: 0.5rem;
   font-size: 0.8125rem;
 }
+
+/* --- Trellis workspace, NFI skin ---------------------------------------- */
+
+/* Trellis handles layout only: every visible pixel follows the previous
+   Carbon/NFI style. Colors, font, gaps and radii arrive as workspace
+   tokens (see TrellisWorkspace `NFI_TOKENS`, mapped to `var(--cds-*)` so
+   light themes restyle automatically); the rules below reshape the Trellis
+   chrome into the old tab strip. Trellis ships its selectors inside
+   `:where()` (zero specificity), so these plain selectors win without
+   `!important`. */
+
+/* The strip-height var the "+" and "⋯" buttons size against (same value as
+   the old `.nfi-tabstrip-row`). */
+.nfi-trellis {
+  --nfi-strip-h: 1.4375rem;
+}
+
+/* Tabs: flat, 1px apart, 11px Plex labels like the old `.nfi-tab-button`. */
+.nfi-trellis [data-trellis-part="tabs"] {
+  gap: 1px;
+}
+
+.nfi-trellis [data-trellis-part="tab"] {
+  min-width: 0;
+  padding: 0 0.25rem 0 0.5rem;
+  font-weight: 400;
+}
+
+.nfi-trellis [data-trellis-part="tab-title"] {
+  font-size: 0.6875rem;
+  line-height: 1rem;
+}
+
+/* Active tab: layer-02 fill with the old 2px interactive underline instead
+   of the Trellis top accent + flared corners. */
+.nfi-trellis [data-trellis-part="tab"][data-selected] {
+  background: var(--cds-layer-02);
+  box-shadow: inset 0 -2px 0 var(--cds-border-interactive);
+}
+
+.nfi-trellis [data-trellis-part="tab"][data-selected]::before,
+.nfi-trellis [data-trellis-part="tab"][data-selected]::after {
+  display: none;
+}
+
+/* Accessories ("+" and "⋯") sit on the bar like the old strip's tail. */
+.nfi-trellis [data-trellis-part="accessories"] {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.nfi-trellis [data-trellis-part="accessory"] {
+  display: flex;
+  align-items: stretch;
+}
+
+/* Trellis view content is our `.nfi-panel` (layer-01): no extra padding or
+   background on the wrapper. */
+.nfi-trellis [data-trellis-part="content"] {
+  background: transparent;
+}
