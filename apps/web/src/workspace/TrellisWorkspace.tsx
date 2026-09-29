@@ -364,7 +364,10 @@ const NFI_TOKENS: Record<string, string> = {
   "--trellis-gap": "8px",
   "--trellis-radius": "0px",
   "--trellis-tab-radius": "0px",
-  "--trellis-tabbar-height": "1.4375rem",
+  // NOTE: Trellis reads this token with parseFloat (px assumed) for layout
+  // math — a rem value would collapse the bar to ~1px and hide every tab.
+  // 23px == the old 1.4375rem strip at the default root font size.
+  "--trellis-tabbar-height": "23px",
   "--trellis-tab-max-width": "12rem",
   "--trellis-tab-inset": "0px",
 };
