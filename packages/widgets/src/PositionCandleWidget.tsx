@@ -161,6 +161,16 @@ interface PairBucket {
   readonly newestOpen: number;
 }
 
+/**
+ * Stable empty input for `useDerived(..., bucketByPair)`: an inline
+ * `?? []` would mint a fresh (never-equal) array on every render while the
+ * query is uncached, and `useDerived`'s render-time `setState` would then
+ * re-render forever (page-unresponsive). See `PairUniverseWidget`.
+ */
+const EMPTY_SOURCED_OPEN: ReadonlyArray<SourcedOpenPosition> = [];
+
+const EMPTY_PAIRS: ReadonlyArray<string> = [];
+
 function bucketByPair(
   positions: ReadonlyArray<SourcedOpenPosition>,
 ): PairBucket[] {
@@ -296,7 +306,7 @@ export function PositionCandleWidget({
     enabled: tradesAccess.allowed,
   });
 
-  const buckets = useDerived(openSrc.data ?? [], bucketByPair);
+  const buckets = useDerived(openSrc.data ?? EMPTY_SOURCED_OPEN, bucketByPair);
 
   const pinned = cfg.pair.trim();
 
@@ -500,7 +510,7 @@ export function PositionCandleWidget({
   const lastRsi = cfg.subplot === "rsi" ? lastPlotValue(rsiPlots) : null;
 
   const narrow = useNarrowMode(420);
-  const availablePairs = pairsQ.data?.pairs ?? [];
+  const availablePairs = pairsQ.data?.pairs ?? EMPTY_PAIRS;
 
   const chipOptions: PositionChipOption[] = buckets.map((b) => ({
     key: b.pair,
