@@ -26,6 +26,7 @@ import {
 } from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
+import { COL } from "./shared/columns";
 import { booleanWithDefault } from "./shared/config";
 import { hostOf } from "./shared/format";
 import { InstanceDot, useInstanceColors } from "./shared/instanceColors";
@@ -161,7 +162,7 @@ function buildColumns([
     cfg.showStatus
       ? {
           id: "status",
-          header: "Status",
+          header: COL.connection,
           cell: ({ row }) => <StatusTag instance={row.original} />,
           enableSorting: false,
         }
@@ -169,7 +170,7 @@ function buildColumns([
     cfg.showName
       ? {
           id: "name",
-          header: "Name",
+          header: COL.bot,
           cell: ({ row }) => <InstanceNameCell instance={row.original} />,
           enableSorting: false,
         }
@@ -177,7 +178,7 @@ function buildColumns([
     cfg.showHost
       ? {
           id: "host",
-          header: "Host",
+          header: COL.host,
           cell: ({ row }) => (
             <span title={row.original.baseUrl}>
               {hostOf(row.original.baseUrl)}
@@ -189,7 +190,7 @@ function buildColumns([
     cfg.showState
       ? {
           id: "state",
-          header: "State",
+          header: COL.state,
           cell: ({ row }) => <InstanceStateCell instance={row.original} />,
           enableSorting: false,
         }
@@ -197,7 +198,7 @@ function buildColumns([
     cfg.showStrategy
       ? {
           id: "strategy",
-          header: "Strategy",
+          header: COL.strategy,
           cell: ({ row }) => <InstanceStrategyCell instance={row.original} />,
           enableSorting: false,
         }
@@ -205,7 +206,7 @@ function buildColumns([
     cfg.showOpenCount
       ? {
           id: "openCount",
-          header: "Open",
+          header: COL.openTrades,
           cell: ({ row }) => <OpenCountCell instance={row.original} />,
           enableSorting: false,
         }
@@ -213,7 +214,7 @@ function buildColumns([
     cfg.showClosedProfit
       ? {
           id: "closedProfit",
-          header: "Closed P&L",
+          header: COL.closedProfit,
           cell: ({ row }) => (
             <ProfitTag instance={row.original} kind="closed" />
           ),
@@ -223,7 +224,7 @@ function buildColumns([
     cfg.showAllProfit
       ? {
           id: "allProfit",
-          header: "All P&L",
+          header: COL.totalProfit,
           cell: ({ row }) => <ProfitTag instance={row.original} kind="all" />,
           enableSorting: false,
         }
@@ -231,7 +232,7 @@ function buildColumns([
     cfg.showVersion
       ? {
           id: "version",
-          header: "Version",
+          header: COL.version,
           cell: ({ row }) => <VersionCell instance={row.original} />,
           enableSorting: false,
         }
@@ -279,15 +280,15 @@ export function InstancesTableWidget({
       >
         {(
           [
-            ["showName", "Name"],
-            ["showHost", "Host"],
-            ["showStatus", "Status"],
-            ["showState", "State"],
-            ["showStrategy", "Strategy"],
-            ["showOpenCount", "Open count"],
-            ["showClosedProfit", "Closed profit"],
-            ["showAllProfit", "All profit"],
-            ["showVersion", "Version"],
+            ["showName", COL.bot],
+            ["showHost", COL.host],
+            ["showStatus", COL.connection],
+            ["showState", COL.state],
+            ["showStrategy", COL.strategy],
+            ["showOpenCount", COL.openTrades],
+            ["showClosedProfit", COL.closedProfit],
+            ["showAllProfit", COL.totalProfit],
+            ["showVersion", COL.version],
           ] as const
         ).map(([key, label]) => (
           <SettingsToggle
@@ -339,7 +340,7 @@ export const InstancesTableWidgetDef = defineWidget({
     "instances.profit",
     "instances.open-positions",
   ],
-  minWidth: 1120,
+  minWidth: 720,
   minHeight: 250,
   defaultWidth: 960,
   defaultHeight: 480,

@@ -7,6 +7,7 @@ import { Tab, TabList, Tabs } from "@carbon/react";
 import { capabilitiesStore } from "../../auth/capabilities";
 import { AppShell } from "../../workspace/AppShell";
 import type { RawSearch } from "../../workspace/urlState";
+import { useDocumentTitle } from "../../workspace/useDocumentTitle";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { ConnectionSettings } from "./ConnectionSettings";
 import { InstancesManager } from "../InstancesPage";
@@ -71,6 +72,10 @@ export function SettingsPage() {
     0,
     tabs.findIndex((entry) => entry.id === tab),
   );
+
+  const tabLabel = tabs[index]?.label ?? "Settings";
+
+  useDocumentTitle(`Settings · ${tabLabel} — nfi-desk`);
 
   return (
     <AppShell>

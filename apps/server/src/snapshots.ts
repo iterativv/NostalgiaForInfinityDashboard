@@ -4,6 +4,7 @@
 import { Layer } from "effect";
 import {
   DbConfigLive,
+  SessionRepoLive,
   SnapshotRepoLive,
   SettingsRepoLive,
   SqliteLive,
@@ -46,6 +47,10 @@ const SettingsRepoWithSql = SettingsRepoLive.pipe(
   Layer.provide(SqliteWithConfig),
 );
 
+const SessionRepoWithSql = SessionRepoLive.pipe(
+  Layer.provide(SqliteWithConfig),
+);
+
 export const DbLive = Layer.mergeAll(
   DbConfigLive,
   SqliteWithConfig,
@@ -54,6 +59,7 @@ export const DbLive = Layer.mergeAll(
   InstanceRepoWithSql,
   UserRepoWithSql,
   SettingsRepoWithSql,
+  SessionRepoWithSql,
 );
 
 export const MigrateLive = Layer.effectDiscard(migrate);

@@ -28,6 +28,9 @@ import { queryState, useWidgetAccess } from "./shared/query";
 import { InstanceSelect } from "./shared/InstanceSelect";
 import { useClosedPositionsSource } from "./shared/sources";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
+import { type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
+import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
   closeWidgetSettings,
   useWidgetSettingsOpen,
@@ -64,27 +67,27 @@ interface StrategyRow {
 const COLUMNS: NfiColumnDef<StrategyRow>[] = [
   {
     id: "strategy",
-    header: "Strategy",
+    header: COL.strategy,
     cell: ({ row }) => row.original.strategy,
     enableSorting: false,
   },
   {
     id: "trades",
-    header: "Trades",
+    header: COL.trades,
     cell: ({ row }) => row.original.trades,
     meta: { className: "nfi-mono" },
     enableSorting: false,
   },
   {
     id: "winrate",
-    header: "Winrate",
+    header: COL.winRate,
     cell: ({ row }) => `${row.original.winrate.toFixed(1)}%`,
     meta: { className: "nfi-mono" },
     enableSorting: false,
   },
   {
     id: "profit",
-    header: "Profit",
+    header: COL.totalProfit,
     cell: ({ row }) => (
       <Tag type={row.original.profit >= 0 ? "green" : "red"} size="sm">
         {row.original.profit >= 0 ? "+" : ""}
@@ -160,6 +163,14 @@ export function StrategyBreakdownWidget({
     )
     .sort((a, b) => b.profit - a.profit);
 
+  const exportColumns: ReadonlyArray<ExportColumn<StrategyRow>> = [
+    { header: COL.strategy, value: (r) => r.strategy },
+    { header: COL.trades, value: (r) => r.trades },
+    { header: COL.wins, value: (r) => r.wins },
+    { header: COL.winRate, value: (r) => r.winrate },
+    { header: COL.totalProfit, value: (r) => r.profit },
+  ];
+
   return (
     <>
       <WidgetSettingsModal
@@ -205,13 +216,23 @@ export function StrategyBreakdownWidget({
         error={accessError ?? state.error}
       >
         {rows.length > 0 ? (
-          <div className="nfi-table-scroll">
-            <NfiDataTable
-              columns={COLUMNS}
-              data={rows}
-              getRowId={(row) => row.key}
+          <NfiTableContainer>
+            <NfiTableToolbar
+              label="Strategy breakdown table actions"
+              exportMenu={{
+                filenameBase: `strategy-breakdown-${cfg.instanceId}`,
+                columns: exportColumns,
+                rows,
+              }}
             />
-          </div>
+            <div className="nfi-table-scroll">
+              <NfiDataTable
+                columns={COLUMNS}
+                data={rows}
+                getRowId={(row) => row.key}
+              />
+            </div>
+          </NfiTableContainer>
         ) : (
           <EmptyState
             title="No strategy data"
@@ -232,7 +253,7 @@ export const StrategyBreakdownWidgetDef = defineWidget({
   defaultConfig: STRATEGY_BREAKDOWN_DEFAULTS,
   component: StrategyBreakdownWidget,
   capabilities: [...STRATEGY_BREAKDOWN_CAPABILITIES],
-  minWidth: 500,
+  minWidth: 480,
   minHeight: 170,
   defaultWidth: 480,
   defaultHeight: 340,

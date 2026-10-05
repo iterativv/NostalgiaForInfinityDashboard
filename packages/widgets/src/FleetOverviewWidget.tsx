@@ -27,6 +27,7 @@ import {
 } from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { booleanWithDefault } from "./shared/config";
+import { COL } from "./shared/columns";
 import { fmt, pnlTone } from "./shared/format";
 import {
   InstanceDot,
@@ -60,7 +61,7 @@ function buildColumns([
   const defs: (NfiColumnDef<FleetInstanceSummary> | null)[] = [
     {
       id: "bot",
-      header: "Bot Name",
+      header: COL.bot,
       cell: ({ row }) => {
         const color = colors.colorOf(row.original.id);
 
@@ -105,7 +106,7 @@ function buildColumns([
     },
     {
       id: "trades",
-      header: "Trades",
+      header: COL.trades,
       cell: ({ row }) =>
         row.original.error !== undefined
           ? "—"
@@ -117,7 +118,7 @@ function buildColumns([
     },
     {
       id: "openProfit",
-      header: "Open Profit",
+      header: COL.openProfit,
       cell: ({ row }) =>
         row.original.error !== undefined ? (
           "—"
@@ -134,7 +135,7 @@ function buildColumns([
     },
     {
       id: "closedProfit",
-      header: "Closed Profit",
+      header: COL.closedProfit,
       cell: ({ row }) =>
         row.original.error !== undefined ? (
           "—"
@@ -158,7 +159,7 @@ function buildColumns([
     cfg.showBalance
       ? {
           id: "balance",
-          header: "Balance",
+          header: COL.balance,
           cell: ({ row }) =>
             row.original.totalStake !== undefined
               ? `${fmt(row.original.totalStake, 2)}${
@@ -173,7 +174,7 @@ function buildColumns([
       : null,
     {
       id: "wl",
-      header: "W/L",
+      header: COL.winLoss,
       cell: ({ row }) => (
         <>
           <span className="nfi-pnl-positive">{row.original.wins ?? 0}</span>
@@ -187,7 +188,7 @@ function buildColumns([
     cfg.showVersion
       ? {
           id: "version",
-          header: "Ver",
+          header: COL.version,
           cell: ({ row }) => row.original.version ?? "—",
           meta: { className: "nfi-mono", style: { textAlign: "right" } },
           enableSorting: false,
@@ -241,7 +242,7 @@ export function FleetOverviewWidget({
               tone={pnlTone(data.totals.profitClosedCoin)}
             />
             <Stat
-              label="W/L"
+              label={COL.winLoss}
               value={`${fmt(data.totals.wins, 0)} / ${fmt(data.totals.losses, 0)}`}
             />
             {cfg.showBalance ? (
@@ -282,7 +283,7 @@ export const FleetOverviewWidgetDef = defineWidget({
   defaultConfig: FLEET_OVERVIEW_DEFAULTS,
   component: FleetOverviewWidget,
   capabilities: [...FLEET_OVERVIEW_CAPABILITIES],
-  minWidth: 760,
+  minWidth: 640,
   // Summary tiles + header + two bot rows; more instances scroll vertically.
   minHeight: 170,
   defaultWidth: 640,

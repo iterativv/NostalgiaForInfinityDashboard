@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Search, Tag } from "@carbon/react";
+import { Tag } from "@carbon/react";
 import { useStore, shallow as shallowStore } from "@tanstack/react-store";
 import type { SortingState } from "@tanstack/react-table";
 import { Schema } from "effect";
@@ -34,6 +34,9 @@ import { parseTradeTime, sortOpenPositions, type OpenSortKey, type SortDir } fro
 
 import { SettingsSelect } from "./shared/SettingsSelect";
 import { SettingsToggle } from "./shared/SettingsToggle";
+import { type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
+import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import { useTimeFormat } from "./shared/timeFormat";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
 import {
@@ -89,6 +92,22 @@ const OPEN_TRADES_SORT_DIR: Record<OpenSortKey, SortDir> = {
 
 const EMPTY_POSITIONS: ReadonlyArray<SourcedOpenPosition> = [];
 
+/** Full-row CSV/XLSX columns (all fields, not just the visible set). */
+const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<SourcedOpenPosition>> = [
+  { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
+  { header: COL.tradeId, value: (p) => p.tradeId },
+  { header: COL.pair, value: (p) => p.pair },
+  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
+  { header: COL.stake, value: (p) => p.stakeAmount },
+  { header: COL.openRate, value: (p) => p.openRate },
+  { header: COL.currentRate, value: (p) => p.currentRate },
+  { header: COL.profit, value: (p) => p.profitAbs },
+  { header: COL.profitPct, value: (p) => p.profitPct },
+  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
+  { header: COL.strategy, value: (p) => p.strategy ?? "" },
+  { header: COL.openDate, value: (p) => p.openDate },
+];
+
 /** Column set depends on the row-number toggle, fleet mode + colors. */
 function buildColumns([
   cfg,
@@ -103,7 +122,7 @@ function buildColumns([
     cfg.showRowNumber
       ? {
           id: "no",
-          header: "No.",
+          header: COL.no,
           cell: ({ row }) => row.index + 1,
           meta: { className: "nfi-mono" },
           enableSorting: false,
@@ -111,7 +130,7 @@ function buildColumns([
       : null,
     {
       id: "pair",
-      header: "Pair",
+      header: COL.pair,
       accessorFn: (p) => p.pair,
       sortFn: (a, b) =>
         (a.original.pair ?? "").localeCompare(b.original.pair ?? ""),
@@ -119,7 +138,7 @@ function buildColumns([
     showBotColumn
       ? {
           id: "bot",
-          header: "Bot",
+          header: COL.bot,
           cell: ({ row }) => (
             <InstanceTag
               color={colors.colorOf(
@@ -133,19 +152,19 @@ function buildColumns([
       : null,
     {
       id: "stake",
-      header: "Stake",
+      header: COL.stake,
       accessorFn: (p) => p.stakeAmount,
       cell: ({ row }) => row.original.stakeAmount.toFixed(2),
     },
     {
       id: "open",
-      header: "Open rate",
+      header: COL.openRate,
       cell: ({ row }) => row.original.openRate.toFixed(4),
       enableSorting: false,
     },
     {
       id: "profitPct",
-      header: "Profit %",
+      header: COL.profitPct,
       accessorFn: (p) => p.profitPct ?? 0,
       cell: ({ row }) => (
         <Tag type={(row.original.profitPct ?? 0) >= 0 ? "green" : "red"}>
@@ -155,7 +174,7 @@ function buildColumns([
     },
     {
       id: "openDate",
-      header: "Opened",
+      header: COL.openDate,
       accessorFn: (p) => parseTradeTime(p.openDate),
       cell: ({ row }) => fmtDate(row.original.openDate),
       sortDescFirst: true,
@@ -216,6 +235,12 @@ export function OpenTradesWidget({
     { id: cfg.sortBy, desc: OPEN_TRADES_SORT_DIR[cfg.sortBy] === "desc" },
   ];
 
+  // "Order by" writes widget config — shared by the settings modal and
+  // the table toolbar below.
+  const onSortChange = (id: string): void => {
+    patch({ sortBy: Schema.decodeUnknownSync(OpenTradesSortBy)(id) });
+  };
+
   return (
     <>
       <WidgetSettingsModal
@@ -235,9 +260,7 @@ export function OpenTradesWidget({
           label="Order by"
           items={OPEN_SORT_ITEMS.map((i) => ({ ...i }))}
           value={cfg.sortBy}
-          onChange={(id) =>
-            patch({ sortBy: Schema.decodeUnknownSync(OpenTradesSortBy)(id) })
-          }
+          onChange={onSortChange}
         />
         <SettingsToggle
           id={`open-trades-rowno-${panelId}`}
@@ -257,45 +280,40 @@ export function OpenTradesWidget({
           <div
             style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
           >
-            <div
-              style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}
-            >
-              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
-                <Search
-                  size="sm"
-                  placeholder="Filter pair, bot, strategy…"
-                  labelText="Filter open trades"
-                  value={filter}
-                  onChange={(e) =>
-                    filterStore.setState(() => e.target.value ?? "")
-                  }
-                />
-              </div>
-              <div style={{ flex: "0 0 150px" }}>
-                <SettingsSelect
-                  id={`open-trades-sort-inline-${panelId}`}
-                  label="Order by"
-                  items={OPEN_SORT_ITEMS.map((i) => ({ ...i }))}
-                  value={cfg.sortBy}
-                  onChange={(id) =>
-                    patch({
-                      sortBy: Schema.decodeUnknownSync(OpenTradesSortBy)(id),
-                    })
-                  }
-                />
-              </div>
-            </div>
             {positions.length > 0 ? (
-              <div className="nfi-table-scroll">
-                <NfiDataTable
-                  columns={columns}
-                  data={positions}
-                  getRowId={(p) =>
-                    `${p.instanceId ?? cfg.instanceId}-${p.tradeId}`
-                  }
-                  sorting={sorting}
+              <NfiTableContainer>
+                <NfiTableToolbar
+                  label="Open trades table actions"
+                  search={{
+                    id: `open-trades-filter-${panelId}`,
+                    value: filter,
+                    onChange: (value) => filterStore.setState(() => value),
+                    placeholder: "Filter pair, bot, strategy…",
+                    labelText: "Filter open trades",
+                  }}
+                  orderBy={{
+                    id: `open-trades-sort-inline-${panelId}`,
+                    value: cfg.sortBy,
+                    items: OPEN_SORT_ITEMS.map((i) => ({ ...i })),
+                    onChange: onSortChange,
+                  }}
+                  exportMenu={{
+                    filenameBase: `open-trades-${cfg.instanceId}`,
+                    columns: EXPORT_COLUMNS,
+                    rows: positions,
+                  }}
                 />
-              </div>
+                <div className="nfi-table-scroll">
+                  <NfiDataTable
+                    columns={columns}
+                    data={positions}
+                    getRowId={(p) =>
+                      `${p.instanceId ?? cfg.instanceId}-${p.tradeId}`
+                    }
+                    sorting={sorting}
+                  />
+                </div>
+              </NfiTableContainer>
             ) : (
               <EmptyState
                 title="No matches"

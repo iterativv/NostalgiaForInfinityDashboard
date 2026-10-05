@@ -299,6 +299,6 @@ export const DailyProfitWidgetDef = defineWidget({
   // Stat tiles + toolbar + a readable chart; the chart itself scrolls
   // horizontally for dense buckets instead of forcing a tall card.
   minHeight: 380,
-  defaultWidth: 360,
-  defaultHeight: 220,
+  defaultWidth: 500,
+  defaultHeight: 380,
 });

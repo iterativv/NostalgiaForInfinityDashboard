@@ -337,8 +337,8 @@ export const PairUniverseWidgetDef = defineWidget({
   defaultConfig: PAIR_UNIVERSE_DEFAULTS,
   component: PairUniverseWidget,
   capabilities: [...PAIR_UNIVERSE_CAPABILITIES],
-  minWidth: 1000,
-  minHeight: 500,
+  minWidth: 480,
+  minHeight: 360,
   defaultWidth: 480,
   defaultHeight: 360,
 });

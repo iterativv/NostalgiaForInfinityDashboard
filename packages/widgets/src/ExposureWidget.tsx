@@ -234,6 +234,6 @@ export const ExposureWidgetDef = defineWidget({
   capabilities: [...EXPOSURE_CAPABILITIES],
   minWidth: 370,
   minHeight: 348,
-  defaultWidth: 360,
-  defaultHeight: 260,
+  defaultWidth: 370,
+  defaultHeight: 360,
 });

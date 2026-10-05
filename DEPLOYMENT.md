@@ -215,7 +215,7 @@ If the shell is served cross-origin (advanced setups), set `CORS_ORIGINS` to the
 
 - **What's stored**: one SQLite file — profit/balance snapshots (history charts), users + grants, freqtrade instance credentials, workspaces. Browser-side layout prefs live in the browser's localStorage, not the server.
 - **Backup**: copy the SQLite file (hot copy is fine for a dashboard; `sqlite3 <file> ".backup '<dest>'"` for a consistent snapshot). For Docker: `docker run --rm -v nfi-desk-data:/data -v "$PWD":/backup alpine cp /data/nfi-desk.db /backup/`.
-- **Upgrades**: replace the binary / `docker compose up -d --build`. Schema migrations run on boot and are idempotent; the database is backward-compatible within a minor version. Sessions are in-memory — a restart logs everyone out.
+- **Upgrades**: replace the binary / `docker compose up -d --build`. Schema migrations run on boot and are idempotent; the database is backward-compatible within a minor version. Sessions persist in the same SQLite file (sha256 hashes, sliding 7-day expiry) — a restart or redeploy keeps everyone logged in; only the login-throttle lockouts reset.
 - **Reset a lost setup-created root**: delete the `root` row from the `users` table (`sqlite3 /data/nfi-desk.db 'DELETE FROM users WHERE id = "root"'` — check your file's exact schema) and the first-run setup screen returns.
 
 ## Security notes

@@ -18,7 +18,7 @@
  * expansion revealing more (see SubOrdersTable).
  */
 
-import { NumberInput, Search, Tag } from "@carbon/react";
+import { NumberInput, Tag } from "@carbon/react";
 import { useStore, shallow as shallowStore } from "@tanstack/react-store";
 import type { SortingState } from "@tanstack/react-table";
 import { Schema } from "effect";
@@ -36,6 +36,9 @@ import {
 import type { SourcedOpenPosition } from "./shared/sources";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
+import { type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
+import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
   InstanceIdField,
   booleanWithDefault,
@@ -88,7 +91,7 @@ const ORDER_BY_ITEMS = [
   { id: "pair", text: "Pair (A→Z)" },
   { id: "stake", text: "Stake (largest)" },
   { id: "profitPct", text: "Profit % (best)" },
-  { id: "profitAbs", text: "Profit abs (best)" },
+  { id: "profitAbs", text: "Profit (best)" },
 ] as const;
 
 export const OpenPositionsConfigSchema = Schema.Struct({
@@ -135,7 +138,7 @@ function buildColumns([
     cfg.showRowNumber
       ? {
           id: "no",
-          header: "No.",
+          header: COL.no,
           // Display position under the CURRENT ordering — `row.index` is the
           // data-array position, which sorting can reorder away.
           cell: ({ row }) => row.getDisplayIndex() + 1,
@@ -146,7 +149,7 @@ function buildColumns([
     showBotColumn
       ? {
           id: "bot",
-          header: "Bot",
+          header: COL.bot,
           cell: ({ row }) => (
             <InstanceTag
               color={colors.colorOf(
@@ -161,7 +164,7 @@ function buildColumns([
     cfg.showPair
       ? {
           id: "pair",
-          header: "Pair",
+          header: COL.pair,
           accessorFn: (p) => p.pair,
           sortFn: (a, b) =>
             (a.original.pair ?? "").localeCompare(b.original.pair ?? ""),
@@ -170,7 +173,7 @@ function buildColumns([
     cfg.showDirection
       ? {
           id: "dir",
-          header: "Dir",
+          header: COL.direction,
           cell: ({ row }) => (
             <Tag type={row.original.isShort ? "red" : "green"}>
               {row.original.isShort ? "SHORT" : "LONG"}
@@ -182,7 +185,7 @@ function buildColumns([
     cfg.showLeverage
       ? {
           id: "lev",
-          header: "Lev",
+          header: COL.leverage,
           cell: ({ row }) =>
             row.original.leverage !== undefined
               ? `${row.original.leverage}x`
@@ -193,7 +196,7 @@ function buildColumns([
     cfg.showAmount
       ? {
           id: "amount",
-          header: "Amount",
+          header: COL.amount,
           cell: ({ row }) => row.original.amount,
           enableSorting: false,
         }
@@ -201,7 +204,7 @@ function buildColumns([
     cfg.showStake
       ? {
           id: "stake",
-          header: "Stake",
+          header: COL.stake,
           accessorFn: (p) => p.stakeAmount,
           cell: ({ row }) => row.original.stakeAmount.toFixed(2),
           meta: { className: "nfi-mono" },
@@ -210,7 +213,7 @@ function buildColumns([
     cfg.showOpenRate
       ? {
           id: "open",
-          header: "Open",
+          header: COL.openRate,
           cell: ({ row }) => fmt(row.original.openRate, 4),
           meta: { className: "nfi-mono" },
           enableSorting: false,
@@ -219,7 +222,7 @@ function buildColumns([
     cfg.showCurrentRate
       ? {
           id: "current",
-          header: "Current",
+          header: COL.currentRate,
           cell: ({ row }) => fmt(row.original.currentRate, 4),
           meta: { className: "nfi-mono" },
           enableSorting: false,
@@ -228,7 +231,7 @@ function buildColumns([
     cfg.showProfitAbs
       ? {
           id: "profitAbs",
-          header: "PnL",
+          header: COL.profit,
           accessorFn: (p) => p.profitAbs ?? 0,
           cell: ({ row }) => (
             <span className={pnlClass(row.original.profitAbs)}>
@@ -241,7 +244,7 @@ function buildColumns([
     cfg.showProfitPct
       ? {
           id: "profitPct",
-          header: "PnL %",
+          header: COL.profitPct,
           accessorFn: (p) => p.profitPct ?? 0,
           cell: ({ row }) => (
             <PnlPill
@@ -255,7 +258,7 @@ function buildColumns([
     cfg.showEnterTag
       ? {
           id: "tag",
-          header: "Tag",
+          header: COL.enterTag,
           cell: ({ row }) => row.original.enterTag?.trim() || "—",
           enableSorting: false,
         }
@@ -263,7 +266,7 @@ function buildColumns([
     cfg.showStrategy
       ? {
           id: "strategy",
-          header: "Strategy",
+          header: COL.strategy,
           cell: ({ row }) => row.original.strategy ?? "—",
           enableSorting: false,
         }
@@ -271,7 +274,7 @@ function buildColumns([
     cfg.showOpenDate
       ? {
           id: "openDate",
-          header: "Opened",
+          header: COL.openDate,
           accessorFn: (p) => parseTradeTime(p.openDate),
           cell: ({ row }) => fmtDate(row.original.openDate),
           sortDescFirst: true,
@@ -283,6 +286,24 @@ function buildColumns([
 }
 
 const EMPTY_POSITIONS: ReadonlyArray<SourcedOpenPosition> = [];
+
+/** Full-row CSV/XLSX columns (all fields, not just the visible set). */
+const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<SourcedOpenPosition>> = [
+  { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
+  { header: COL.tradeId, value: (p) => p.tradeId },
+  { header: COL.pair, value: (p) => p.pair },
+  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
+  { header: COL.leverage, value: (p) => p.leverage },
+  { header: COL.amount, value: (p) => p.amount },
+  { header: COL.stake, value: (p) => p.stakeAmount },
+  { header: COL.openRate, value: (p) => p.openRate },
+  { header: COL.currentRate, value: (p) => p.currentRate },
+  { header: COL.profit, value: (p) => p.profitAbs },
+  { header: COL.profitPct, value: (p) => p.profitPct },
+  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
+  { header: COL.strategy, value: (p) => p.strategy ?? "" },
+  { header: COL.openDate, value: (p) => p.openDate },
+];
 
 export function OpenPositionsWidget({
   config,
@@ -349,6 +370,14 @@ export function OpenPositionsWidget({
     },
   ];
 
+  // "Order by" writes widget config — shared by the settings modal and
+  // the table toolbar below.
+  const onSortChange = (id: string): void => {
+    patch({
+      sortBy: Schema.decodeUnknownSync(OpenPositionsSortBy)(id),
+    });
+  };
+
   return (
     <>
       <WidgetSettingsModal
@@ -380,11 +409,7 @@ export function OpenPositionsWidget({
           label="Order by"
           items={ORDER_BY_ITEMS.map((item) => ({ ...item }))}
           value={cfg.sortBy}
-          onChange={(id) =>
-            patch({
-              sortBy: Schema.decodeUnknownSync(OpenPositionsSortBy)(id),
-            })
-          }
+          onChange={onSortChange}
         />
         <div className="nfi-settings-toggles">
           {(
@@ -398,7 +423,7 @@ export function OpenPositionsWidget({
               ["showStake", "Stake"],
               ["showOpenRate", "Open rate"],
               ["showCurrentRate", "Current rate"],
-              ["showProfitAbs", "Profit abs"],
+              ["showProfitAbs", COL.profit],
               ["showProfitPct", "Profit %"],
               ["showEnterTag", "Enter tag"],
               ["showStrategy", "Strategy"],
@@ -424,53 +449,48 @@ export function OpenPositionsWidget({
           <div
             style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
           >
-            <div
-              style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}
-            >
-              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
-                <Search
-                  size="sm"
-                  placeholder="Filter pair, bot, strategy…"
-                  labelText="Filter open positions"
-                  value={filter}
-                  onChange={(e) =>
-                    filterStore.setState(() => e.target.value ?? "")
-                  }
-                />
-              </div>
-              <div style={{ flex: "0 0 170px" }}>
-                <SettingsSelect
-                  id={`pos-sort-inline-${panelId}`}
-                  label="Order by"
-                  items={ORDER_BY_ITEMS.map((item) => ({ ...item }))}
-                  value={cfg.sortBy}
-                  onChange={(id) =>
-                    patch({
-                      sortBy: Schema.decodeUnknownSync(OpenPositionsSortBy)(id),
-                    })
-                  }
-                />
-              </div>
-            </div>
             {positions.length > 0 ? (
-              <div className="nfi-table-scroll">
-                <NfiDataTable
-                  columns={columns}
-                  data={positions}
-                  getRowId={(p) =>
-                    `${p.instanceId ?? cfg.instanceId}-${p.tradeId}`
-                  }
-                  sorting={sorting}
-                  renderExpandedRow={(row) => (
-                    <SubOrdersTable
-                      rowKey={row.id}
-                      orders={row.original.orders ?? []}
-                      initiallyVisible={maxVisible}
-                    />
-                  )}
-                  defaultExpanded
+              <NfiTableContainer>
+                <NfiTableToolbar
+                  label="Open positions table actions"
+                  search={{
+                    id: `pos-filter-${panelId}`,
+                    value: filter,
+                    onChange: (value) => filterStore.setState(() => value),
+                    placeholder: "Filter pair, bot, strategy…",
+                    labelText: "Filter open positions",
+                  }}
+                  orderBy={{
+                    id: `pos-sort-inline-${panelId}`,
+                    value: cfg.sortBy,
+                    items: ORDER_BY_ITEMS.map((item) => ({ ...item })),
+                    onChange: onSortChange,
+                  }}
+                  exportMenu={{
+                    filenameBase: `open-positions-${cfg.instanceId}`,
+                    columns: EXPORT_COLUMNS,
+                    rows: positions,
+                  }}
                 />
-              </div>
+                <div className="nfi-table-scroll">
+                  <NfiDataTable
+                    columns={columns}
+                    data={positions}
+                    getRowId={(p) =>
+                      `${p.instanceId ?? cfg.instanceId}-${p.tradeId}`
+                    }
+                    sorting={sorting}
+                    renderExpandedRow={(row) => (
+                      <SubOrdersTable
+                        rowKey={row.id}
+                        orders={row.original.orders ?? []}
+                        initiallyVisible={maxVisible}
+                      />
+                    )}
+                    defaultExpanded
+                  />
+                </div>
+              </NfiTableContainer>
             ) : (
               <EmptyState
                 title="No matches"
@@ -503,12 +523,12 @@ export const OpenPositionsWidgetDef = defineWidget({
     "instances.health",
     "instances.positions-all",
   ],
-  // Width floor covers the dashboard-column set (bot, pair, dir, amount,
-  // stake, open, current, pnl%, opened) plus the expander column at its
-  // intrinsic content width so the table never needs a horizontal
-  // scrollbar; height pins chrome + header + a few readable rows — longer
-  // fleets scroll vertically.
-  minWidth: 1020,
+  // Width floor keeps the core dashboard columns (pair, dir, pnl%,
+  // opened) readable without scrolling; wider column sets scroll
+  // horizontally inside `.nfi-table-scroll` instead of tripping the
+  // too-small wall, so side-by-side cells stay usable. Height pins chrome
+  // + header + a few readable rows — longer fleets scroll vertically.
+  minWidth: 720,
   minHeight: 300,
   defaultWidth: 1000,
   defaultHeight: 460,

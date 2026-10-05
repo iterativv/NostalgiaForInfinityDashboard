@@ -230,6 +230,14 @@ export function NfiDataTable<TData extends RowData>({
     getRowId,
     enableSorting: headerSort || sorting !== undefined,
     state: controlledState,
+    // Expansion is owned by the component store above (keyed by stable row
+    // ids, deliberately surviving data refreshes) — never let TanStack's
+    // data-change auto-reset wipe user toggles. Without this, a caller
+    // passing a fresh data array every render gets its expansion reset on
+    // every render: the toggle writes the store, the next render rebuilds
+    // the row model and resets it back, so chevrons appear dead (and the
+    // reset → notify → render cycle can pin the main thread).
+    autoResetExpanded: false,
   };
 
   if (renderExpandedRow) {

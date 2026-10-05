@@ -133,7 +133,7 @@ export const SessionClockWidgetDef = defineWidget({
   defaultConfig: {},
   component: SessionClockWidget,
   capabilities: [],
-  minWidth: 370,
+  minWidth: 360,
   minHeight: 162,
   defaultWidth: 360,
   defaultHeight: 220,

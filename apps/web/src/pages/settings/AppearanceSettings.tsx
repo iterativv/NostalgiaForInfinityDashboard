@@ -18,9 +18,12 @@ import {
   setAccentColor,
   setColorTheme,
   setDisableWidgetMinSize,
+  setHighContrast,
 } from "../../store";
 import {
   TIME_FORMAT_ITEMS,
+  colorBlindStore,
+  setColorBlindSafe,
   setTimeFormat,
   timeFormatStore,
   type TimeFormatId,
@@ -45,6 +48,10 @@ export function AppearanceSettings() {
     prefsStore,
     (state) => state.disableWidgetMinSize,
   );
+
+  const colorBlindSafe = useStore(colorBlindStore, (enabled) => enabled);
+
+  const highContrast = useStore(prefsStore, (state) => state.highContrast);
 
   const swatchStyle = (color: string): CSSProperties => ({
     display: "inline-block",
@@ -137,6 +144,22 @@ export function AppearanceSettings() {
           toggled={disableWidgetMinSize}
           onToggle={(checked) => setDisableWidgetMinSize(checked)}
         />
+        <Toggle
+          id="pref-colorblind-safe"
+          labelText="Color-blind safe palette"
+          labelA="Standard red/green semantics"
+          labelB="Blue/orange color-blind safe"
+          toggled={colorBlindSafe}
+          onToggle={(checked) => setColorBlindSafe(checked)}
+        />
+        <Toggle
+          id="pref-high-contrast"
+          labelText="High contrast theme"
+          labelA="Standard Carbon surfaces"
+          labelB="Pure black/white, stronger borders"
+          toggled={highContrast}
+          onToggle={(checked) => setHighContrast(checked)}
+        />
       </div>
       <p style={{ fontSize: "0.875rem", opacity: 0.7 }}>
         Themes and colors follow the IBM Carbon Design System. The time format
@@ -144,7 +167,9 @@ export function AppearanceSettings() {
         trades, locks, tape, chart legends and clocks all re-render the moment
         it changes. Disabling minimum dimensions lets cards and windows shrink
         below a widget&apos;s readable size — content is never clamped or
-        scaled, so very small cells may clip.
+        scaled, so very small cells may clip. The color-blind safe palette
+        swaps red/green semantics (PnL, pills, tags, candles, instance
+        colors) for blue/orange throughout the desk.
       </p>
     </div>
   );

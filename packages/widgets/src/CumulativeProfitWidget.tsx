@@ -258,6 +258,6 @@ export const CumulativeProfitWidgetDef = defineWidget({
   ],
   minWidth: 450,
   minHeight: 300,
-  defaultWidth: 360,
-  defaultHeight: 220,
+  defaultWidth: 450,
+  defaultHeight: 300,
 });

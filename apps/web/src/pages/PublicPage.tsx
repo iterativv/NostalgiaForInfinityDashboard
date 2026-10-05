@@ -5,6 +5,7 @@ import { useCapability } from "../capabilities/live";
 import { Schema } from "effect";
 import { PanelId } from "@nfi/api-contract";
 import { RELATIVE_BALANCE_DEFAULTS, RelativeBalanceWidget } from "@nfi/widgets";
+import { useDocumentTitle } from "../workspace/useDocumentTitle";
 import {
   RELATIVE_EQUITY_DEFAULTS,
   RelativeEquityWidget,
@@ -27,6 +28,8 @@ export function PublicPage() {
   // Capability gate for the whole page: without the relative grant the
   // widgets render their unauthorized state instead of streaming.
   const gate = useCapability("bot.profit.relative", {});
+
+  useDocumentTitle("Shared performance — nfi-desk");
 
   return (
     <div

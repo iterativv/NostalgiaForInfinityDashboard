@@ -27,6 +27,7 @@ import { UserMenu, ViewAsBanner } from "./UserMenu";
 import { buildCommands } from "./commands";
 import { WorkspaceRenderer } from "./WorkspaceRenderer";
 import { WidgetPicker } from "./WidgetPicker";
+import { clearPendingSlotTarget, GridPresetsHeaderButton } from "./TrellisPresets";
 import { AddPageDialog } from "./AddPageDialog";
 import { PagesBar } from "./PagesBar";
 import { PageShareMenu } from "./PageShareMenu";
@@ -38,6 +39,7 @@ import { WidgetCtaContext } from "@nfi/ui";
 import { consumeTerminalIntent } from "./terminalIntent";
 import { openInstanceConnections } from "./credentialsFix";
 import { buildPositionSearch } from "./urlState";
+import { useDocumentTitle } from "./useDocumentTitle";
 import { HOME_PAGE_ID, isHomePageId } from "./pages";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
 import {
@@ -202,9 +204,17 @@ export function AppShell({
   );
 
   // Preview page visibility for the view-as target (their configured list,
-  // else every page). Null while loading or when previewing self.
-  const previewVisibleStore = useLocalStore<ReadonlyArray<string> | null>(null);
-  const previewVisible = useStore(previewVisibleStore, (s) => s);
+  // else every page). Null while loading or when previewing self. The
+  // landing id steers the auto-switch below so edits land on the page the
+  // target actually sees — otherwise an admin can arrange a hidden page,
+  // hit Save, and the other user keeps seeing the old layout (looks like
+  // the save failed).
+  const previewVisibleStore = useLocalStore<{
+    visible: ReadonlyArray<string> | null;
+    landing: string | null;
+  } | null>(null);
+
+  const previewVisible = useStore(previewVisibleStore, (s) => s?.visible ?? null);
 
   useStoreEffect(() => {
     if (viewAsTarget === null) {
@@ -214,17 +224,44 @@ export function AppShell({
     }
 
     let cancelled = false;
+    previewVisibleStore.setState(() => null);
     void fetchPageDefaultsFor(viewAsTarget).then((scoped) => {
       if (!cancelled)
-        previewVisibleStore.setState(
-          () => scoped?.defaults?.visiblePageIds ?? null,
-        );
+        previewVisibleStore.setState(() => ({
+          visible: scoped?.defaults?.visiblePageIds ?? null,
+          landing:
+            scoped?.defaults?.defaultPageId ??
+            scoped?.globalDefaultPageId ??
+            null,
+        }));
     });
 
     return () => {
       cancelled = true;
     };
   }, [viewAsTarget]);
+
+  // While previewing, keep the active page on one the target can see: when
+  // the scoped defaults arrive (or the preview starts) and the current page
+  // is hidden from them, jump to their landing (else Home). Without this the
+  // canvas edits a page the other user never loads, so Save appears broken.
+  useStoreEffect(() => {
+    if (viewAsTarget === null) return;
+    const scoped = previewVisibleStore.state;
+
+    if (scoped === null) return;
+    const current = workspaceStore.state.activePageId;
+
+    if (scoped.visible !== null && !scoped.visible.includes(current)) {
+      const fallback = scoped.landing ?? HOME_PAGE_ID;
+
+      if (workspaceStore.state.pages.some((p) => p.id === fallback)) {
+        switchActivePage(fallback);
+      } else {
+        switchActivePage(HOME_PAGE_ID);
+      }
+    }
+  }, [viewAsTarget, previewVisible]);
 
   useStoreEffect(() => {
     // Boot order matters: the grant first, then page defaults (landing page
@@ -404,6 +441,11 @@ export function AppShell({
   const activePageName =
     pages.find((page) => page.id === activePageId)?.name ?? workspace.name;
 
+  // Browser tab follows the terminal's active page (`Home — nfi-desk`);
+  // off-terminal routes render inside this shell via `children` and own
+  // their title (Settings, …), so the shell stays out of their way there.
+  useDocumentTitle(onTerminal && !children ? `${activePageName} — nfi-desk` : null);
+
   const openPalette = () => {
     overlayStore.setState((p) => ({
       ...p,
@@ -487,6 +529,12 @@ export function AppShell({
             locked={readOnly}
           />
           <div className="nfi-topbar-actions">
+            {/* Global layout action (page scope, not per-tab): hidden off
+                the terminal where no Trellis workspace is mounted, and for
+                read-only visitors who must not rewrite layouts. */}
+            {readOnly || !onTerminal ? null : (
+              <GridPresetsHeaderButton activePageId={activePageId} />
+            )}
             {readOnly ? null : (
               <button
                 type="button"
@@ -592,9 +640,12 @@ export function AppShell({
             openWidgetTypes={pickerOpenTypes}
             anchor={pickerFor.anchor}
             onPick={pickWidget}
-            onClose={() =>
-              overlayStore.setState((p) => ({ ...p, pickerFor: null }))
-            }
+            onClose={() => {
+              // Dismissed without a pick — a pending slot target dies here
+              // so it can never hijack an unrelated later add.
+              clearPendingSlotTarget();
+              overlayStore.setState((p) => ({ ...p, pickerFor: null }));
+            }}
           />
         ) : null}
         {addPageOpen ? (

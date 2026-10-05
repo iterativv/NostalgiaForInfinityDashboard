@@ -32,6 +32,9 @@ import {
   type SourcedOpenPosition,
 } from "./shared/sources";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
+import { type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
+import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
   closeWidgetSettings,
   useWidgetSettingsOpen,
@@ -59,7 +62,7 @@ function buildColumns([
   const defs: (NfiColumnDef<SourcedOpenPosition> | null)[] = [
     {
       id: "pair",
-      header: "Pair",
+      header: COL.pair,
       cell: ({ row }) => row.original.pair,
       meta: { className: "nfi-mono" },
       enableSorting: false,
@@ -67,7 +70,7 @@ function buildColumns([
     showBot
       ? {
           id: "bot",
-          header: "Bot",
+          header: COL.bot,
           cell: ({ row }) =>
             row.original.instanceName ?? row.original.instanceId,
           enableSorting: false,
@@ -75,7 +78,7 @@ function buildColumns([
       : null,
     {
       id: "profitPct",
-      header: "PnL %",
+      header: COL.profitPct,
       cell: ({ row }) => (
         <Tag
           type={(row.original.profitPct ?? 0) >= 0 ? "green" : "red"}
@@ -88,7 +91,7 @@ function buildColumns([
     },
     {
       id: "profitAbs",
-      header: "PnL",
+      header: COL.profit,
       cell: ({ row }) => (
         <span className={`nfi-mono ${pnlClass(row.original.profitAbs)}`}>
           {fmt(row.original.profitAbs, 2)}
@@ -151,6 +154,21 @@ export function MarketMoversWidget({
     inputs: shallowStore,
   });
 
+  const exportColumns: ReadonlyArray<ExportColumn<SourcedOpenPosition>> = [
+    { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
+    { header: COL.pair, value: (p) => p.pair },
+    { header: COL.profitPct, value: (p) => p.profitPct },
+    { header: COL.profit, value: (p) => p.profitAbs },
+    { header: COL.stake, value: (p) => p.stakeAmount },
+    { header: COL.openDate, value: (p) => p.openDate },
+  ];
+
+  const exportRows = useDerived(
+    [gainers, losers] as const,
+    ([gainers, losers]) => [...gainers, ...losers],
+    { inputs: shallowStore },
+  );
+
   const section = (title: string, rows: typeof gainers) => (
     <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
       <span
@@ -210,10 +228,20 @@ export function MarketMoversWidget({
         isLoading={state.isLoading}
         error={accessError ?? state.error}
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          {section("Gainers", gainers)}
-          {section("Losers", losers)}
-        </div>
+        <NfiTableContainer>
+          <NfiTableToolbar
+            label="Market movers table actions"
+            exportMenu={{
+              filenameBase: `market-movers-${cfg.instanceId}`,
+              columns: exportColumns,
+              rows: exportRows,
+            }}
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {section("Gainers", gainers)}
+            {section("Losers", losers)}
+          </div>
+        </NfiTableContainer>
       </WidgetFrame>
     </>
   );
@@ -223,7 +251,7 @@ export const MarketMoversWidgetDef = defineWidget({
   type: "market-movers",
   hasSettings: true,
   title: "Market Movers",
-  description: "Top gaining and losing open positions by PnL%.",
+  description: "Top gaining and losing open positions by profit %.",
   configSchema: MarketMoversConfigSchema,
   defaultConfig: MARKET_MOVERS_DEFAULTS,
   component: MarketMoversWidget,

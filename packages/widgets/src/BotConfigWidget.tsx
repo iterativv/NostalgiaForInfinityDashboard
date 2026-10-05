@@ -117,7 +117,7 @@ export const BotConfigWidgetDef = defineWidget({
   defaultConfig: BOT_CONFIG_DEFAULTS,
   component: BotConfigWidget,
   capabilities: [...BOT_CONFIG_CAPABILITIES],
-  minWidth: 1020,
+  minWidth: 440,
   minHeight: 130,
   defaultWidth: 480,
   defaultHeight: 420,

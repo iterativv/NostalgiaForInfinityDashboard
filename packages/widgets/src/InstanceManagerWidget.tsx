@@ -494,7 +494,7 @@ export const InstanceManagerWidgetDef = defineWidget({
     "instances.remove",
   ],
   minWidth: 370,
-  minHeight: 561,
+  minHeight: 480,
   defaultWidth: 480,
-  defaultHeight: 520,
+  defaultHeight: 580,
 });

@@ -25,6 +25,7 @@ import {
   type NfiColumnDef,
 } from "@nfi/ui";
 import { applyWidgetSettings } from "./shared/panelConfig";
+import { COL } from "./shared/columns";
 import {
   InstanceIdField,
   booleanWithDefault,
@@ -82,7 +83,7 @@ function buildColumns([
   return [
     {
       id: "pair",
-      header: "Pair",
+      header: COL.pair,
       cell: ({ row }) => (
         <>
           {row.original.pair}
@@ -99,7 +100,7 @@ function buildColumns([
     },
     {
       id: "state",
-      header: "State",
+      header: COL.position,
       cell: ({ row }) =>
         row.original.open ? (
           <Tag type="green" size="sm">
@@ -114,7 +115,7 @@ function buildColumns([
     },
     {
       id: "price",
-      header: "Price",
+      header: COL.currentRate,
       cell: ({ row }) =>
         row.original.open
           ? fmt(row.original.open.currentRate ?? row.original.open.openRate, 4)
@@ -124,7 +125,7 @@ function buildColumns([
     },
     {
       id: "pnlPct",
-      header: "PnL %",
+      header: COL.profitPct,
       cell: ({ row }) =>
         row.original.open ? (
           <Tag

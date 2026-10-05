@@ -175,6 +175,6 @@ export const RelativeEquityWidgetDef = defineWidget({
   capabilities: ["instances.profit-history-all.relative"],
   minWidth: 700,
   minHeight: 400,
-  defaultWidth: 640,
+  defaultWidth: 700,
   defaultHeight: 420,
 });

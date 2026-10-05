@@ -20,6 +20,7 @@ import { ChevronDown } from "@carbon/icons-react";
 import type { TradeOrder } from "@nfi/api-contract";
 import { NfiDataTable, useLocalStore, type NfiColumnDef } from "@nfi/ui";
 import { fmt, orderDate } from "./format";
+import { COL } from "./columns";
 
 /** How many older sub-orders one "Load older" click reveals. */
 const LOAD_STEP = 10;
@@ -45,20 +46,20 @@ const sideClass = (side: string | undefined): string => {
 const COLUMNS: NfiColumnDef<TradeOrder>[] = [
   {
     id: "no",
-    header: "No.",
+    header: COL.no,
     cell: ({ row }) => row.index + 1,
     meta: { className: "nfi-mono" },
     enableSorting: false,
   },
   {
     id: "date",
-    header: "Date",
+    header: COL.date,
     cell: ({ row }) => orderDate(row.original.timestamp),
     enableSorting: false,
   },
   {
     id: "side",
-    header: "Side",
+    header: COL.side,
     cell: ({ row }) => (
       <span className={`nfi-mono ${sideClass(row.original.side)}`}>
         {(row.original.side ?? "?").toUpperCase()}
@@ -68,60 +69,60 @@ const COLUMNS: NfiColumnDef<TradeOrder>[] = [
   },
   {
     id: "type",
-    header: "Type",
+    header: COL.orderType,
     cell: ({ row }) => row.original.type ?? "—",
     enableSorting: false,
   },
   {
     id: "status",
-    header: "Status",
+    header: COL.status,
     cell: ({ row }) => row.original.status ?? "—",
     enableSorting: false,
   },
   {
     id: "price",
-    header: "Price",
+    header: COL.price,
     cell: ({ row }) => fmt(row.original.price, 8),
     meta: { className: "nfi-mono" },
     enableSorting: false,
   },
   {
     id: "amount",
-    header: "Amount",
+    header: COL.amount,
     cell: ({ row }) => fmt(row.original.amount, 8),
     meta: { className: "nfi-mono" },
     enableSorting: false,
   },
   {
     id: "filled",
-    header: "Filled",
+    header: COL.filled,
     cell: ({ row }) => fmt(row.original.filled, 8),
     meta: { className: "nfi-mono" },
     enableSorting: false,
   },
   {
     id: "remaining",
-    header: "Remaining",
+    header: COL.remaining,
     cell: ({ row }) => fmt(row.original.remaining, 8),
     meta: { className: "nfi-mono" },
     enableSorting: false,
   },
   {
     id: "cost",
-    header: "Cost",
+    header: COL.cost,
     cell: ({ row }) => fmt(row.original.cost, 2),
     meta: { className: "nfi-mono" },
     enableSorting: false,
   },
   {
     id: "tag",
-    header: "Tag",
+    header: COL.orderTag,
     cell: ({ row }) => row.original.tag?.trim() || "—",
     enableSorting: false,
   },
   {
     id: "role",
-    header: "Role",
+    header: COL.role,
     cell: ({ row }) =>
       row.original.isEntry === undefined
         ? "—"
@@ -130,7 +131,7 @@ const COLUMNS: NfiColumnDef<TradeOrder>[] = [
   },
   {
     id: "orderId",
-    header: "Order ID",
+    header: COL.orderId,
     cell: ({ row }) => (
       <span className="nfi-mono nfi-suborders-id" title={row.original.orderId}>
         {row.original.orderId}
@@ -178,6 +179,8 @@ export function SubOrdersTable({
           columns={COLUMNS}
           data={shown}
           getRowId={(order) => `${rowKey}-${order.orderId}`}
+          size="sm"
+          className="nfi-suborders-table"
           footerRow={
             hidden > 0
               ? (colSpan) => (

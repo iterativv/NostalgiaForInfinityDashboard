@@ -213,6 +213,6 @@ export const FedRateWidgetDef = defineWidget({
   capabilities: [...FED_RATE_CAPABILITIES],
   minWidth: 600,
   minHeight: 340,
-  defaultWidth: 360,
-  defaultHeight: 260,
+  defaultWidth: 600,
+  defaultHeight: 340,
 });

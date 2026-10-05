@@ -36,6 +36,9 @@ import { SettingsSelect } from "./shared/SettingsSelect";
 import { useClosedPositionsSource } from "./shared/sources";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
+import { type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
+import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
   closeWidgetSettings,
   useWidgetSettingsOpen,
@@ -47,11 +50,11 @@ export const PAIR_SUMMARY_CAPABILITIES: ReadonlyArray<Capability> = [
 ];
 
 const SORTS = [
-  { id: "profitAbs", text: "Net profit" },
-  { id: "trades", text: "Trades" },
-  { id: "winrate", text: "Win rate" },
-  { id: "profitPctAvg", text: "Avg %" },
-  { id: "pair", text: "Pair" },
+  { id: "profitAbs", text: COL.totalProfit },
+  { id: "trades", text: COL.trades },
+  { id: "winrate", text: COL.winRate },
+  { id: "profitPctAvg", text: COL.avgPct },
+  { id: "pair", text: COL.pair },
 ] as const;
 
 const SortBySchema = Schema.Literal(...SORTS.map((sort) => sort.id));
@@ -103,14 +106,14 @@ function buildColumns([showWinrate, showAvgPct]: readonly [
   const defs: (NfiColumnDef<PairRow> | null)[] = [
     {
       id: "pair",
-      header: "Pair",
+      header: COL.pair,
       cell: ({ row }) => row.original.pair,
       meta: { className: "nfi-mono" },
       enableSorting: false,
     },
     {
       id: "trades",
-      header: () => <span style={RIGHT_ALIGN}>Trades</span>,
+      header: () => <span style={RIGHT_ALIGN}>{COL.trades}</span>,
       cell: ({ row }) => (
         <span style={RIGHT_ALIGN}>
           {row.original.trades}
@@ -126,7 +129,7 @@ function buildColumns([showWinrate, showAvgPct]: readonly [
     showWinrate
       ? {
           id: "winrate",
-          header: () => <span style={RIGHT_ALIGN}>Win rate</span>,
+          header: () => <span style={RIGHT_ALIGN}>{COL.winRate}</span>,
           cell: ({ row }) => (
             <span style={RIGHT_ALIGN}>
               {(row.original.winrate * 100).toFixed(1)}%
@@ -138,7 +141,7 @@ function buildColumns([showWinrate, showAvgPct]: readonly [
       : null,
     {
       id: "profitAbs",
-      header: () => <span style={RIGHT_ALIGN}>Net profit</span>,
+      header: () => <span style={RIGHT_ALIGN}>{COL.totalProfit}</span>,
       cell: ({ row }) => (
         <span style={RIGHT_ALIGN}>
           <span className={pnlClass(row.original.profitAbs)}>
@@ -152,7 +155,7 @@ function buildColumns([showWinrate, showAvgPct]: readonly [
     showAvgPct
       ? {
           id: "avgPct",
-          header: () => <span style={RIGHT_ALIGN}>Avg %</span>,
+          header: () => <span style={RIGHT_ALIGN}>{COL.avgPct}</span>,
           cell: ({ row }) => (
             <span style={RIGHT_ALIGN}>
               <span className={pnlClass(row.original.profitPctAvg)}>
@@ -278,6 +281,16 @@ export function PairSummaryWidget({
     { inputs: shallow },
   );
 
+  const exportColumns: ReadonlyArray<ExportColumn<PairRow>> = [
+    { header: COL.pair, value: (r) => r.pair },
+    { header: COL.trades, value: (r) => r.trades },
+    { header: COL.wins, value: (r) => r.wins },
+    { header: COL.losses, value: (r) => r.losses },
+    { header: COL.winRate, value: (r) => r.winrate },
+    { header: COL.totalProfit, value: (r) => r.profitAbs },
+    { header: COL.avgPct, value: (r) => r.profitPctAvg },
+  ];
+
   return (
     <>
       <WidgetSettingsModal
@@ -349,7 +362,7 @@ export function PairSummaryWidget({
           >
             <div className="nfi-stat-grid">
               <Stat
-                label="Net profit"
+                label={COL.totalProfit}
                 value={fmt(netProfit, 2)}
                 sub={`${totalTrades} closed trades`}
               />
@@ -370,13 +383,23 @@ export function PairSummaryWidget({
                 }
               />
             </div>
-            <div className="nfi-table-scroll">
-              <NfiDataTable
-                columns={columns}
-                data={rows}
-                getRowId={(row) => row.pair}
+            <NfiTableContainer>
+              <NfiTableToolbar
+                label="Pair summary table actions"
+                exportMenu={{
+                  filenameBase: `pair-summary-${cfg.instanceId}`,
+                  columns: exportColumns,
+                  rows,
+                }}
               />
-            </div>
+              <div className="nfi-table-scroll">
+                <NfiDataTable
+                  columns={columns}
+                  data={rows}
+                  getRowId={(row) => row.pair}
+                />
+              </div>
+            </NfiTableContainer>
           </div>
         ) : (
           <EmptyState

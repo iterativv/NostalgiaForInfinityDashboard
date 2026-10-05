@@ -109,7 +109,7 @@ export const RelativeProfitWidgetDef = defineWidget({
   defaultConfig: RELATIVE_PROFIT_DEFAULTS,
   component: RelativeProfitWidget,
   capabilities: [...RELATIVE_PROFIT_CAPABILITIES],
-  minWidth: 470,
+  minWidth: 360,
   minHeight: 130,
   defaultWidth: 360,
   defaultHeight: 220,

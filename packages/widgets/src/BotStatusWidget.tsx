@@ -110,7 +110,7 @@ export const BotStatusWidgetDef = defineWidget({
   defaultConfig: BOT_STATUS_DEFAULTS,
   component: BotStatusWidget,
   capabilities: [...BOT_STATUS_CAPABILITIES],
-  minWidth: 1050,
+  minWidth: 440,
   minHeight: 130,
   defaultWidth: 480,
   defaultHeight: 320,

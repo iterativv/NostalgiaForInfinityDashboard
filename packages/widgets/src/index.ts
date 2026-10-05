@@ -18,6 +18,12 @@
 
 export * from "./shared/config";
 
+export * from "./shared/export";
+
+export * from "./shared/columns";
+
+export * from "./shared/tableToolbar";
+
 
 export * from "./shared/format";
 
@@ -48,6 +54,12 @@ export * from "./shared/dialogs";
 export * from "./shared/panelConfig";
 
 export * from "./shared/SubOrdersTable";
+
+export * from "./shared/colorBlind";
+
+export * from "./shared/PositionPairChips";
+
+export * from "./shared/candleOverlays";
 
 export * from "./shared/RelativeOrdersFacets";
 
@@ -117,6 +129,12 @@ export * from "./FedRateWidget";
 
 export * from "./CandleChartWidget";
 
+export * from "./PublicCandleChartWidget";
+
+export * from "./PositionCandleWidget";
+
+export * from "./PositionCandlePublicWidget";
+
 export * from "./FleetOverviewWidget";
 
 export * from "./DailyProfitWidget";
@@ -135,6 +153,9 @@ import type { AnyWidgetDefinition } from "@nfi/widget-sdk";
 import { DEMO_WIDGETS } from "./demoWidgets";
 import { BotStatusWidgetDef } from "./BotStatusWidget";
 import { CandleChartWidgetDef } from "./CandleChartWidget";
+import { PublicCandleChartWidgetDef } from "./PublicCandleChartWidget";
+import { PositionCandleWidgetDef } from "./PositionCandleWidget";
+import { PositionCandlePublicWidgetDef } from "./PositionCandlePublicWidget";
 import { ProfitWidgetDef } from "./ProfitWidget";
 import { RelativeProfitWidgetDef } from "./RelativeProfitWidget";
 import { RelativeBalanceWidgetDef } from "./RelativeBalanceWidget";
@@ -181,6 +202,9 @@ export const builtinWidgets: ReadonlyArray<AnyWidgetDefinition> = [
   ...DEMO_WIDGETS,
   BotStatusWidgetDef,
   CandleChartWidgetDef,
+  PublicCandleChartWidgetDef,
+  PositionCandleWidgetDef,
+  PositionCandlePublicWidgetDef,
   ProfitWidgetDef,
   RelativeProfitWidgetDef,
   RelativeBalanceWidgetDef,

@@ -235,6 +235,6 @@ export const DrawdownWidgetDef = defineWidget({
   capabilities: [...DRAWDOWN_CAPABILITIES],
   minWidth: 475,
   minHeight: 375,
-  defaultWidth: 360,
-  defaultHeight: 220,
+  defaultWidth: 475,
+  defaultHeight: 375,
 });

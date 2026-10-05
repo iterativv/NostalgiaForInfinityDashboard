@@ -31,6 +31,8 @@ import {
 } from "./shared/sources";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
+import { ExportMenu, type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
 import {
   closeWidgetSettings,
   useWidgetSettingsOpen,
@@ -170,6 +172,15 @@ export function TradeTapeWidget({
   const showBot = cfg.instanceId === "all";
   const colors = useInstanceColors();
 
+  const exportColumns: ReadonlyArray<ExportColumn<TapeEvent>> = [
+    { header: COL.event, value: (e) => e.kind },
+    { header: COL.pair, value: (e) => e.pair },
+    { header: COL.bot, value: (e) => e.bot ?? "" },
+    { header: COL.detail, value: (e) => e.detail },
+    { header: COL.profit, value: (e) => e.profit },
+    { header: COL.date, value: (e) => e.dateLabel },
+  ];
+
   return (
     <>
       <WidgetSettingsModal
@@ -213,6 +224,13 @@ export function TradeTapeWidget({
         title="Trade Tape"
         isLoading={state.isLoading}
         error={accessError ?? state.error}
+        actions={
+          <ExportMenu
+            filenameBase={`trade-tape-${cfg.instanceId}`}
+            columns={exportColumns}
+            rows={visible}
+          />
+        }
       >
         {visible.length > 0 ? (
           <div
@@ -305,6 +323,6 @@ export const TradeTapeWidgetDef = defineWidget({
   capabilities: [...TRADE_TAPE_CAPABILITIES],
   minWidth: 560,
   minHeight: 278,
-  defaultWidth: 480,
+  defaultWidth: 560,
   defaultHeight: 400,
 });

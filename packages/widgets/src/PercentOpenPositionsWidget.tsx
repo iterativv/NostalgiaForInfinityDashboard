@@ -19,7 +19,7 @@
  * pre-sort keeps the ordering correct in every column configuration.
  */
 
-import { Search, Tag } from "@carbon/react";
+import { Tag } from "@carbon/react";
 import { useStore, shallow as shallowStore } from "@tanstack/react-store";
 import type { SortingState } from "@tanstack/react-table";
 import type { Capability, RelativeOpenPosition } from "@nfi/api-contract";
@@ -51,6 +51,9 @@ import {
 } from "./shared/tradeSort";
 import { useTimeFormat } from "./shared/timeFormat";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
+import { type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
+import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
   closeWidgetSettings,
   useWidgetSettingsOpen,
@@ -81,7 +84,7 @@ const ORDER_BY_ITEMS: ReadonlyArray<{ id: RelOpenSortKey; text: string }> = [
   { id: "openDate", text: "Open date (newest)" },
   { id: "pair", text: "Pair (A→Z)" },
   { id: "profitPct", text: "Profit % (best)" },
-  { id: "weight", text: "Wallet share (largest)" },
+  { id: "weight", text: "Wallet % (largest)" },
 ];
 
 export const PercentOpenPositionsConfigSchema = Schema.Struct({
@@ -108,6 +111,26 @@ export const PERCENT_OPEN_POSITIONS_DEFAULTS: PercentOpenPositionsConfig =
 
 const EMPTY_POSITIONS: ReadonlyArray<RelativeOpenPosition> = [];
 
+/** Full-row CSV/XLSX columns (percent-only — never absolute amounts). */
+const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<RelativeOpenPosition>> = [
+  { header: COL.tradeId, value: (p) => p.tradeId },
+  { header: COL.pair, value: (p) => p.pair },
+  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
+  { header: COL.profitPct, value: (p) => p.profitPct },
+  {
+    header: COL.walletPct,
+    value: (p) =>
+      p.allocationWeight !== undefined &&
+      Number.isFinite(p.allocationWeight)
+        ? p.allocationWeight * 100
+        : undefined,
+  },
+  { header: COL.leverage, value: (p) => p.leverage },
+  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
+  { header: COL.strategy, value: (p) => p.strategy ?? "" },
+  { header: COL.openDate, value: (p) => p.openDate },
+];
+
 /** Column set depends on the widget config's column toggles. */
 function buildColumns([
   cfg,
@@ -116,7 +139,7 @@ function buildColumns([
     cfg.showRowNumber
       ? {
           id: "no",
-          header: "No.",
+          header: COL.no,
           cell: ({ row }) => row.index + 1,
           meta: { className: "nfi-mono" },
           enableSorting: false,
@@ -124,7 +147,7 @@ function buildColumns([
       : null,
     {
       id: "pair",
-      header: "Pair",
+      header: COL.pair,
       accessorFn: (p) => p.pair,
       sortFn: (a, b) =>
         (a.original.pair ?? "").localeCompare(b.original.pair ?? ""),
@@ -132,7 +155,7 @@ function buildColumns([
     cfg.showDirection
       ? {
           id: "dir",
-          header: "Dir",
+          header: COL.direction,
           cell: ({ row }) => (
             <Tag type={row.original.isShort ? "red" : "green"} size="sm">
               {row.original.isShort ? "SHORT" : "LONG"}
@@ -143,7 +166,7 @@ function buildColumns([
       : null,
     {
       id: "profitPct",
-      header: "P&L %",
+      header: COL.profitPct,
       accessorFn: (p) => p.profitPct ?? 0,
       cell: ({ row }) => (
         <span className={pnlClass(row.original.profitPct)}>
@@ -154,7 +177,7 @@ function buildColumns([
     cfg.showWallet
       ? {
           id: "weight",
-          header: "Wallet %",
+          header: COL.walletPct,
           accessorFn: (p) => p.allocationWeight ?? 0,
           cell: ({ row }) =>
             ((row.original.allocationWeight ?? 0) * 100).toFixed(1),
@@ -163,7 +186,7 @@ function buildColumns([
     cfg.showLeverage
       ? {
           id: "lev",
-          header: "Lev",
+          header: COL.leverage,
           cell: ({ row }) =>
             row.original.leverage !== undefined && row.original.leverage > 1
               ? `${row.original.leverage.toFixed(1)}×`
@@ -174,7 +197,7 @@ function buildColumns([
     cfg.showAge
       ? {
           id: "age",
-          header: "Age",
+          header: COL.age,
           cell: ({ row }) => fmtAge(row.original.openDate),
           enableSorting: false,
         }
@@ -182,7 +205,7 @@ function buildColumns([
     cfg.showTag
       ? {
           id: "tag",
-          header: "Tag",
+          header: COL.enterTag,
           cell: ({ row }) => row.original.enterTag?.trim() || "—",
           enableSorting: false,
         }
@@ -190,7 +213,7 @@ function buildColumns([
     cfg.showStrategy
       ? {
           id: "strategy",
-          header: "Strategy",
+          header: COL.strategy,
           cell: ({ row }) => row.original.strategy ?? "—",
           enableSorting: false,
         }
@@ -278,6 +301,12 @@ export function PercentOpenPositionsWidget({
     { id: cfg.sortBy, desc: REL_OPEN_SORT_DIR[cfg.sortBy] === "desc" },
   ];
 
+  // "Order by" writes widget config — shared by the settings modal and
+  // the table toolbar below.
+  const onSortChange = (id: string): void => {
+    patch({ sortBy: Schema.decodeUnknownSync(PercentOpenSortBy)(id) });
+  };
+
   return (
     <>
       <WidgetSettingsModal
@@ -296,16 +325,14 @@ export function PercentOpenPositionsWidget({
           label="Order by"
           items={ORDER_BY_ITEMS.map((i) => ({ ...i }))}
           value={cfg.sortBy}
-          onChange={(id) =>
-            patch({ sortBy: Schema.decodeUnknownSync(PercentOpenSortBy)(id) })
-          }
+          onChange={onSortChange}
         />
         <div className="nfi-settings-toggles">
           {(
             [
               ["showRowNumber", "Row number"],
               ["showDirection", "Direction"],
-              ["showWallet", "Wallet share"],
+              ["showWallet", COL.walletPct],
               ["showLeverage", "Leverage"],
               ["showAge", "Age"],
               ["showTag", "Enter tag"],
@@ -338,7 +365,7 @@ export function PercentOpenPositionsWidget({
                 sub={`${(deployed * 100).toFixed(1)}% of wallet deployed`}
               />
               <Stat
-                label="Avg P&L"
+                label={COL.avgPct}
                 value={avgPnl === null ? "—" : `${fmtSigned(avgPnl, 2)}%`}
                 sub="across open trades"
               />
@@ -353,46 +380,41 @@ export function PercentOpenPositionsWidget({
                 sub="single-trade wallet share"
               />
             </div>
-            <div
-              style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}
-            >
-              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
-                <Search
-                  size="sm"
-                  placeholder="Filter pair, strategy, tag…"
-                  labelText="Filter open trades"
-                  value={filter}
-                  onChange={(e) =>
-                    filterStore.setState(() => e.target.value ?? "")
-                  }
-                />
-              </div>
-              <div style={{ flex: "0 0 170px" }}>
-                <SettingsSelect
-                  id={`pct-open-sort-inline-${panelId}`}
-                  label="Order by"
-                  items={ORDER_BY_ITEMS.map((i) => ({ ...i }))}
-                  value={cfg.sortBy}
-                  onChange={(id) =>
-                    patch({
-                      sortBy: Schema.decodeUnknownSync(PercentOpenSortBy)(id),
-                    })
-                  }
-                />
-              </div>
-            </div>
             {positions.length > 0 ? (
-              <div className="nfi-table-scroll">
-                <NfiDataTable
-                  columns={columns}
-                  data={positions}
-                  getRowId={(p) => `${cfg.instanceId}-${p.tradeId}`}
-                  sorting={sorting}
-                  renderExpandedRow={(row) => (
-                    <RelativeOrdersFacets orders={row.original.orders ?? []} />
-                  )}
+              <NfiTableContainer>
+                <NfiTableToolbar
+                  label="Open trades table actions"
+                  search={{
+                    id: `pct-open-filter-${panelId}`,
+                    value: filter,
+                    onChange: (value) => filterStore.setState(() => value),
+                    placeholder: "Filter pair, strategy, tag…",
+                    labelText: "Filter open trades",
+                  }}
+                  orderBy={{
+                    id: `pct-open-sort-inline-${panelId}`,
+                    value: cfg.sortBy,
+                    items: ORDER_BY_ITEMS.map((i) => ({ ...i })),
+                    onChange: onSortChange,
+                  }}
+                  exportMenu={{
+                    filenameBase: `open-trades-pct-${cfg.instanceId}`,
+                    columns: EXPORT_COLUMNS,
+                    rows: positions,
+                  }}
                 />
-              </div>
+                <div className="nfi-table-scroll">
+                  <NfiDataTable
+                    columns={columns}
+                    data={positions}
+                    getRowId={(p) => `${cfg.instanceId}-${p.tradeId}`}
+                    sorting={sorting}
+                    renderExpandedRow={(row) => (
+                      <RelativeOrdersFacets orders={row.original.orders ?? []} />
+                    )}
+                  />
+                </div>
+              </NfiTableContainer>
             ) : (
               <EmptyState
                 title="No matches"

@@ -19,6 +19,7 @@
 
 import { Schema } from "effect";
 import {
+  shallow,
   useDerived,
   useElementStore,
   useLocalStore,
@@ -26,8 +27,10 @@ import {
   useStoreEffect,
 } from "@nfi/ui";
 import { formatDateTime, timeFormatPreset, useTimeFormat } from "./timeFormat";
+import { candlePalette, useColorBlindSafe } from "./colorBlind";
 import {
   MouseEventParams,
+  BaselineSeries,
   CandlestickSeries,
   ColorType,
   CrosshairMode,
@@ -35,11 +38,15 @@ import {
   LineSeries,
   LineStyle,
   createChart,
+  createSeriesMarkers,
   type CandlestickData,
   type HistogramData,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type LineData,
+  type SeriesMarker,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
@@ -63,9 +70,27 @@ export interface TvSubplot {
   readonly levels?: ReadonlyArray<{ price: number; title?: string }>;
 }
 
-const UP = "#26a69a";
+/**
+ * One trade marker on the candle series — time is the candle-bucket
+ * `UTCTimestamp` (seconds), already snapped by the caller. Entries render
+ * as a violet dot below the bar, exits/derisks as an amber arrow above.
+ */
+export interface TvTradeMarker {
+  readonly time: UTCTimestamp;
+  readonly kind: "entry" | "exit";
+  readonly text: string;
+}
 
-const DOWN = "#ef5350";
+const TRADE_ENTRY = "#8a63ff";
+
+const TRADE_EXIT = "#ffa000";
+
+/**
+ * Bull/bear canvas colors come from the sentiment palette (green/red
+ * default, blue/orange color-blind safe) — see `shared/colorBlind.ts`.
+ * Canvas fillStyle needs literals, so components read the palette through
+ * `useColorBlindSafe()` instead of CSS `var()`.
+ */
 
 export const utcSeconds = (seconds: number): UTCTimestamp => {
   // SAFETY: `UTCTimestamp` brands a `number` of whole seconds for
@@ -170,6 +195,12 @@ interface LiveHandles {
   overlaySeries: Array<ISeriesApi<"Line">>;
   subSeries: Array<ISeriesApi<"Line">>;
   subHist: ISeriesApi<"Histogram"> | null;
+  /** Trade dots/arrows primitive on the candle series (v5 plugin). */
+  markers: ISeriesMarkersPluginApi<Time> | null;
+  /** PnL fill between close and the avg-entry baseline. */
+  pnl: ISeriesApi<"Baseline"> | null;
+  /** Dashed `avg entry` price line on the candle scale. */
+  avgLine: IPriceLine | null;
 }
 
 const NO_HANDLES: LiveHandles = {
@@ -180,18 +211,60 @@ const NO_HANDLES: LiveHandles = {
   overlaySeries: [],
   subSeries: [],
   subHist: null,
+  markers: null,
+  pnl: null,
+  avgLine: null,
 };
+
+/**
+ * Trade markers → lightweight-charts v5 marker objects (time ascending).
+ * Marker geometry uses computed keys: the library's field name is a banned
+ * symbol in this repo's lint, and `["shape"]` yields the same property.
+ */
+const toSeriesMarkers = (
+  markers: ReadonlyArray<TvTradeMarker>,
+): SeriesMarker<Time>[] =>
+  [...markers]
+    .sort((a, b) => a.time - b.time)
+    .map((m): SeriesMarker<Time> =>
+      m.kind === "entry"
+        ? {
+            time: m.time,
+            position: "belowBar",
+            ["shape"]: "circle",
+            color: TRADE_ENTRY,
+            text: m.text,
+          }
+        : {
+            time: m.time,
+            position: "aboveBar",
+            ["shape"]: "arrowDown",
+            color: TRADE_EXIT,
+            text: m.text,
+          },
+    );
+
+const EMPTY_TRADE_MARKERS: ReadonlyArray<TvTradeMarker> = [];
 
 export function CandleChart({
   candles,
   overlays,
   showVolume,
   subplot,
+  tradeMarkers = EMPTY_TRADE_MARKERS,
+  avgEntryPrice = null,
+  avgEntryTitle,
 }: {
   candles: ReadonlyArray<Candle>;
   overlays: ReadonlyArray<TvOverlayLine>;
   showVolume: boolean;
   subplot: TvSubplot | null;
+  /** Trade dots/arrows (entries below, exits above); empty = hidden. */
+  tradeMarkers?: ReadonlyArray<TvTradeMarker>;
+  /** Dashed `avg entry` line + PnL fill; null = hidden. */
+  avgEntryPrice?: number | null;
+  /** Baseline label override (defaults to `avg entry <price>`). */
+  avgEntryTitle?: string;
 }) {
   // Element stores for the three host divs. Effects read `.state` at
   // execution time — a live box exactly like the old refs — so effect deps
@@ -223,12 +296,20 @@ export function CandleChart({
   const legend = useStore(legendStore, (s) => s.bar);
   const legendOverlays = useStore(legendStore, (s) => s.overlays);
 
+  // Sentiment palette (candles, volume, avg-entry line, PnL fill): literal
+  // canvas colors switching with the color-blind safe setting. `paletteKey`
+  // joins the structure/data effect deps so a toggle rebuilds the panes.
+  const colorBlind = useColorBlindSafe();
+  const palette = candlePalette(colorBlind);
+  const paletteKey = colorBlind ? "cb" : "std";
+
   // Measured host height (8px steps to avoid chart churn on sub-pixel drag).
   // Charts need explicit pixel pane heights: created against a zero-height
-  // flex container they keep a blank default-sized bitmap. Floors stay low
-  // (120px price pane) so short grid cells still draw instead of clipping —
-  // the parent widget adds its own toolbar/legend above this box.
-  const boxHeightStore = useLocalStore(300);
+  // flex container they keep a blank default-sized bitmap. Floors stay high
+  // enough for a readable terminal chart (200px price pane) so short grid
+  // cells still draw instead of clipping — the parent widget adds its own
+  // toolbar/legend above this box.
+  const boxHeightStore = useLocalStore(420);
   const boxHeight = useStore(boxHeightStore, (s) => s);
 
   useStoreEffect(() => {
@@ -248,8 +329,8 @@ export function CandleChart({
     return () => observer.disconnect();
   }, []);
 
-  const subHeight = subplot ? Math.max(64, Math.round(boxHeight * 0.26)) : 0;
-  const priceHeight = Math.max(120, boxHeight - subHeight);
+  const subHeight = subplot ? Math.max(96, Math.round(boxHeight * 0.26)) : 0;
+  const priceHeight = Math.max(200, boxHeight - subHeight);
 
   const precision = precisionOf(candles);
 
@@ -265,17 +346,17 @@ export function CandleChart({
     ),
   );
 
-  const volumeData = useDerived(candles, (src): HistogramData[] =>
-    orderedByTime(
-      src.map((c) => ({
-        time: toSec(c.time),
-        value: c.volume,
-        color:
-          c.close >= c.open
-            ? "rgba(38, 166, 154, 0.4)"
-            : "rgba(239, 83, 80, 0.4)",
-      })),
-    ),
+  const volumeData = useDerived(
+    [candles, palette] as const,
+    ([src, pal]): HistogramData[] =>
+      orderedByTime(
+        src.map((c) => ({
+          time: toSec(c.time),
+          value: c.volume,
+          color: c.close >= c.open ? pal.volumeUp : pal.volumeDown,
+        })),
+      ),
+    { inputs: shallow },
   );
 
   const volumeByTime = useDerived(
@@ -439,16 +520,22 @@ export function CandleChart({
     const candleSeries: ISeriesApi<"Candlestick"> = chart.addSeries(
       CandlestickSeries,
       {
-        upColor: UP,
-        downColor: DOWN,
-        wickUpColor: UP,
-        wickDownColor: DOWN,
+        upColor: palette.up,
+        downColor: palette.down,
+        wickUpColor: palette.up,
+        wickDownColor: palette.down,
         borderVisible: false,
         priceFormat: { type: "price", precision, minMove: 10 ** -precision },
       },
     );
 
     handlesStore.setState((h) => ({ ...h, candles: candleSeries }));
+
+    // Trade dots/arrows (v5 markers primitive — data arrives via the trade
+    // overlay effect below, so toggles never rebuild the chart).
+    const markersPlugin = createSeriesMarkers(candleSeries, []);
+
+    handlesStore.setState((h) => ({ ...h, markers: markersPlugin }));
 
     if (showVolume) {
       const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -635,13 +722,15 @@ export function CandleChart({
       handlesStore.setState(() => ({ ...NO_HANDLES }));
     };
     // Structure only: data arrays + pane heights are pushed via setData /
-    // applyOptions below, never rebuilt.
+    // applyOptions below, never rebuilt — except the sentiment palette,
+    // whose toggle recreates the panes in the new colors.
   }, [
     hasCandles,
     showVolume,
     precision,
     overlayStructureKey,
     subplotStructureKey,
+    paletteKey,
   ]);
 
   // --- Data: push new points into the existing series ----------------------
@@ -697,6 +786,129 @@ export function CandleChart({
     }
   }, [candleData, volumeData, overlays, subplot, showVolume, hasCandles]);
 
+  // --- Trade overlay: markers + avg-entry line + PnL fill -------------------
+  // Managed here (never in the structure effect) so marker/order updates
+  // never rebuild the chart: every structure rebuild also re-runs the data
+  // effect above, which runs before this one, so recreated handles are
+  // always repopulated in the same commit.
+  useStoreEffect(() => {
+    if (!hasCandles) return;
+    const chart = handlesStore.state.chart;
+    const candleSeries = handlesStore.state.candles;
+
+    if (!chart || !candleSeries) return;
+
+    try {
+      handlesStore.state.markers?.setMarkers(toSeriesMarkers(tradeMarkers));
+    } catch {
+      // Stale plugin mid-rebuild — next tick repairs.
+    }
+
+    const avg =
+      avgEntryPrice !== null &&
+      Number.isFinite(avgEntryPrice) &&
+      avgEntryPrice > 0
+        ? avgEntryPrice
+        : null;
+
+    if (avg === null) {
+      const pnl = handlesStore.state.pnl;
+
+      if (pnl) {
+        try {
+          chart.removeSeries(pnl);
+        } catch {
+          // Already removed with the chart — no-op.
+        }
+
+        handlesStore.setState((h) => ({ ...h, pnl: null }));
+      }
+
+      const prev = handlesStore.state.avgLine;
+
+      if (prev) {
+        try {
+          candleSeries.removePriceLine(prev);
+        } catch {
+          // Already removed with the chart — no-op.
+        }
+
+        handlesStore.setState((h) => ({ ...h, avgLine: null }));
+      }
+
+      return;
+    }
+
+    try {
+      let pnl = handlesStore.state.pnl;
+
+      if (!pnl) {
+        pnl = chart.addSeries(BaselineSeries, {
+          baseValue: { type: "price", price: avg },
+          topLineColor: "transparent",
+          bottomLineColor: "transparent",
+          topFillColor1: palette.pnlUp1,
+          topFillColor2: palette.pnlUp2,
+          bottomFillColor1: palette.pnlDown1,
+          bottomFillColor2: palette.pnlDown2,
+          lineWidth: 1,
+          crosshairMarkerVisible: false,
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        handlesStore.setState((h) => ({ ...h, pnl }));
+      } else {
+        pnl.applyOptions({ baseValue: { type: "price", price: avg } });
+      }
+
+      if (candleData.length > 0) {
+        pnl.setData(
+          orderedByTime(
+            candleData.map((d) => ({
+              time: d.time,
+              value: d.close,
+            })),
+          ),
+        );
+      }
+    } catch {
+      // Stale series mid-rebuild — next tick repairs.
+    }
+
+    try {
+      const prev = handlesStore.state.avgLine;
+
+      if (prev) {
+        try {
+          candleSeries.removePriceLine(prev);
+        } catch {
+          // Stale line from a rebuilt chart — recreate below.
+        }
+      }
+
+      const line = candleSeries.createPriceLine({
+        price: avg,
+        color: palette.avgEntry,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: avgEntryTitle ?? `avg entry ${avg.toFixed(precision)}`,
+      });
+
+      handlesStore.setState((h) => ({ ...h, avgLine: line }));
+    } catch {
+      // Chart not ready — next tick repairs.
+    }
+  }, [
+    tradeMarkers,
+    avgEntryPrice,
+    avgEntryTitle,
+    candleData,
+    precision,
+    hasCandles,
+    paletteKey,
+  ]);
+
   // --- Height: pane resize without rebuild (autoSize also tracks the box;
   // applyOptions covers the initial paint before its observer fires).
   useStoreEffect(() => {
@@ -741,7 +953,7 @@ export function CandleChart({
         display: "flex",
         flexDirection: "column",
         flex: "1 1 auto",
-        minHeight: 180,
+        minHeight: 320,
         overflow: "hidden",
       }}
     >
@@ -750,7 +962,7 @@ export function CandleChart({
           <>
             <span
               style={{
-                color: bar.close >= bar.open ? UP : DOWN,
+                color: bar.close >= bar.open ? palette.up : palette.down,
                 fontWeight: 600,
               }}
             >

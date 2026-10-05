@@ -26,9 +26,13 @@ import { capabilitiesStore } from "./capabilities";
  * Layout edits while previewing are staged, never autosaved: commits apply
  * to the live canvas only (no backend writes, no Home localStorage), so a
  * root arranging the public dashboard as `anonymous` cannot leak half-done
- * work to real visitors. The banner offers Save (persists the active page
- * on demand) and Discard (restores every touched page) — the only paths
- * that move preview edits anywhere durable.
+ * work to real visitors. The banner offers Save layout (persists EVERY
+ * staged page on demand — an admin often touches Home, switches pages to
+ * compare, then saves) and Discard (restores every touched page) — the
+ * only paths that move preview edits anywhere durable. Start the flow from
+ * Manage users → Edit layout (or the header View-as switcher); the shell
+ * auto-switches to the target's landing page when the current page is
+ * hidden from them, so edits land where they actually look.
  */
 
 export interface ViewAsState {

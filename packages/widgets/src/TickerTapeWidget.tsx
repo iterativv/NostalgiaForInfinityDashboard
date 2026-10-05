@@ -134,7 +134,7 @@ export function TickerTapeWidget({
         />
         <SettingsToggle
           id={`tape-profit-${panelId}`}
-          label="Show PnL %"
+          label="Show Profit %"
           toggled={cfg.showProfit}
           onToggle={(v) => patch({ showProfit: v })}
         />

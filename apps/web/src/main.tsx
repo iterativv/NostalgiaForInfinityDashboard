@@ -19,12 +19,17 @@ import {
   reconnectStream,
 } from "@nfi/widgets/live";
 import { setPanelConfigSink } from "@nfi/widgets";
+import { colorBlindStore } from "@nfi/widgets";
 import { queryClient } from "./api";
 import { callCapability } from "./capabilities/client";
 import { capabilitiesStore } from "./auth/capabilities";
 import { effectiveGranted, viewAsStore } from "./auth/viewAs";
 import { prefsStore } from "./store";
-import { accentStyleFor } from "./carbonTheme";
+import {
+  accentStyleFor,
+  colorBlindStyleFor,
+  highContrastStyleFor,
+} from "./carbonTheme";
 import { updatePanelConfig } from "./workspace/store";
 import { router } from "./router";
 
@@ -80,9 +85,19 @@ if (!rootElement) {
 function ThemedApp({ children }: { children: ReactNode }) {
   const colorTheme = useStore(prefsStore, (state) => state.colorTheme);
   const accentColor = useStore(prefsStore, (state) => state.accentColor);
+  const highContrast = useStore(prefsStore, (state) => state.highContrast);
+  const colorBlind = useStore(colorBlindStore, (enabled) => enabled);
+
+  // Layers merge accent -> high-contrast -> color-blind (see carbonTheme.ts):
+  // each optional layer joins the style only when its toggle is on.
+  let style = accentStyleFor(accentColor, colorTheme);
+
+  if (highContrast) style = { ...style, ...highContrastStyleFor(colorTheme) };
+
+  if (colorBlind) style = { ...style, ...colorBlindStyleFor(colorTheme) };
 
   return (
-    <Theme theme={colorTheme} style={accentStyleFor(accentColor, colorTheme)}>
+    <Theme theme={colorTheme} style={style}>
       {children}
     </Theme>
   );

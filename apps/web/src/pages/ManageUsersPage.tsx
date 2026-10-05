@@ -29,9 +29,11 @@ import {
   WidgetStateView,
   type NfiColumnDef,
 } from "@nfi/ui";
+import { useNavigate } from "@tanstack/react-router";
 import { formatQueryError } from "../api";
 import { useCapabilities } from "../auth/capabilities";
 import { refreshSessionState } from "../auth/session";
+import { setViewAs } from "../auth/viewAs";
 import { SignInCta } from "../auth/SignInCta";
 import { callCapability } from "../capabilities/client";
 import { refreshCapability, useCapability } from "../capabilities/live";
@@ -582,12 +584,22 @@ export function ManageUsersContent() {
   const capabilities = useCapabilities();
   const granted = capabilities.granted;
   const list = useCapability("users.list", {});
+  const navigate = useNavigate();
 
   const canList = granted.includes("users.list");
   const canCreate = granted.includes("users.create");
   const canUpdate = granted.includes("users.update");
   const canRemove = granted.includes("users.remove");
   const canSetDefaults = granted.includes("system.page-defaults.update");
+
+  /** One-click entry to the layout preview: sets View-as to the target and
+   * lands on the terminal, where the banner guides Save. The shell
+   * auto-switches to their landing page when the current page is hidden
+   * from them, so edits land where they actually look. */
+  const editLayoutAs = (user: ManagedUser): void => {
+    setViewAs(user.id, user.username, user.capabilities);
+    void navigate({ to: "/" });
+  };
 
   interface CreateFormState {
     open: boolean;
@@ -823,6 +835,19 @@ export function ManageUsersContent() {
             >
               {isAnonymous ? "Edit grant" : "Edit"}
             </Button>
+            <Button
+              kind="ghost"
+              size="sm"
+              disabled={busy}
+              title={
+                isAnonymous
+                  ? "Preview as anonymous and arrange the public dashboard — banner Save shares it"
+                  : `Preview as ${user.username} and arrange their dashboard — banner Save shares it`
+              }
+              onClick={() => editLayoutAs(user)}
+            >
+              Edit layout
+            </Button>
             {!isAnonymous && canRemove ? (
               <Button
                 kind="ghost"
@@ -853,11 +878,13 @@ export function ManageUsersContent() {
                 every capability. Anonymous is the grant for everyone not signed
                 in — keep it to the <span className="nfi-mono">.relative</span>{" "}
                 + neutral ids to share the dashboard without leaking absolute
-                balances or PnL. To set what signed-out visitors see, edit Home
-                (header View-as → anonymous, arrange, it auto-saves shared) and
-                keep their landing page on Home — Home is public-readable, while
-                custom/preset pages need{" "}
-                <span className="nfi-mono">workspace.list</span> +{" "}
+                balances or PnL. To set what signed-out visitors see, click{" "}
+                <span className="nfi-mono">Edit layout</span> on the anonymous
+                row (or header View-as → anonymous), arrange Home on the
+                terminal, then{" "}
+                <span className="nfi-mono">Save layout for anonymous</span> in
+                the banner — Home is public-readable, while custom/preset pages
+                need <span className="nfi-mono">workspace.list</span> +{" "}
                 <span className="nfi-mono">workspace.load</span> granted to
                 anonymous to load in incognito.
               </p>

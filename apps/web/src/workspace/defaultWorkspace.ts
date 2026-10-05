@@ -16,10 +16,10 @@ import {
  * on reset. It is never shown as its own page (the legacy standalone
  * "Default workspace" page was retired in favor of Home).
  *
- * Bento (`auto`) mode, three rows of wide + narrow cards (3/5 + 2/5):
- * Bot Comparison + Profit Over Time, Open Trades + Cumulative Profit,
- * Closed Trades + Wallet History. Every card keeps its exact dragged size
- * (rows left-align, members bottom-align).
+ * Bento (`auto`) mode: two wide + narrow rows (3/5 + 2/5: Bot Comparison
+ * + Profit Over Time, Open Trades + Cumulative Profit) followed by two
+ * full-width tables (Closed Trades, Wallet History — each too wide to
+ * share a row reliably). Every card keeps its exact dragged size.
  *
  * Smart-fit sizing: every card starts at or above its widget's minimum
  * readable size (width via span 3/2 on a 360px column target, height via
@@ -66,7 +66,7 @@ const DEFAULT_WORKSPACE_JSON = {
       {
         type: "auto-item",
         id: "card-daily",
-        height: 410,
+        height: 420,
         span: 2,
         child: {
           type: "tabs",
@@ -90,7 +90,7 @@ const DEFAULT_WORKSPACE_JSON = {
       {
         type: "auto-item",
         id: "card-cumulative",
-        height: 340,
+        height: 350,
         span: 2,
         child: {
           type: "tabs",
@@ -114,8 +114,8 @@ const DEFAULT_WORKSPACE_JSON = {
       {
         type: "auto-item",
         id: "card-wallet",
-        height: 430,
-        span: 2,
+        height: 440,
+        span: 3,
         child: {
           type: "tabs",
           id: "tabs-wallet",

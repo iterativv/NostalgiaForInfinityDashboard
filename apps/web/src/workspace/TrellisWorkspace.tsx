@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { useEffect, useMemo, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, type ReactNode } from "react";
 import { Either, Schema } from "effect";
 import { Store } from "@tanstack/store";
 import { useStore } from "@tanstack/react-store";
@@ -18,7 +18,6 @@ import {
   useOptionalWorkspace,
   type Params as TrellisParams,
   type ViewApi,
-  type WorkspaceHandle,
 } from "@danfessler/trellis-react";
 import "@danfessler/trellis/style.css";
 import type {
@@ -36,6 +35,20 @@ import { prefsStore } from "../store";
 import { CARBON_THEMES_DARK } from "../carbonTheme";
 import { Panel } from "./Panel";
 import { TabActionsMenu } from "./TabMenu";
+import {
+  SlotView,
+  clearPendingSlotLayout,
+  clearPendingSlotTarget,
+  getTrellisCanvasOpener,
+  getTrellisWorkspaceHandle,
+  peekPendingSlotTarget,
+  setPendingSlotTarget,
+  setTrellisCanvasOpener,
+  setTrellisWorkspaceHandle,
+  takePendingSlotTarget,
+  usePendingSlotLayout,
+} from "./TrellisPresets";
+import { EmptyPane } from "./EmptyPane";
 import { TabFullScreen } from "./TabFullScreen";
 import {
   activateWorkspacePanel,
@@ -107,22 +120,6 @@ function viewIdForPanel(panelId: string): string {
 function panelIdForViewId(viewId: string): string | null {
   return viewId.startsWith("view-") ? viewId.slice("view-".length) : null;
 }
-
-/** Latest canvas-level picker opener (set by TrellisWorkspace each render). */
-interface TrellisCanvasOpenerRef {
-  current: ((anchor: DOMRect | null) => void) | null;
-}
-
-const trellisCanvasOpener: TrellisCanvasOpenerRef = { current: null };
-
-/** Live Trellis handle mirror (set by the bridge below, read by chrome). */
-interface TrellisWorkspaceHandleRef {
-  current: WorkspaceHandle | null;
-}
-
-const trellisWsHandle: TrellisWorkspaceHandleRef = {
-  current: null,
-};
 
 interface FullscreenRequest {
   panelId: string;
@@ -256,7 +253,9 @@ function TrellisTabChrome({
   const label = instance.title ?? definition?.title ?? instance.widgetType;
 
   const openCanvas = (event: { currentTarget: HTMLElement }) => {
-    trellisCanvasOpener.current?.(event.currentTarget.getBoundingClientRect());
+    getTrellisCanvasOpener()?.(
+      event.currentTarget.getBoundingClientRect(),
+    );
   };
 
   const openFullscreen = () => {
@@ -324,6 +323,60 @@ function selectedIndex(
   return index >= 0 ? index : 0;
 }
 
+/**
+ * Span units Trellis packs into one row when compiling bento cards.
+ * Presets pair span 3 (wide) + span 2 (narrow) = 5 per row; a 3 + 3 pair
+ * (two wide tables) never shares a row — each takes a full-width row
+ * instead of squeezing below its minimum.
+ */
+export const TRELLIS_GRID_ROW_UNITS = 5;
+
+/** Clamp a persisted card span into 1..TRELLIS_GRID_ROW_UNITS; NaN reads as 1. */
+function coerceSpanUnits(span: number): number {
+  return Number.isFinite(span) && span >= 1
+    ? Math.max(1, Math.min(TRELLIS_GRID_ROW_UNITS, Math.round(span)))
+    : 1;
+}
+
+/**
+ * Pack card spans into rows of at most `TRELLIS_GRID_ROW_UNITS` units.
+ * Pure index math (no DOM) so presets and tests share the exact row
+ * breaks the renderer compiles. Never emits an empty row; spans outside
+ * 1..5 coerce into range and NaN reads as 1.
+ */
+export function packBentoRows(
+  spans: ReadonlyArray<number>,
+  unitsPerRow: number = TRELLIS_GRID_ROW_UNITS,
+): number[][] {
+  const cap =
+    Number.isFinite(unitsPerRow) && unitsPerRow >= 1
+      ? Math.floor(unitsPerRow)
+      : TRELLIS_GRID_ROW_UNITS;
+
+  const rows: number[][] = [];
+  let current: number[] = [];
+  let used = 0;
+
+  spans.forEach((raw, index) => {
+    const units = Number.isFinite(raw) && raw >= 1
+      ? Math.max(1, Math.min(cap, Math.round(raw)))
+      : 1;
+
+    if (current.length > 0 && used + units > cap) {
+      rows.push(current);
+      current = [];
+      used = 0;
+    }
+
+    current.push(index);
+    used += units;
+  });
+
+  if (current.length > 0) rows.push(current);
+
+  return rows;
+}
+
 function toTrellis(node: LayoutNode): ReactNode {
   switch (node.type) {
     case "panel":
@@ -357,45 +410,142 @@ function toTrellis(node: LayoutNode): ReactNode {
           {toTrellis(node.second)}
         </TrellisSplit>
       );
-    case "grid":
-      // Legacy grids migrate to auto on load; a grid reaching Trellis is a
-      // stale tree — flatten its cells in reading order into a column.
+    case "grid": {
+      // Legacy grids compile to a real 2-D Trellis grid: cells grouped by
+      // row (reading order), each row a horizontal split weighted by column
+      // spans, rows stacked vertically weighted by row spans. Degenerate
+      // coordinates coerce to 1 so a corrupt track can never collapse it.
+      if (node.items.length === 0) return null;
+
+      if (node.items.length === 1 && node.items[0])
+        return toTrellis(node.items[0].child);
+      const byRow = new Map<number, Array<(typeof node.items)[number]>>();
+
+      for (const item of node.items) {
+        const row = Number.isInteger(item.row) && item.row >= 1 ? item.row : 1;
+        const list = byRow.get(row) ?? [];
+        list.push(item);
+        byRow.set(row, list);
+      }
+
+      const orderedRows = [...byRow.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, cells]) =>
+          [...cells].sort((a, b) => a.col - b.col),
+        );
+
+      if (orderedRows.length === 1 && orderedRows[0]!.length === 1)
+        return toTrellis(orderedRows[0]![0]!.child);
+
+      return (
+        <TrellisSplit
+          axis="y"
+          weights={orderedRows.map((cells) =>
+            Math.max(
+              ...cells.map((cell) =>
+                Number.isInteger(cell.rowSpan) && cell.rowSpan >= 1
+                  ? cell.rowSpan
+                  : 1,
+              ),
+            ),
+          )}
+        >
+          {orderedRows.map((cells, rowIndex) => {
+            if (cells.length === 1 && cells[0])
+              return (
+                <Fragment key={cells[0].id}>
+                  {toTrellis(cells[0].child)}
+                </Fragment>
+              );
+
+            return (
+              <TrellisSplit
+                key={`grid-row-${rowIndex}`}
+                axis="x"
+                weights={cells.map((cell) =>
+                  Number.isInteger(cell.colSpan) && cell.colSpan >= 1
+                    ? cell.colSpan
+                    : 1,
+                )}
+              >
+                {cells.map((cell) => (
+                  <Fragment key={cell.id}>
+                    {toTrellis(cell.child)}
+                  </Fragment>
+                ))}
+              </TrellisSplit>
+            );
+          })}
+        </TrellisSplit>
+      );
+    }
+
+    case "flow":
+    case "masonry":
+    case "auto": {
       if (node.items.length === 0) return null;
 
       if (node.items.length === 1 && node.items[0])
         return toTrellis(node.items[0].child);
 
-      return (
-        <TrellisSplit axis="y">
-          {[...node.items]
-            .sort((a, b) => a.row - b.row || a.col - b.col)
-            .map((item) => (
-              <TrellisSplit axis="x" key={item.id}>
-                {toTrellis(item.child)}
-              </TrellisSplit>
-            ))}
-        </TrellisSplit>
+      // Bento/masonry/flow cards compile to a real responsive grid, not a
+      // single full-width column: spans pack into rows of at most 5 units
+      // (span 3 wide + span 2 narrow per row; 3 + 3 never shares), each row
+      // a horizontal split weighted by spans, rows stacked vertically
+      // weighted by their tallest card. Tall tables keep tall rows, stat
+      // strips keep short ones, and side-by-side cards share a row instead
+      // of each taking the full stage width. Below 56rem the CSS stacks
+      // every panel into a scrolling column (pure render override), so the
+      // same document is a tiled grid on desktop and a readable column on
+      // phones. Trellis owns the result after mount (dividers, docking).
+      // Flow cards carry no span (width lives on the item); masonry/auto
+      // cards declare it, and coerceSpanUnits absorbs corrupt NaN/Infinity.
+      const spans = node.items.map((item) =>
+        coerceSpanUnits("span" in item ? item.span : 1),
       );
-    case "flow":
-    case "masonry":
-    case "auto": {
-      const children = node.items.map((item) => item.child);
 
-      if (children.length === 0) return null;
+      const rows = packBentoRows(spans);
 
-      if (children.length === 1 && children[0]) return toTrellis(children[0]);
+      if (rows.length === 1 && rows[0]!.length === 1 && node.items[0])
+        return toTrellis(node.items[0].child);
 
-      // Bento/masonry/flow cards become Trellis panels in a column — Trellis
-      // then owns packing via splits, docking, floating and zoom. Exact
-      // persisted card geometry (px height, fractional span) stays in the
-      // NFI document for a future controlled-layout bridge.
+      const rowHeights = rows.map(
+        (row) =>
+          Math.max(
+            ...row.map((index) => {
+              const height = node.items[index]!.height;
+
+              return Number.isFinite(height) && height > 0 ? height : 1;
+            }),
+          ),
+      );
+
       return (
-        <TrellisSplit axis="y">
-          {node.items.map((item) => (
-            <TrellisSplit axis="x" key={item.id}>
-              {toTrellis(item.child)}
-            </TrellisSplit>
-          ))}
+        <TrellisSplit axis="y" weights={rowHeights}>
+          {rows.map((row, rowIndex) => {
+            const first = row[0]!;
+
+            if (row.length === 1 && node.items[first])
+              return (
+                <Fragment key={node.items[first]!.id}>
+                  {toTrellis(node.items[first]!.child)}
+                </Fragment>
+              );
+
+            return (
+              <TrellisSplit
+                key={`bento-row-${rowIndex}`}
+                axis="x"
+                weights={row.map((index) => spans[index]!)}
+              >
+                {row.map((index) => (
+                  <Fragment key={node.items[index]!.id}>
+                    {toTrellis(node.items[index]!.child)}
+                  </Fragment>
+                ))}
+              </TrellisSplit>
+            );
+          })}
         </TrellisSplit>
       );
     }
@@ -453,7 +603,7 @@ function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
 
   useEffect(() => {
     if (!ws) return;
-    trellisWsHandle.current = ws;
+    setTrellisWorkspaceHandle(ws);
     let cancelled = false;
     // Surfaces settle a frame after mount; retry briefly if not ready.
     let attempts = 0;
@@ -463,18 +613,71 @@ function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
 
       try {
         if (Object.keys(panels).length === 0) {
-          ws.reset();
+          // Slot-only grids (a preset picked on an empty page) have
+          // views but no store panels — resetting would wipe the fresh
+          // slots, so only a truly viewless workspace resets.
+          if (ws.getSnapshot().views.length === 0) ws.reset();
 
           return;
         }
 
+        // First widget open consumes any pending empty-page layout.
+        clearPendingSlotLayout();
         const snapshot = ws.getSnapshot();
         const existing = new Set(snapshot.views.map((v) => v.id));
+        // Slot-targeted pick (empty pane Add button): land the new widget
+        // INTO the slot's panel and retire the placeholder by its VIEW id.
+        // Read-only — only the pick path consumes it, the picker-cancel
+        // path clears it, so a pending target can never hijack an unrelated
+        // add. Consumed exactly once: later new panels in the same commit
+        // fall through to default placement.
+        let pendingSlot = peekPendingSlotTarget();
 
         for (const panelId of Object.keys(panels)) {
           const viewId = viewIdForPanel(panelId);
 
-          if (!existing.has(viewId)) {
+          if (existing.has(viewId)) continue;
+
+          let placed = false;
+
+          if (pendingSlot) {
+            const target = pendingSlot;
+            pendingSlot = null;
+
+            try {
+              const opened = ws.open("widget", {
+                id: viewId,
+                params: { panelId } satisfies TrellisWidgetParams,
+                focus: true,
+                placement: { into: target.panelId },
+              });
+
+              // Only retire the placeholder when the widget actually landed
+              // in its panel — a stale `into` falls back to side/stage
+              // placement and must leave the slot grid untouched.
+              placed = opened.panelId === target.panelId;
+            } catch {
+              placed = false;
+            }
+
+            takePendingSlotTarget();
+
+            if (placed) {
+              // Retire the exact placeholder first (cannot miss), then sweep
+              // any other slot views still sharing its panel (stale
+              // traversal ids after repeated preset applies) so no "Empty
+              // pane" tab survives next to the new widget.
+              void ws.close(target.viewId, { force: true });
+
+              for (const slot of ws.views({ type: "slot" })) {
+                if (slot.panelId === target.panelId && slot.id !== target.viewId) {
+                  void ws.close(slot.id, { force: true });
+                }
+              }
+            }
+          }
+
+          if (!placed) {
             ws.open("widget", {
               id: viewId,
               params: { panelId } satisfies TrellisWidgetParams,
@@ -537,7 +740,26 @@ export function TrellisWorkspace({
   // surfaces); Trellis owns its dividers, so both collapse to read-only.
   const readOnly = locked || isSplitLocked;
 
-  trellisCanvasOpener.current = onOpenCanvas ?? null;
+  // A preset picked on an empty page waits here: the empty branch below
+  // mounts Trellis with it as `defaultLayout` (scoped per page, cleared
+  // on first widget open and on layout reset).
+  const pendingLayout = usePendingSlotLayout();
+
+  const pendingForPage =
+    pendingLayout?.pageId === activePageId ? pendingLayout : null;
+
+  // Canvas picker channel: plain opens clear any pending slot target (an
+  // explicit "add anywhere" wins); slot opens arm it so the bridge lands
+  // the picked widget into that panel. Picker-cancel clears it in AppShell.
+  setTrellisCanvasOpener(
+    onOpenCanvas
+      ? (anchor, slotTarget) => {
+          if (slotTarget) setPendingSlotTarget(slotTarget);
+          else clearPendingSlotTarget();
+          onOpenCanvas(anchor);
+        }
+      : null,
+  );
 
   const initialLayout = useMemo(
     () => toTrellis(workspace.layout),
@@ -548,30 +770,24 @@ export function TrellisWorkspace({
     [activePageId, workspace.layout],
   );
 
-  // Empty page: don't mount Trellis at all — render the old bento empty
-  // state directly. Trellis only mounts with ≥1 view, so no degenerate
+  // Empty page: don't mount Trellis at all — the shared empty state
+  // directly — unless a preset was just picked for it (pending layout),
+  // which mounts Trellis with the slot grid as its initial document.
+  // Trellis only mounts with ≥1 view, so no degenerate
   // skeleton can ever exist; adding the first widget mounts it fresh.
   // (Corrupt non-empty trees still mount Trellis — the bridge opens the
   // store panels with default placement and heals them live.)
-  if (!initialLayout && Object.keys(workspace.panels).length === 0) {
+  if (!initialLayout && Object.keys(workspace.panels).length === 0 && !pendingForPage) {
     return (
       <div className="nfi-trellis-empty">
-        <div className="nfi-panel" data-focused="false">
-          <div className="nfi-panel-body nfi-empty-group">
-            <p>No widgets yet.</p>
-            {readOnly || !onOpenCanvas ? null : (
-              <button
-                type="button"
-                className="cds--btn cds--btn--secondary cds--btn--sm"
-                onClick={(event) =>
-                  onOpenCanvas(event.currentTarget.getBoundingClientRect())
-                }
-              >
-                Add widget
-              </button>
-            )}
-          </div>
-        </div>
+        <EmptyPane
+          title="No widgets yet."
+          onAdd={
+            readOnly || !onOpenCanvas
+              ? undefined
+              : (anchor) => onOpenCanvas(anchor)
+          }
+        />
       </div>
     );
   }
@@ -586,14 +802,20 @@ export function TrellisWorkspace({
       tabs={{ fill: false, inset: 0 }}
       navigation="focus"
       storageKey={`nfi-trellis-${activePageId}`}
-      // v2: v1 persisted documents predate the stale-view cleanup and the
-      // px tab-bar fix — discard them and rebuild from the NFI document.
-      version={2}
+      // v4: v3 persisted documents predate the 2-D grid compiler (every
+      // bento page mounted as a single full-width column) — discard them
+      // and rebuild from the NFI document. Panel configs are untouched;
+      // only Trellis divider/dock positions reset.
+      version={4}
+      // A preset picked on the empty page becomes the initial document
+      // (the pick handler already dropped any stale persisted doc that
+      // would override it). Absent everywhere else.
+      defaultLayout={pendingForPage?.doc}
       panelMenu={false}
       className="nfi-trellis"
       onFocus={(viewId) => {
         if (viewId === null) return;
-        const ws = trellisWsHandle.current;
+        const ws = getTrellisWorkspaceHandle();
 
         const params = ws
           ?.getSnapshot()
@@ -627,46 +849,39 @@ export function TrellisWorkspace({
         <WidgetView registry={registry} />
       </ViewType>
 
+      {/* Empty-pane placeholders minted by grid presets — a dashed slot
+          with an Add-widget affordance, never a store panel, so the
+          bridge ignores them (open/close sync is widget-typed only).
+          `tabbar="never"`: a slot is exactly the empty-page look (no
+          tab strip), just embedded in the grid. */}
+      <ViewType id="slot" tabbar="never">
+        <SlotView />
+      </ViewType>
+
       <TrellisStage
         empty={
-          <div className="nfi-panel" data-focused="false">
-            <div className="nfi-panel-body nfi-empty-group">
-              <p>No widgets yet.</p>
-              {readOnly || !onOpenCanvas ? null : (
-                <button
-                  type="button"
-                  className="cds--btn cds--btn--secondary cds--btn--sm"
-                  onClick={(event) =>
-                    onOpenCanvas(event.currentTarget.getBoundingClientRect())
-                  }
-                >
-                  Add widget
-                </button>
-              )}
-            </div>
-          </div>
+          <EmptyPane
+            title="No widgets yet."
+            onAdd={
+              readOnly || !onOpenCanvas
+                ? undefined
+                : (anchor) => onOpenCanvas(anchor)
+            }
+          />
         }
       >
         {initialLayout}
       </TrellisStage>
 
       <Workspace.Empty>
-        <div className="nfi-panel" data-focused="false">
-          <div className="nfi-panel-body nfi-empty-group">
-            <p>Workspace is empty.</p>
-            {readOnly || !onOpenCanvas ? null : (
-              <button
-                type="button"
-                className="cds--btn cds--btn--secondary cds--btn--sm"
-                onClick={(event) =>
-                  onOpenCanvas(event.currentTarget.getBoundingClientRect())
-                }
-              >
-                Add widget
-              </button>
-            )}
-          </div>
-        </div>
+        <EmptyPane
+          title="Workspace is empty."
+          onAdd={
+            readOnly || !onOpenCanvas
+              ? undefined
+              : (anchor) => onOpenCanvas(anchor)
+          }
+        />
       </Workspace.Empty>
 
       <Workspace.Chrome>

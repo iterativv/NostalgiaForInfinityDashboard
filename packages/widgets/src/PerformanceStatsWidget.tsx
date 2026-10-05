@@ -15,6 +15,7 @@ import type { Capability } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
 import { EmptyState, Stat, useDerived, WidgetFrame } from "@nfi/ui";
 import { applyWidgetSettings } from "./shared/panelConfig";
+import { COL } from "./shared/columns";
 import { InstanceIdField, numberWithDefault } from "./shared/config";
 import { clampInt, pnlTone } from "./shared/format";
 import { queryState, useWidgetAccess } from "./shared/query";
@@ -171,13 +172,13 @@ export function PerformanceStatsWidget({
         {trades > 0 ? (
           <div className="nfi-stat-grid nfi-stat-grid--fill">
             <Stat
-              label="Net profit"
+              label={COL.totalProfit}
               value={`${net >= 0 ? "+" : ""}${net.toFixed(2)}`}
               sub={`${trades} trades`}
               tone={pnlTone(net)}
             />
             <Stat
-              label="Winrate"
+              label={COL.winRate}
               value={`${winrate.toFixed(1)}%`}
               sub={`${wins}W / ${losses}L`}
             />

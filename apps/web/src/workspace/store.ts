@@ -80,6 +80,7 @@ import {
   refreshPresetWorkspace,
   type PageIconKey,
 } from "./pages";
+import { clearPendingSlotLayout } from "./TrellisPresets";
 
 /**
  * Frontend workspace store — the single owner of interactive workspace state.
@@ -380,6 +381,11 @@ export function hasPreviewEdits(): boolean {
   return previewBase.size > 0;
 }
 
+/** Ids of pages with unstaged preview edits (banner count + save-all). */
+export function previewEditedPageIds(): ReadonlyArray<string> {
+  return [...previewBase.keys()];
+}
+
 /** Keep the first pre-edit snapshot of a page touched during preview. */
 function snapshotPreviewBase(prev: Workspace): void {
   if (isViewAsActive() && !previewBase.has(prev.id)) {
@@ -395,18 +401,75 @@ viewAsStore.subscribe((state) => {
 });
 
 /**
- * Persist staged preview edits for the ACTIVE page (banner Save). Returns
- * false when there is nothing staged or the write failed (edits stay
- * staged in memory either way).
+ * Persist staged preview edits (banner Save). Saves EVERY touched page, not
+ * just the active one: an admin arranging the public dashboard often
+ * touches Home, switches to another page to compare, then hits Save — only
+ * persisting the active page would silently leave Home unsaved, so the
+ * other user (e.g. anonymous in incognito) keeps seeing the old layout and
+ * the save looks broken. Inactive pages save via direct writes; the active
+ * page goes through the forced persist path so status/lastSaved stays
+ * consistent. Returns true only when every staged page saved (failed pages
+ * stay staged for retry).
  */
 export async function savePreviewEdits(): Promise<boolean> {
   if (!hasPreviewEdits()) return false;
+  const activeId = workspaceStore.state.activePageId;
+  const stagedIds = [...previewBase.keys()];
+  const inactiveIds = stagedIds.filter((id) => id !== activeId);
+  let inactiveOk = true;
+
+  for (const id of inactiveIds) {
+    const current = pageCache.get(id);
+
+    if (!current) {
+      previewBase.delete(id);
+      continue;
+    }
+
+    if (isHomePageId(id)) saveHomePageLocal(current);
+
+    if (!capabilitiesStore.state.granted.includes("workspace.save")) {
+      // No share grant (e.g. real anonymous previewing Home): local-only
+      // edits never overwrite the shared copy — consider them saved.
+      if (isHomePageId(id)) previewBase.delete(id);
+      else inactiveOk = false;
+
+      continue;
+    }
+
+    try {
+      await runApi((client) =>
+        client.Workspace.save({
+          path: { id: current.id },
+          payload: { workspace: current },
+        }),
+      );
+      previewBase.delete(id);
+    } catch {
+      inactiveOk = false;
+    }
+  }
+
+  // Active page untouched: nothing more to do — report the inactive result.
+  if (!previewBase.has(activeId)) {
+    if (inactiveOk && !hasPreviewEdits()) {
+      workspaceStore.setState((state) => ({
+        ...state,
+        status: "saved",
+        detail: null,
+        lastSavedAt: new Date().toISOString(),
+      }));
+    }
+
+    return inactiveOk && !hasPreviewEdits();
+  }
+
   await persistWorkspaceNow({ force: true });
 
   if (workspaceStore.state.status === "saved") {
-    previewBase.delete(workspaceStore.state.workspace.id);
+    previewBase.delete(activeId);
 
-    return true;
+    return inactiveOk && !hasPreviewEdits();
   }
 
   return false;
@@ -672,12 +735,13 @@ function toSummaries(
  * (the presets stay available in the Add-page dialog). Fully offline falls
  * back to Home only.
  *
- * How to save the anonymous layout: edit Home (as root, optionally while
- * previewing `anonymous` in the header View-as switcher) — every edit
- * auto-saves to the shared backend copy, so an incognito window lands on
- * the same layout. Point the `anonymous` role's landing page at Home on the
- * Manage users page and keep its widgets to the `.relative` set for a
- * leak-free public share.
+ * How to save the anonymous layout: Manage users → Edit layout on the
+ * anonymous row (or header View-as → anonymous) — arrange Home on the
+ * terminal, then Save layout for anonymous in the banner, which persists
+ * every staged page to the shared backend copy, so an incognito window
+ * lands on the same layout after reload. Point the `anonymous` role's
+ * landing page at Home on the Manage users page and keep its widgets to
+ * the `.relative` set for a leak-free public share.
  */
 export async function hydrateWorkspace(): Promise<void> {
   if (hydrated) return;
@@ -1631,8 +1695,11 @@ export function resetPageById(pageId: string): boolean {
 
   if (!cached) return false;
   snapshotPreviewBase(cached);
-  // Reset is a clean slate: floating windows of this page are discarded.
+  // Reset is a clean slate: floating windows of this page are discarded,
+  // and so is a preset picked on its empty state (else the slots would
+  // resurrect right after the reset).
   clearFloatingTabsForPage(pageId);
+  clearPendingSlotLayout();
 
   const fresh = freshLayoutForPageId(cached);
   pageCache.set(fresh.id, fresh);

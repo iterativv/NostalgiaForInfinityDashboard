@@ -151,7 +151,7 @@ export const ProfitWidgetDef = defineWidget({
   defaultConfig: PROFIT_DEFAULTS,
   component: ProfitWidget,
   capabilities: [...PROFIT_CAPABILITIES],
-  minWidth: 370,
+  minWidth: 360,
   minHeight: 156,
   defaultWidth: 360,
   defaultHeight: 220,

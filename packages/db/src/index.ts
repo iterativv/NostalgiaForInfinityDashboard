@@ -56,10 +56,19 @@ export {
   type UserRepoService,
 } from "./users.js";
 
+export {
+  migrateSessions,
+  SessionRepo,
+  SessionRepoLive,
+  type SessionRepoService,
+  type StoredSession,
+} from "./sessions.js";
+
 import { migrateWorkspaces } from "./workspaces.js";
 import { migrateInstances } from "./instances.js";
 import { migrateSettings } from "./settings.js";
 import { migrateUsers } from "./users.js";
+import { migrateSessions } from "./sessions.js";
 
 /**
  * @nfi/db
@@ -191,6 +200,7 @@ export const migrate: Effect.Effect<
   yield* migrateInstances;
   yield* migrateSettings;
   yield* migrateUsers;
+  yield* migrateSessions;
 }).pipe(Effect.asVoid);
 
 /** One link of a driver error's `cause` chain: an optional message plus the next link. */

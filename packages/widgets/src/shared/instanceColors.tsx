@@ -15,9 +15,11 @@
  */
 
 import type { CSSProperties } from "react";
+import { useStore } from "@tanstack/react-store";
 import { useCapability } from "../live/live";
-import { useDerived } from "@nfi/ui";
+import { shallow, useDerived } from "@nfi/ui";
 import { ALL_INSTANCES } from "./InstanceSelect";
+import { INSTANCE_COLOR_PALETTE_CB, colorBlindStore } from "./colorBlind";
 
 /** Distinct hues that read on Carbon white/g10/g90/g100 alike. */
 export const INSTANCE_COLOR_PALETTE: ReadonlyArray<string> = [
@@ -36,14 +38,15 @@ export const INSTANCE_COLOR_PALETTE: ReadonlyArray<string> = [
 ];
 
 /** Palette slot by list position (wraps past the palette size). */
-export const instanceColorByIndex = (index: number): string =>
-  INSTANCE_COLOR_PALETTE[
-    ((index % INSTANCE_COLOR_PALETTE.length) + INSTANCE_COLOR_PALETTE.length) %
-      INSTANCE_COLOR_PALETTE.length
-  ] ?? INSTANCE_COLOR_PALETTE[0]!;
+export const instanceColorByIndex = (
+  index: number,
+  palette: ReadonlyArray<string> = INSTANCE_COLOR_PALETTE,
+): string =>
+  palette[((index % palette.length) + palette.length) % palette.length] ??
+  palette[0]!;
 
 /** FNV-1a — small, stable, no dependencies. */
-const hashToIndex = (key: string): number => {
+const hashToIndex = (key: string, slots: number): number => {
   let hash = 0x811c9dc5;
 
   for (let i = 0; i < key.length; i++) {
@@ -51,12 +54,14 @@ const hashToIndex = (key: string): number => {
     hash = Math.imul(hash, 0x01000193);
   }
 
-  return Math.abs(hash) % INSTANCE_COLOR_PALETTE.length;
+  return Math.abs(hash) % slots;
 };
 
 /** Deterministic fallback color for keys the instance list cannot resolve. */
-export const instanceColorOf = (idOrName: string): string =>
-  INSTANCE_COLOR_PALETTE[hashToIndex(idOrName)] ?? INSTANCE_COLOR_PALETTE[0]!;
+export const instanceColorOf = (
+  idOrName: string,
+  palette: ReadonlyArray<string> = INSTANCE_COLOR_PALETTE,
+): string => palette[hashToIndex(idOrName, palette.length)] ?? palette[0]!;
 
 /**
  * Alpha-dimmed variant of a `#rrggbb` color — for secondary series of the
@@ -178,47 +183,56 @@ export interface InstanceColors {
  */
 export function useInstanceColors(): InstanceColors {
   const { data } = useCapability("instances.list", {});
+  const colorBlind = useStore(colorBlindStore, (enabled) => enabled);
 
   // Derived through a store: the resolver (and its Maps) is rebuilt only
-  // when the instance list snapshot actually changes.
-  return useDerived(data, (data) => {
-    const instances = data?.instances ?? [];
-    const indexOf = new Map<string, number>();
-    const idOf = new Map<string, string>();
+  // when the instance list snapshot or the palette setting actually changes.
+  return useDerived(
+    [data, colorBlind] as const,
+    ([data, colorBlind]) => {
+      const palette = colorBlind
+        ? INSTANCE_COLOR_PALETTE_CB
+        : INSTANCE_COLOR_PALETTE;
 
-    instances.forEach((instance, index) => {
-      indexOf.set(instance.id, index);
-      indexOf.set(instance.name, index);
-      idOf.set(instance.name, instance.id);
-    });
+      const instances = data?.instances ?? [];
+      const indexOf = new Map<string, number>();
+      const idOf = new Map<string, string>();
 
-    const autoColorOf = (idOrName: string | undefined): string | null => {
-      if (idOrName === undefined || idOrName === "") return null;
+      instances.forEach((instance, index) => {
+        indexOf.set(instance.id, index);
+        indexOf.set(instance.name, index);
+        idOf.set(instance.name, instance.id);
+      });
 
-      if (idOrName === ALL_INSTANCES) return null;
+      const autoColorOf = (idOrName: string | undefined): string | null => {
+        if (idOrName === undefined || idOrName === "") return null;
 
-      const index = indexOf.get(idOrName);
+        if (idOrName === ALL_INSTANCES) return null;
 
-      return index !== undefined
-        ? instanceColorByIndex(index)
-        : instanceColorOf(idOrName);
-    };
+        const index = indexOf.get(idOrName);
 
-    const colorOf = (idOrName: string | undefined): string | null => {
-      if (idOrName === undefined || idOrName === "") return null;
+        return index !== undefined
+          ? instanceColorByIndex(index, palette)
+          : instanceColorOf(idOrName, palette);
+      };
 
-      if (idOrName === ALL_INSTANCES) return null;
+      const colorOf = (idOrName: string | undefined): string | null => {
+        if (idOrName === undefined || idOrName === "") return null;
 
-      // Resolve display names to their owning id first so a custom color
-      // set on the instance applies to name-keyed lookups (chart series).
-      const id = idOf.get(idOrName) ?? idOrName;
-      const stored = instances.find((instance) => instance.id === id);
+        if (idOrName === ALL_INSTANCES) return null;
 
-      return stored?.color ?? autoColorOf(idOrName);
-    };
+        // Resolve display names to their owning id first so a custom color
+        // set on the instance applies to name-keyed lookups (chart series).
+        const id = idOf.get(idOrName) ?? idOrName;
+        const stored = instances.find((instance) => instance.id === id);
 
-    return { colorOf, autoColorOf, instances };
-  });
+        return stored?.color ?? autoColorOf(idOrName);
+      };
+
+      return { colorOf, autoColorOf, instances };
+    },
+    { inputs: shallow },
+  );
 }
 
 /**
@@ -243,6 +257,11 @@ export function InstanceColorPicker({
     selected
       ? { outline: "2px solid var(--cds-icon-primary)", outlineOffset: "2px" }
       : {};
+
+  // Swatches follow the active palette (standard or color-blind safe).
+  const swatches = useStore(colorBlindStore, (enabled) =>
+    enabled ? INSTANCE_COLOR_PALETTE_CB : INSTANCE_COLOR_PALETTE,
+  );
 
   return (
     <div className="nfi-settings-select">
@@ -280,7 +299,7 @@ export function InstanceColorPicker({
             <AllInstancesDot />
           )}
         </button>
-        {INSTANCE_COLOR_PALETTE.map((color) => (
+        {swatches.map((color) => (
           <button
             key={color}
             type="button"

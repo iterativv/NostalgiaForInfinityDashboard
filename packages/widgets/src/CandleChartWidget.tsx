@@ -46,6 +46,7 @@ import { useNarrowMode } from "./shared/size";
 import { InstanceSelect } from "./shared/InstanceSelect";
 import { PairCombobox } from "./shared/PairCombobox";
 import { SettingsSelect } from "./shared/SettingsSelect";
+import { candlePalette, useColorBlindSafe } from "./shared/colorBlind";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
 import {
@@ -58,11 +59,23 @@ import {
   utcSeconds,
   type TvOverlayLine,
   type TvSubplot,
+  type TvTradeMarker,
 } from "./shared/CandleChart";
+import {
+  averageEntryPrice as computeAverageEntry,
+  buildTradeMarkers,
+  timeframeSeconds,
+} from "./shared/tradeOverlay";
 
 export const CANDLE_MARKET_CAPABILITY: Capability = "instances.candles";
 
 export const CANDLE_INDICATORS_CAPABILITY: Capability = "instances.plot-config";
+
+/** Open positions feed the avg-entry line + entry markers (gated). */
+export const CANDLE_TRADES_CAPABILITY: Capability = "instances.open-positions";
+
+/** Closed positions feed exit/derisk markers within the window (gated). */
+export const CANDLE_CLOSED_CAPABILITY: Capability = "instances.closed-positions";
 
 export const CandleTimeframe = Schema.Literal(
   "1m",
@@ -98,6 +111,10 @@ export const CandleChartConfigSchema = Schema.Struct({
   showBollinger: booleanWithDefault(false),
   showVwap: booleanWithDefault(true),
   showVolume: booleanWithDefault(true),
+  /** Violet entry dots + amber exit arrows from the pair's sub-orders. */
+  showTrades: booleanWithDefault(true),
+  /** Blue dashed avg-entry line with green/red PnL fill. */
+  showAvgEntry: booleanWithDefault(true),
   subplot: Schema.optionalWith(CandleSubplot, {
     default: (): CandleSubplot => "rsi",
   }),
@@ -195,6 +212,53 @@ const computeVwap = (
   return out;
 };
 
+/** Header chip for the pair's open position(s): `11 @ 0.3456 (+2.10%)`. */
+function PositionChip({
+  positions,
+  avgEntry,
+  precision,
+  compact,
+}: {
+  positions: ReadonlyArray<{ amount: number; profitPct?: number }>;
+  avgEntry: number;
+  precision: number;
+  compact: boolean;
+}) {
+  const single = positions.length === 1 ? positions[0] : undefined;
+  const pct = single?.profitPct;
+  const hasPct = pct !== undefined && Number.isFinite(pct);
+
+  if (compact && !hasPct) return null;
+
+  const totalAmount = positions.reduce(
+    (sum, p) => sum + (Number.isFinite(p.amount) ? p.amount : 0),
+    0,
+  );
+
+  const title =
+    positions.length === 1
+      ? `Open position · avg entry ${avgEntry.toFixed(precision)}`
+      : `${positions.length} open positions · avg entry ${avgEntry.toFixed(precision)}`;
+
+  return (
+    <span className="nfi-candle-range" title={title}>
+      {compact ? null : (
+        <>
+          {fmtCompact(totalAmount)} @ {avgEntry.toFixed(precision)}{" "}
+        </>
+      )}
+      {hasPct ? (
+        <span
+          className={pct >= 0 ? "nfi-pnl-positive" : "nfi-pnl-negative"}
+        >
+          ({pct >= 0 ? "+" : ""}
+          {pct.toFixed(2)}%)
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function CandleChartWidget({
   config,
   panelId,
@@ -225,6 +289,26 @@ export function CandleChartWidget({
     "instances.plot-config",
     { id: cfg.instanceId },
     { enabled: indicatorsAccess.allowed },
+  );
+
+  // Trade overlay sources (gated: without these the chart renders without
+  // markers — same pattern as the indicator lock above). Closed window is
+  // capped at 200 trades; markers are further cut to the candle window.
+  const tradesAccess = useWidgetAccess([
+    CANDLE_TRADES_CAPABILITY,
+    CANDLE_CLOSED_CAPABILITY,
+  ]);
+
+  const openPosQ = useCapability(
+    "instances.open-positions",
+    { id: cfg.instanceId },
+    { enabled: tradesAccess.allowed },
+  );
+
+  const closedPosQ = useCapability(
+    "instances.closed-positions",
+    { id: cfg.instanceId, limit: "200" },
+    { enabled: tradesAccess.allowed },
   );
 
   const state = queryState(candlesQ.error, candlesQ.isLoading);
@@ -272,6 +356,73 @@ export function CandleChartWidget({
         volume: c.volume,
       })),
     ),
+  );
+
+  // Open positions for THIS pair — the avg-entry line and the header chip.
+  const pairOpen = useDerived(
+    [openPosQ.data, cfg.pair] as const,
+    ([data, pair]) => (data?.positions ?? []).filter((p) => p.pair === pair),
+    { inputs: shallow },
+  );
+
+  // Closed positions for THIS pair — exit/derisk markers in the window.
+  const pairClosed = useDerived(
+    [closedPosQ.data, cfg.pair] as const,
+    ([data, pair]) => (data?.positions ?? []).filter((p) => p.pair === pair),
+    { inputs: shallow },
+  );
+
+  // Stake-weighted avg entry (null = no open position → no line/fill).
+  const avgEntry = useDerived(
+    [pairOpen, cfg.showAvgEntry, tradesAccess.allowed] as const,
+    ([open, show, allowed]): number | null => {
+      if (!allowed || !show || open.length === 0) return null;
+
+      return computeAverageEntry(
+        open.map((p) => ({
+          openRate: p.openRate,
+          stakeAmount: p.stakeAmount,
+        })),
+      );
+    },
+    { inputs: shallow },
+  );
+
+  // Sub-orders → chart markers, snapped to the visible candle buckets.
+  const candleSecs = useDerived(
+    bars,
+    (src): number[] => src.map((b) => b.time),
+  );
+
+  // MACD histogram sentiment colors follow the color-blind safe setting
+  // (declared before the subplot derivation that closes over it).
+  const palette = candlePalette(useColorBlindSafe());
+
+  const pairOrders = useDerived(
+    [pairOpen, pairClosed] as const,
+    ([open, closed]) => [
+      ...open.flatMap((p) => p.orders ?? []),
+      ...closed.flatMap((p) => p.orders ?? []),
+    ],
+    { inputs: shallow },
+  );
+
+  const tradeMarkers = useDerived(
+    [pairOrders, candleSecs, cfg.timeframe, cfg.showTrades, tradesAccess.allowed] as const,
+    ([orders, secs, timeframe, show, allowed]): TvTradeMarker[] => {
+      if (!allowed || !show || orders.length === 0 || secs.length === 0)
+        return [];
+      const tfSec = timeframeSeconds(timeframe);
+
+      if (tfSec === null) return [];
+
+      return buildTradeMarkers(orders, secs, tfSec).map((m) => ({
+        time: utcSeconds(m.time),
+        kind: m.kind,
+        text: m.text,
+      }));
+    },
+    { inputs: shallow },
   );
 
   const overlays = useDerived(
@@ -383,8 +534,8 @@ export function CandleChartWidget({
   );
 
   const subplot = useDerived(
-    [cfg.subplot, indicatorsAccess.allowed, rsiPlots, macdPlots] as const,
-    ([subplot, allowed, rsiPlots, macdPlots]): TvSubplot | null => {
+    [cfg.subplot, indicatorsAccess.allowed, rsiPlots, macdPlots, palette] as const,
+    ([subplot, allowed, rsiPlots, macdPlots, pal]): TvSubplot | null => {
       if (!allowed || subplot === "none") return null;
 
       if (subplot === "rsi") {
@@ -408,10 +559,7 @@ export function CandleChartWidget({
           histogram.push({
             time: utcSeconds(p.time),
             value: p.value,
-            color:
-              p.value >= 0
-                ? "rgba(38, 166, 154, 0.6)"
-                : "rgba(239, 83, 80, 0.6)",
+            color: p.value >= 0 ? pal.histUp : pal.histDown,
           });
         }
       }
@@ -583,6 +731,18 @@ export function CandleChartWidget({
                 toggled={cfg.showVolume}
                 onToggle={(v) => patch({ showVolume: v })}
               />
+              <SettingsToggle
+                id={`candle-trades-${panelId}`}
+                label="Trade markers"
+                toggled={cfg.showTrades}
+                onToggle={(v) => patch({ showTrades: v })}
+              />
+              <SettingsToggle
+                id={`candle-avgent-${panelId}`}
+                label="Avg entry + PnL"
+                toggled={cfg.showAvgEntry}
+                onToggle={(v) => patch({ showAvgEntry: v })}
+              />
             </div>
             <SettingsSelect
               id={`candle-sub-${panelId}`}
@@ -601,6 +761,13 @@ export function CandleChartWidget({
             Indicators locked — needs {indicatorsAccess.missing.join(", ")}.
           </p>
         )}
+        {!tradesAccess.allowed ? (
+          <p
+            style={{ fontSize: "0.8125rem", color: "var(--cds-support-error)" }}
+          >
+            Trade overlay locked — needs {tradesAccess.missing.join(", ")}.
+          </p>
+        ) : null}
       </WidgetSettingsModal>
       <WidgetFrame
         title={`Candles · ${cfg.pair} · ${cfg.timeframe}`}
@@ -656,6 +823,145 @@ export function CandleChartWidget({
                   </button>
                 ))}
               </div>
+              {indicatorsAccess.allowed ? (
+                <div
+                  className="nfi-tf-group"
+                  role="group"
+                  aria-label="Indicators"
+                  title="Toggle indicator overlays"
+                >
+                  {(
+                    [
+                      {
+                        id: "sma20",
+                        text: "SMA20",
+                        active: cfg.showSma20,
+                        onToggle: () => patch({ showSma20: !cfg.showSma20 }),
+                      },
+                      {
+                        id: "sma50",
+                        text: "SMA50",
+                        active: cfg.showSma50,
+                        onToggle: () => patch({ showSma50: !cfg.showSma50 }),
+                      },
+                      {
+                        id: "ema12",
+                        text: "EMA12",
+                        active: cfg.showEma12,
+                        onToggle: () => patch({ showEma12: !cfg.showEma12 }),
+                      },
+                      {
+                        id: "bb",
+                        text: "BB",
+                        active: cfg.showBollinger,
+                        onToggle: () =>
+                          patch({ showBollinger: !cfg.showBollinger }),
+                      },
+                      {
+                        id: "vwap",
+                        text: "VWAP",
+                        active: cfg.showVwap,
+                        onToggle: () => patch({ showVwap: !cfg.showVwap }),
+                      },
+                      {
+                        id: "vol",
+                        text: "VOL",
+                        active: cfg.showVolume,
+                        onToggle: () => patch({ showVolume: !cfg.showVolume }),
+                      },
+                    ] as const
+                  ).map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      className={
+                        t.active ? "nfi-tf-btn nfi-tf-active" : "nfi-tf-btn"
+                      }
+                      onClick={t.onToggle}
+                      aria-pressed={t.active}
+                      title={`Toggle ${t.text}`}
+                    >
+                      {t.text}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {indicatorsAccess.allowed ? (
+                <div
+                  className="nfi-tf-group"
+                  role="group"
+                  aria-label="Subplot"
+                  title="Toggle RSI/MACD subplot"
+                >
+                  <button
+                    type="button"
+                    className={
+                      cfg.subplot === "rsi"
+                        ? "nfi-tf-btn nfi-tf-active"
+                        : "nfi-tf-btn"
+                    }
+                    onClick={() =>
+                      patch({ subplot: cfg.subplot === "rsi" ? "none" : "rsi" })
+                    }
+                    aria-pressed={cfg.subplot === "rsi"}
+                    title="Toggle RSI subplot"
+                  >
+                    RSI
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      cfg.subplot === "macd"
+                        ? "nfi-tf-btn nfi-tf-active"
+                        : "nfi-tf-btn"
+                    }
+                    onClick={() =>
+                      patch({
+                        subplot: cfg.subplot === "macd" ? "none" : "macd",
+                      })
+                    }
+                    aria-pressed={cfg.subplot === "macd"}
+                    title="Toggle MACD subplot"
+                  >
+                    MACD
+                  </button>
+                </div>
+              ) : null}
+              {tradesAccess.allowed ? (
+                <div
+                  className="nfi-tf-group"
+                  role="group"
+                  aria-label="Position history"
+                  title="Toggle trade markers and avg-entry line"
+                >
+                  <button
+                    type="button"
+                    className={
+                      cfg.showTrades
+                        ? "nfi-tf-btn nfi-tf-active"
+                        : "nfi-tf-btn"
+                    }
+                    onClick={() => patch({ showTrades: !cfg.showTrades })}
+                    aria-pressed={cfg.showTrades}
+                    title="Toggle trade markers (entries/exits)"
+                  >
+                    Trades
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      cfg.showAvgEntry
+                        ? "nfi-tf-btn nfi-tf-active"
+                        : "nfi-tf-btn"
+                    }
+                    onClick={() => patch({ showAvgEntry: !cfg.showAvgEntry })}
+                    aria-pressed={cfg.showAvgEntry}
+                    title="Toggle avg-entry line with PnL shading"
+                  >
+                    Avg
+                  </button>
+                </div>
+              ) : null}
               <span className="nfi-candle-quote">
                 <span
                   className={
@@ -673,6 +979,16 @@ export function CandleChartWidget({
                   {windowChange >= 0 ? "+" : ""}
                   {windowChange.toFixed(2)}%
                 </span>
+                {tradesAccess.allowed &&
+                pairOpen.length > 0 &&
+                avgEntry !== null ? (
+                  <PositionChip
+                    positions={pairOpen}
+                    avgEntry={avgEntry}
+                    precision={chartPrecision}
+                    compact={narrow}
+                  />
+                ) : null}
                 {narrow ? null : (
                   <>
                     <span className="nfi-candle-range">
@@ -719,6 +1035,8 @@ export function CandleChartWidget({
               overlays={overlays}
               showVolume={cfg.showVolume}
               subplot={subplot}
+              tradeMarkers={tradeMarkers}
+              avgEntryPrice={avgEntry}
             />
           </div>
         ) : (
@@ -737,13 +1055,18 @@ export const CandleChartWidgetDef = defineWidget({
   hasSettings: true,
   title: "Candle Chart",
   description:
-    "OHLCV candlesticks with SMA/EMA/Bollinger overlays, volume and RSI/MACD.",
+    "OHLCV candlesticks with SMA/EMA/Bollinger overlays, volume and RSI/MACD — plus trade markers, avg-entry line and PnL shading.",
   configSchema: CandleChartConfigSchema,
   defaultConfig: CANDLE_CHART_DEFAULTS,
   component: CandleChartWidget,
-  capabilities: [CANDLE_MARKET_CAPABILITY, CANDLE_INDICATORS_CAPABILITY],
-  minWidth: 900,
-  minHeight: 420,
+  capabilities: [
+    CANDLE_MARKET_CAPABILITY,
+    CANDLE_INDICATORS_CAPABILITY,
+    CANDLE_TRADES_CAPABILITY,
+    CANDLE_CLOSED_CAPABILITY,
+  ],
+  minWidth: 640,
+  minHeight: 480,
   defaultWidth: 960,
-  defaultHeight: 480,
+  defaultHeight: 640,
 });

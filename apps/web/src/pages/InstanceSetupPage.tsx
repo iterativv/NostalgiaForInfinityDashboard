@@ -14,6 +14,7 @@ import { useLocalStore, useStoreEffect } from "@nfi/ui";
 import { createInstance, formatQueryError, queryClient } from "../api";
 import { hydrateCapabilities, useCapabilities } from "../auth/capabilities";
 import { dismissInstanceSetup } from "../auth/firstRun";
+import { useDocumentTitle } from "../workspace/useDocumentTitle";
 
 /**
  * First freqtrade connection (`/setup/instances`). Shown by the first-run
@@ -52,6 +53,8 @@ export function InstanceSetupPage() {
     formStore,
     (s) => s,
   );
+
+  useDocumentTitle("Connect freqtrade — nfi-desk");
 
   useStoreEffect(() => {
     void hydrateCapabilities();

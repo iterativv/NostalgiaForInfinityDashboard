@@ -36,6 +36,12 @@ export interface PrefsState {
    * replaced by the raw widget at any size.
    */
   readonly disableWidgetMinSize: boolean;
+  /**
+   * High-contrast theme layer: pure black/white surfaces, full-strength
+   * text and stronger borders over whichever base theme is active.
+   * Combines with the color-blind safe palette (both layers merge).
+   */
+  readonly highContrast: boolean;
 }
 
 const defaultPrefs = (): PrefsState => ({
@@ -44,6 +50,7 @@ const defaultPrefs = (): PrefsState => ({
   colorTheme: "g100",
   accentColor: "blue",
   disableWidgetMinSize: false,
+  highContrast: false,
 });
 
 /** Shape actually persisted by the subscriber below (both fields optional). */
@@ -53,6 +60,7 @@ const PersistedPrefsSchema = Schema.Struct({
   colorTheme: Schema.optional(Schema.Literal(...CARBON_THEMES)),
   accentColor: Schema.optional(Schema.Literal(...ACCENT_COLORS)),
   disableWidgetMinSize: Schema.optional(Schema.Boolean),
+  highContrast: Schema.optional(Schema.Boolean),
 });
 
 const loadPrefs = (): PrefsState => {
@@ -75,6 +83,7 @@ const loadPrefs = (): PrefsState => {
           colorTheme: prefs.colorTheme ?? fallback.colorTheme,
           accentColor: prefs.accentColor ?? fallback.accentColor,
           disableWidgetMinSize: prefs.disableWidgetMinSize === true,
+          highContrast: prefs.highContrast === true,
         };
       }
     }
@@ -106,6 +115,7 @@ prefsStore.subscribe((state) => {
         colorTheme: state.colorTheme,
         accentColor: state.accentColor,
         disableWidgetMinSize: state.disableWidgetMinSize,
+        highContrast: state.highContrast,
       }),
     );
   } catch {
@@ -131,4 +141,8 @@ export function setAccentColor(accentColor: AccentColor): void {
 
 export function setDisableWidgetMinSize(disableWidgetMinSize: boolean): void {
   prefsStore.setState((state) => ({ ...state, disableWidgetMinSize }));
+}
+
+export function setHighContrast(highContrast: boolean): void {
+  prefsStore.setState((state) => ({ ...state, highContrast }));
 }

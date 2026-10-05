@@ -17,7 +17,7 @@ import {
   type Capability,
   type UserRole,
 } from "@nfi/api-contract";
-import { UserRepo, verifyPassword, type UserRepoService } from "@nfi/db";
+import { UserRepo, SessionRepo, verifyPassword, type UserRepoService } from "@nfi/db";
 import type { Principal } from "@nfi/capabilities";
 
 /**
@@ -30,10 +30,12 @@ import type { Principal } from "@nfi/capabilities";
  *   disabled, narrowed or edited by the user-management endpoints. Env
  *   takes precedence whenever it is present.
  * - Users + the anonymous grant live in sqlite (`@nfi/db` users table).
- * - Sessions are in-memory tokens in an HttpOnly `SameSite=Lax` cookie
- *   (plus `Secure` when the login arrived over TLS); a server restart logs
- *   everyone out (no tokens persist at rest). Grants are re-read from
- *   sqlite on every request, so capability edits apply immediately.
+ * - Sessions persist in sqlite (`@nfi/db` sessions table, same database file
+ *   on the deployment volume) as sha256 hashes of opaque random tokens, so
+ *   logins survive restarts and redeploys until their sliding 7-day expiry.
+ *   The cookie stays HttpOnly `SameSite=Lax` (plus `Secure` when the login
+ *   arrived over TLS). Grants are re-read from sqlite on every request, so
+ *   capability edits apply immediately.
  * - Logins are throttled per username (lockout after repeated failures —
  *   see the throttle block below).
  * - `principalFromRequest` never fails: an unknown/expired session or a
@@ -183,10 +185,9 @@ export const clearedSessionCookie = (): string =>
 // Service
 // ---------------------------------------------------------------------------
 
-interface SessionEntry {
-  userId: string;
-  expiresAt: number;
-}
+/** sha256 hex of an opaque session token — what persists, never the token. */
+const hashToken = (token: string): string =>
+  createHash("sha256").update(token, "utf8").digest("hex");
 
 export interface SessionAuthLogin {
   readonly response: LoginResponse;
@@ -198,8 +199,9 @@ export interface SessionAuthLogin {
 // Login throttle (in-memory, per username)
 //
 // 5 failures within 15 minutes lock the username for 15 minutes. This is a
-// brute-force brake, not a hardened AAA feature: sessions are in-memory
-// already, so a restart clears it, and the map is keyed by username only
+// brute-force brake, not a hardened AAA feature: the throttle is in-memory,
+// so a restart clears lockouts (fail-open for legit users after a deploy),
+// and the map is keyed by username only
 // (behind a reverse proxy the socket address is the proxy's, so per-IP
 // keying would throttle ALL users together). The accepted tradeoff: an
 // attacker who knows a username can keep it locked out; legit users wait
@@ -297,13 +299,17 @@ export const resolvePrincipalForRequest = (
     ? principalResolver(request)
     : Effect.succeed(anonymousFallback);
 
-export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> =
+export const SessionAuthLive: Layer.Layer<
+  SessionAuth,
+  never,
+  UserRepo | SessionRepo
+> =
   Layer.effect(
     SessionAuth,
     Effect.gen(function* () {
       const users = yield* UserRepo;
+      const sessions = yield* SessionRepo;
       const envRoot = readEnvRootCredentials();
-      const sessions = new Map<string, SessionEntry>();
 
       const loginFailures = new Map<string, number[]>();
       const loginLockedUntil = new Map<string, number>();
@@ -341,20 +347,31 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> =
         }
       };
 
-      const sweep = (now: number) => {
-        for (const [token, entry] of sessions) {
-          if (entry.expiresAt <= now) sessions.delete(token);
-        }
-      };
+      const mint = (userId: string): Effect.Effect<string, BackendError> =>
+        Effect.gen(function* () {
+          const token = randomBytes(32).toString("base64url");
+          const now = Date.now();
+          // Opportunistic expiry cleanup on the rare write path (logins, not
+          // reads); never blocks the login when the cleanup itself fails.
+          yield* sessions.sweepExpired(now).pipe(Effect.ignore);
+          yield* sessions
+            .createSession({
+              tokenHash: hashToken(token),
+              userId,
+              expiresAt: now + SESSION_TTL_MS,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause): BackendError =>
+                  BackendError.make({
+                    error: "session store failed",
+                    detail: cause instanceof Error ? cause.message : String(cause),
+                  }),
+              ),
+            );
 
-      const mint = (userId: string): string => {
-        const token = randomBytes(32).toString("base64url");
-        const now = Date.now();
-        sweep(now);
-        sessions.set(token, { userId, expiresAt: now + SESSION_TTL_MS });
-
-        return token;
-      };
+          return token;
+        });
 
       const anonymousFromDb: Effect.Effect<Principal> = Effect.catchAll(
         Effect.map(users.getUser(ANONYMOUS_USER_ID), (row) =>
@@ -368,57 +385,72 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> =
 
       const resolveToken = (
         token: string | undefined,
-      ): Effect.Effect<Principal> => {
-        if (token === undefined || token.length === 0) return anonymousFromDb;
-        const entry = sessions.get(token);
+      ): Effect.Effect<Principal> =>
+        Effect.gen(function* () {
+          if (token === undefined || token.length === 0)
+            return yield* anonymousFromDb;
 
-        if (!entry || entry.expiresAt <= Date.now()) {
-          if (entry) sessions.delete(token);
+          const digest = hashToken(token);
 
-          return anonymousFromDb;
-        }
+          // The store is the source of truth across restarts; a read failure
+          // fails safe to anonymous (the service contract never fails).
+          const stored = yield* sessions
+            .getSession(digest)
+            .pipe(Effect.catchAll(() => Effect.succeed(null)));
 
-        // Sliding expiry: activity keeps the session alive.
-        entry.expiresAt = Date.now() + SESSION_TTL_MS;
+          if (!stored || stored.expiresAt <= Date.now()) {
+            if (stored) yield* sessions.deleteSession(digest).pipe(Effect.ignore);
 
-        if (entry.userId === ROOT_USER_ID) {
-          // Env root is virtual; a setup-provisioned root falls through to the
-          // stored row below (env takes precedence whenever it is present).
-          if (envRoot) {
-            return Effect.succeed<Principal>({
-              kind: "user",
-              userId: ROOT_USER_ID,
-              username: envRoot.rootUsername,
-              role: "root",
-              granted: [...ALL_CAPABILITIES],
-            });
+            return yield* anonymousFromDb;
           }
-        }
 
-        return Effect.catchAll(
-          Effect.map(users.getUser(entry.userId), (row): Principal | null =>
-            // Deleted user: the session dies lazily -> anonymous. A stored root
-            // row resolves like the virtual one: every capability, no storage.
-            row && row.role !== "anonymous"
-              ? {
-                  kind: "user",
-                  userId: row.id,
-                  username: row.username,
-                  role: row.role === "root" ? "root" : "user",
-                  granted:
-                    row.role === "root"
-                      ? [...ALL_CAPABILITIES]
-                      : row.capabilities,
-                }
-              : null,
-          ),
-          () => Effect.succeed<Principal | null>(null),
-        ).pipe(
-          Effect.flatMap((principal) =>
-            principal ? Effect.succeed(principal) : anonymousFromDb,
-          ),
-        );
-      };
+          // Sliding expiry: activity keeps the session alive. Best-effort —
+          // a lost extension only shortens this session toward its last
+          // persisted deadline, it never breaks resolution.
+          yield* sessions
+            .touchSession(digest, Date.now() + SESSION_TTL_MS)
+            .pipe(Effect.ignore);
+
+          const userId = stored.userId;
+
+          if (userId === ROOT_USER_ID) {
+            // Env root is virtual; a setup-provisioned root falls through to the
+            // stored row below (env takes precedence whenever it is present).
+            if (envRoot) {
+              return yield* Effect.succeed<Principal>({
+                kind: "user",
+                userId: ROOT_USER_ID,
+                username: envRoot.rootUsername,
+                role: "root",
+                granted: [...ALL_CAPABILITIES],
+              });
+            }
+          }
+
+          return yield* Effect.catchAll(
+            Effect.map(users.getUser(userId), (row): Principal | null =>
+              // Deleted user: the session dies lazily -> anonymous. A stored root
+              // row resolves like the virtual one: every capability, no storage.
+              row && row.role !== "anonymous"
+                ? {
+                    kind: "user",
+                    userId: row.id,
+                    username: row.username,
+                    role: row.role === "root" ? "root" : "user",
+                    granted:
+                      row.role === "root"
+                        ? [...ALL_CAPABILITIES]
+                        : row.capabilities,
+                  }
+                : null,
+            ),
+            () => Effect.succeed<Principal | null>(null),
+          ).pipe(
+            Effect.flatMap((principal) =>
+              principal ? Effect.succeed(principal) : anonymousFromDb,
+            ),
+          );
+        });
 
       const grantFor = (
         userId: string,
@@ -426,10 +458,8 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> =
         role: UserRole,
         granted: ReadonlyArray<Capability>,
         secure = false,
-      ): SessionAuthLogin => {
-        const token = mint(userId);
-
-        return {
+      ): Effect.Effect<SessionAuthLogin, BackendError> =>
+        Effect.map(mint(userId), (token) => ({
           response: {
             userId,
             username: name,
@@ -437,8 +467,7 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> =
             capabilities: [...granted],
           },
           setCookie: sessionCookie(token, secure),
-        };
-      };
+        }));
 
       const login = (username: string, password: string, secure = false) =>
         Effect.gen(function* () {
@@ -467,7 +496,7 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> =
 
             loginFailures.delete(throttleKey);
 
-            return grantFor(
+            return yield* grantFor(
               ROOT_USER_ID,
               envRoot.rootUsername,
               "root",
@@ -517,15 +546,23 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> =
 
           loginFailures.delete(throttleKey);
 
-          return row.role === "root"
-            ? grantFor(
-                ROOT_USER_ID,
-                row.username,
-                "root",
-                [...ALL_CAPABILITIES],
-                secure,
-              )
-            : grantFor(row.id, row.username, "user", row.capabilities, secure);
+          if (row.role === "root") {
+            return yield* grantFor(
+              ROOT_USER_ID,
+              row.username,
+              "root",
+              [...ALL_CAPABILITIES],
+              secure,
+            );
+          }
+
+          return yield* grantFor(
+            row.id,
+            row.username,
+            "user",
+            row.capabilities,
+            secure,
+          );
         });
 
       const setupRoot = (
@@ -613,7 +650,7 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> =
                   }),
           );
 
-          return grantFor(
+          return yield* grantFor(
             ROOT_USER_ID,
             row.username,
             "root",
@@ -662,9 +699,9 @@ export const SessionAuthLive: Layer.Layer<SessionAuth, never, UserRepo> =
         login,
         setupRoot,
         logout: (token) =>
-          Effect.sync(() => {
-            if (token !== undefined) sessions.delete(token);
-          }),
+          token === undefined
+            ? Effect.void
+            : sessions.deleteSession(hashToken(token)).pipe(Effect.ignore),
         principalFromRequest: (request) =>
           resolveToken(sessionTokenFromRequest(request)),
       } satisfies SessionAuthService;

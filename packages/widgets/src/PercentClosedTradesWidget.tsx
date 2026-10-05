@@ -20,7 +20,7 @@
  * ordering correct in every column configuration.
  */
 
-import { NumberInput, Search, Tag } from "@carbon/react";
+import { NumberInput, Tag } from "@carbon/react";
 import { useStore, shallow as shallowStore } from "@tanstack/react-store";
 import type { SortingState } from "@tanstack/react-table";
 import type { Capability, RelativeClosedPosition } from "@nfi/api-contract";
@@ -64,6 +64,9 @@ import {
 } from "./shared/tradeSort";
 import { useTimeFormat } from "./shared/timeFormat";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
+import { type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
+import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
   closeWidgetSettings,
   useWidgetSettingsOpen,
@@ -107,8 +110,6 @@ export const PercentClosedTradesConfigSchema = Schema.Struct({
   /** Row-number column (1 = first row of the current ordering). */
   showRowNumber: booleanWithDefault(true),
   showDirection: booleanWithDefault(true),
-  /** `profitPct` column — P&L since the position opened. */
-  showSinceOpen: booleanWithDefault(true),
   showHeld: booleanWithDefault(true),
   showExit: booleanWithDefault(true),
   showClosed: booleanWithDefault(true),
@@ -128,6 +129,23 @@ export const PERCENT_CLOSED_TRADES_DEFAULTS: PercentClosedTradesConfig =
 /** Window growth cap — matches the relative closed capability limit cap. */
 const MAX_WINDOW = 5_000;
 
+/** Full-row CSV/XLSX columns (percent-only — never absolute amounts). */
+const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<RelativeClosedPosition>> = [
+  { header: COL.tradeId, value: (p) => p.tradeId },
+  { header: COL.pair, value: (p) => p.pair },
+  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
+  {
+    header: COL.profitPct,
+    value: (p) => p.closeProfitPct ?? p.profitPct,
+  },
+  { header: COL.duration, value: (p) => fmtDuration(p.tradeDurationSeconds) },
+  { header: COL.exitReason, value: (p) => p.exitReason ?? "" },
+  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
+  { header: COL.strategy, value: (p) => p.strategy ?? "" },
+  { header: COL.openDate, value: (p) => p.openDate },
+  { header: COL.closeDate, value: (p) => p.closeDate ?? "" },
+];
+
 /** Column set depends on the widget config's column toggles. */
 function buildColumns([
   cfg,
@@ -138,7 +156,7 @@ function buildColumns([
     cfg.showRowNumber
       ? {
           id: "no",
-          header: "No.",
+          header: COL.no,
           cell: ({ row }) => row.index + 1,
           meta: { className: "nfi-mono" },
           enableSorting: false,
@@ -146,7 +164,7 @@ function buildColumns([
       : null,
     {
       id: "pair",
-      header: "Pair",
+      header: COL.pair,
       accessorFn: (p) => p.pair,
       sortFn: (a, b) =>
         (a.original.pair ?? "").localeCompare(b.original.pair ?? ""),
@@ -154,7 +172,7 @@ function buildColumns([
     cfg.showDirection
       ? {
           id: "dir",
-          header: "Dir",
+          header: COL.direction,
           cell: ({ row }) => (
             <Tag type={row.original.isShort ? "red" : "green"} size="sm">
               {row.original.isShort ? "SHORT" : "LONG"}
@@ -165,7 +183,7 @@ function buildColumns([
       : null,
     {
       id: "profitPct",
-      header: "Close %",
+      header: COL.profitPct,
       accessorFn: (p) => p.closeProfitPct ?? p.profitPct ?? 0,
       cell: ({ row }) => (
         <span className={pnlClass(row.original.closeProfitPct)}>
@@ -173,22 +191,10 @@ function buildColumns([
         </span>
       ),
     },
-    cfg.showSinceOpen
-      ? {
-          id: "sinceOpen",
-          header: "Since open",
-          cell: ({ row }) => (
-            <span className={pnlClass(row.original.profitPct)}>
-              {fmtSigned(row.original.profitPct, 2)}%
-            </span>
-          ),
-          enableSorting: false,
-        }
-      : null,
     cfg.showHeld
       ? {
           id: "held",
-          header: "Held",
+          header: COL.duration,
           cell: ({ row }) => fmtDuration(row.original.tradeDurationSeconds),
           enableSorting: false,
         }
@@ -196,7 +202,7 @@ function buildColumns([
     cfg.showExit
       ? {
           id: "exit",
-          header: "Exit",
+          header: COL.exitReason,
           cell: ({ row }) => row.original.exitReason ?? "—",
           enableSorting: false,
         }
@@ -204,7 +210,7 @@ function buildColumns([
     cfg.showClosed
       ? {
           id: "closeDate",
-          header: "Closed",
+          header: COL.closeDate,
           accessorFn: (p) => parseTradeTime(p.closeDate ?? p.openDate),
           cell: ({ row }) => fmtDate(row.original.closeDate),
           sortDescFirst: true,
@@ -213,7 +219,7 @@ function buildColumns([
     cfg.showTag
       ? {
           id: "tag",
-          header: "Tag",
+          header: COL.enterTag,
           cell: ({ row }) => row.original.enterTag?.trim() || "—",
           enableSorting: false,
         }
@@ -221,7 +227,7 @@ function buildColumns([
     cfg.showStrategy
       ? {
           id: "strategy",
-          header: "Strategy",
+          header: COL.strategy,
           cell: ({ row }) => row.original.strategy ?? "—",
           enableSorting: false,
         }
@@ -353,6 +359,14 @@ export function PercentClosedTradesWidget({
     { id: cfg.sortBy, desc: REL_CLOSED_SORT_DIR[cfg.sortBy] === "desc" },
   ];
 
+  // "Order by" writes widget config — shared by the settings modal and
+  // the table toolbar below.
+  const onSortChange = (id: string): void => {
+    patch({
+      sortBy: Schema.decodeUnknownSync(PercentClosedSortBy)(id),
+    });
+  };
+
   return (
     <>
       <WidgetSettingsModal
@@ -383,19 +397,14 @@ export function PercentClosedTradesWidget({
           label="Order by"
           items={ORDER_BY_ITEMS.map((i) => ({ ...i }))}
           value={cfg.sortBy}
-          onChange={(id) =>
-            patch({
-              sortBy: Schema.decodeUnknownSync(PercentClosedSortBy)(id),
-            })
-          }
+          onChange={onSortChange}
         />
         <div className="nfi-settings-toggles">
           {(
             [
               ["showRowNumber", "Row number"],
               ["showDirection", "Direction"],
-              ["showSinceOpen", "Since open"],
-              ["showHeld", "Held"],
+              ["showHeld", COL.duration],
               ["showExit", "Exit reason"],
               ["showClosed", "Close date"],
               ["showTag", "Enter tag"],
@@ -435,7 +444,7 @@ export function PercentClosedTradesWidget({
                 }
               />
               <Stat
-                label="Avg P&L"
+                label={COL.avgPct}
                 value={avgPnl === null ? "—" : `${fmtSigned(avgPnl, 2)}%`}
                 sub={`window of ${positions.length} trades`}
                 tone={avgPnl !== null && avgPnl >= 0 ? "positive" : "negative"}
@@ -444,62 +453,57 @@ export function PercentClosedTradesWidget({
                 label="Best / worst"
                 value={
                   Number.isFinite(best) && Number.isFinite(worst)
-                    ? `${fmtSigned(best, 1)} / ${fmtSigned(worst, 1)}%`
+                    ? `${fmtSigned(best, 1)}% / ${fmtSigned(worst, 1)}%`
                     : "—"
                 }
                 sub="per-trade close %"
               />
             </div>
-            <div
-              style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}
-            >
-              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
-                <Search
-                  size="sm"
-                  placeholder="Filter pair, exit reason, tag…"
-                  labelText="Filter closed trades"
-                  value={filter}
-                  onChange={(e) =>
-                    filterStore.setState(() => e.target.value ?? "")
-                  }
-                />
-              </div>
-              <div style={{ flex: "0 0 170px" }}>
-                <SettingsSelect
-                  id={`pct-closed-sort-inline-${panelId}`}
-                  label="Order by"
-                  items={ORDER_BY_ITEMS.map((i) => ({ ...i }))}
-                  value={cfg.sortBy}
-                  onChange={(id) =>
-                    patch({
-                      sortBy: Schema.decodeUnknownSync(PercentClosedSortBy)(id),
-                    })
-                  }
-                />
-              </div>
-            </div>
             {positions.length > 0 ? (
-              <div className="nfi-table-scroll">
-                <NfiDataTable
-                  columns={columns}
-                  data={positions}
-                  getRowId={(p) => `${cfg.instanceId}-${p.tradeId}`}
-                  sorting={sorting}
-                  renderExpandedRow={(row) => (
-                    <RelativeOrdersFacets orders={row.original.orders ?? []} />
-                  )}
+              <NfiTableContainer>
+                <NfiTableToolbar
+                  label="Closed trades table actions"
+                  search={{
+                    id: `pct-closed-filter-${panelId}`,
+                    value: filter,
+                    onChange: (value) => filterStore.setState(() => value),
+                    placeholder: "Filter pair, exit reason, tag…",
+                    labelText: "Filter closed trades",
+                  }}
+                  orderBy={{
+                    id: `pct-closed-sort-inline-${panelId}`,
+                    value: cfg.sortBy,
+                    items: ORDER_BY_ITEMS.map((i) => ({ ...i })),
+                    onChange: onSortChange,
+                  }}
+                  exportMenu={{
+                    filenameBase: `closed-trades-pct-${cfg.instanceId}`,
+                    columns: EXPORT_COLUMNS,
+                    rows: positions,
+                  }}
                 />
-                <LoadMoreRow
-                  onLoadMore={loadMore}
-                  shown={held.rows.length}
-                  total={hasSearch ? undefined : totalTrades}
-                  loading={held.loadingMore}
-                  done={!canLoadMore}
-                  atLimit={windowSize >= MAX_WINDOW}
-                  error={held.rows.length > 0 ? view.error : null}
-                  rearm={held.rows.length}
-                />
-              </div>
+                <div className="nfi-table-scroll">
+                  <NfiDataTable
+                    columns={columns}
+                    data={positions}
+                    getRowId={(p) => `${cfg.instanceId}-${p.tradeId}`}
+                    sorting={sorting}
+                    renderExpandedRow={(row) => (
+                      <RelativeOrdersFacets orders={row.original.orders ?? []} />
+                    )}
+                  />
+                  <LoadMoreRow
+                    onLoadMore={loadMore}
+                    shown={held.rows.length}
+                    total={hasSearch ? undefined : totalTrades}
+                    loading={held.loadingMore}
+                    done={!canLoadMore}
+                    atLimit={windowSize >= MAX_WINDOW}
+                    error={held.rows.length > 0 ? view.error : null}
+                    rearm={held.rows.length}
+                  />
+                </div>
+              </NfiTableContainer>
             ) : (
               <EmptyState
                 title="No matches"

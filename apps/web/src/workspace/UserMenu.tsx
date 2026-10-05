@@ -24,9 +24,13 @@ import { useCapability } from "../capabilities/live";
 import {
   discardPreviewEdits,
   hasPreviewEdits,
+  previewEditedPageIds,
   savePreviewEdits,
+  switchActivePage,
   workspaceStore,
 } from "./store";
+import { fetchPageDefaultsFor } from "./pageDefaults";
+import { HOME_PAGE_ID, isHomePageId } from "./pages";
 
 /**
  * Topbar account menu — the single header surface for everything about the
@@ -333,37 +337,117 @@ function ViewAsRow({
 /** Amber strip below the header while a view-as preview is active. */
 export function ViewAsBanner() {
   const viewAs = useStore(viewAsStore, (s) => s);
+
   // Re-render on every workspace commit (identity changes on each one);
   // the dirty flag itself derives from the staged-edit buffer.
   useStore(workspaceStore, (s) => s.workspace);
+
+  const activePageId = useStore(workspaceStore, (s) => s.activePageId);
+
+  const pages = useStore(workspaceStore, (s) => s.pages);
+
   const savingStore = useLocalStore(false);
+
   const saving = useStore(savingStore, (s) => s);
 
+  const scopedStore = useLocalStore<{
+    landing: string | null;
+    visible: ReadonlyArray<string> | null;
+  } | null>(null);
+
+  const scoped = useStore(scopedStore, (s) => s);
+
+  useStoreEffect(() => {
+    if (viewAs.targetUserId === null) {
+      scopedStore.setState(() => null);
+
+      return;
+    }
+
+    let cancelled = false;
+    scopedStore.setState(() => null);
+    void fetchPageDefaultsFor(viewAs.targetUserId).then((result) => {
+      if (!cancelled)
+        scopedStore.setState(
+          () => ({
+            landing: result?.defaults?.defaultPageId ?? result?.globalDefaultPageId ?? null,
+            visible: result?.defaults?.visiblePageIds ?? null,
+          }),
+        );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [viewAs.targetUserId]);
+
   if (viewAs.targetUserId === null) return null;
+
   const dirty = hasPreviewEdits();
+
+  const stagedCount = previewEditedPageIds().length;
+
+  const targetName = viewAs.targetUsername ?? viewAs.targetUserId;
+
+  const activeName =
+    pages.find((p) => p.id === activePageId)?.name ?? activePageId;
+
+  const landingId = scoped?.landing ?? HOME_PAGE_ID;
+
+  const landingName =
+    pages.find((p) => p.id === landingId)?.name ??
+    (isHomePageId(landingId) ? "Home" : landingId);
+
+  const visible = scoped?.visible ?? null;
+
+  const hiddenFromTarget =
+    visible !== null && !visible.includes(activePageId);
+
+  const targetGrant = viewAs.targetGranted ?? [];
+
+  const needsListLoad =
+    !isHomePageId(activePageId) &&
+    (!targetGrant.includes("workspace.list") ||
+      !targetGrant.includes("workspace.load"));
 
   return (
     <div className="nfi-viewas-banner" role="status" aria-label="View-as preview active">
       <span>
-        Previewing as{" "}
-        <strong className="nfi-mono">{viewAs.targetUsername ?? viewAs.targetUserId}</strong>
-        {" "}— a frontend mock for grants + page visibility. Widgets gate on
-        their grant; data still loads with your own session (more privileged
-        targets show backend errors, not their data). Layout edits stay local
-        while previewing — save them to share, or discard.
+        Editing layout for{" "}
+        <strong className="nfi-mono">{targetName}</strong>
+        {" "}— arrange widgets on{" "}
+        <strong className="nfi-mono">{activeName}</strong>, then Save layout to
+        share with them. Layouts are shared (Home is public-readable).
+        {hiddenFromTarget
+          ? ` ${targetName} cannot see ${activeName} (hidden in their visible pages) — they land on ${landingName}.`
+          : ` ${targetName} lands on ${landingName}.`}
+        {needsListLoad
+          ? ` ${activeName} needs workspace.list + workspace.load for them to load it in incognito — use Home for the public dashboard.`
+          : null}
       </span>
       <span className="nfi-viewas-banner-actions">
         {dirty ? (
           <span className="nfi-viewas-banner-notice" role="status">
-            Unsaved preview edits
+            {stagedCount} staged {stagedCount === 1 ? "page" : "pages"}
           </span>
+        ) : null}
+        {activePageId !== landingId ? (
+          <button
+            type="button"
+            className="nfi-viewas-banner-button"
+            disabled={saving}
+            title={`Go to ${targetName}'s landing page (${landingName}) to edit what they actually see`}
+            onClick={() => switchActivePage(landingId)}
+          >
+            Go to {landingName}
+          </button>
         ) : null}
         {dirty ? (
           <button
             type="button"
             className="nfi-viewas-banner-button"
             disabled={saving}
-            title="Persist the active page's staged edits to the shared backend"
+            title={`Persist every staged page (${stagedCount}) to the shared backend so ${targetName} sees it after reload`}
             onClick={() => {
               savingStore.setState(() => true);
               void savePreviewEdits().finally(() =>
@@ -371,7 +455,7 @@ export function ViewAsBanner() {
               );
             }}
           >
-            {saving ? "Saving…" : "Save edits"}
+            {saving ? "Saving…" : `Save layout for ${targetName}`}
           </button>
         ) : null}
         {dirty ? (

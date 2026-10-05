@@ -80,9 +80,11 @@ describe("default workspace", () => {
     if (workspace.layout.type !== "auto")
       throw new Error("expected auto layout");
 
-    // Three rows of 3/5 + 2/5: fleet+daily, open+cumulative, closed+wallet.
+    // Two wide+narrow rows plus two full-width tables: fleet+daily,
+    // open+cumulative, then closed and wallet each full-width (two wide
+    // tables never share a row — they would squeeze below minimums).
     expect(workspace.layout.items.map((item) => item.span)).toEqual([
-      3, 2, 3, 2, 3, 2,
+      3, 2, 3, 2, 3, 3,
     ]);
     expect(workspace.panels["panel-fleet"]?.title).toBe("Bot Comparison");
     expect(workspace.panels["panel-daily"]?.title).toBe(

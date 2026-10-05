@@ -19,7 +19,7 @@
  * ordering correct in every column configuration.
  */
 
-import { NumberInput, Search, Tag } from "@carbon/react";
+import { NumberInput, Tag } from "@carbon/react";
 import { useStore, shallow as shallowStore } from "@tanstack/react-store";
 import type { SortingState } from "@tanstack/react-table";
 import { Schema } from "effect";
@@ -36,7 +36,7 @@ import {
 } from "@nfi/ui";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import { booleanWithDefault, numberWithDefault } from "./shared/config";
-import { clampInt, fmt, fmtDate, pnlClass } from "./shared/format";
+import { clampInt, fmt, fmtDate, fmtDuration, pnlClass } from "./shared/format";
 import { queryState } from "./shared/query";
 import { useTimeFormat } from "./shared/timeFormat";
 import { InstanceSelect } from "./shared/InstanceSelect";
@@ -65,6 +65,9 @@ import {
   useWidgetSettingsOpen,
 } from "./shared/widgetSettingsBus";
 import { OpenPositionsConfigSchema } from "./OpenPositionsWidget";
+import { type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
+import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 
 export const ClosedPositionsSortBy = Schema.Literal(
   "closeDate",
@@ -120,6 +123,35 @@ export const CLOSED_POSITIONS_DEFAULTS: ClosedPositionsConfig =
 /** Window growth cap — matches the closed-positions capability limit cap. */
 const MAX_WINDOW = 5_000;
 
+/** Full-row CSV/XLSX columns (all fields, not just the visible set). */
+const EXPORT_COLUMNS: ReadonlyArray<
+  ExportColumn<SourcedClosedPosition>
+> = [
+  { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
+  { header: COL.tradeId, value: (p) => p.tradeId },
+  { header: COL.pair, value: (p) => p.pair },
+  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
+  { header: COL.leverage, value: (p) => p.leverage },
+  { header: COL.amount, value: (p) => p.amount },
+  { header: COL.stake, value: (p) => p.stakeAmount },
+  { header: COL.openRate, value: (p) => p.openRate },
+  { header: COL.closeRate, value: (p) => p.closeRate },
+  {
+    header: COL.profit,
+    value: (p) => p.closeProfitAbs ?? p.profitAbs,
+  },
+  {
+    header: COL.profitPct,
+    value: (p) => p.closeProfitPct ?? p.profitPct,
+  },
+  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
+  { header: COL.exitReason, value: (p) => p.exitReason ?? "" },
+  { header: COL.strategy, value: (p) => p.strategy ?? "" },
+  { header: COL.openDate, value: (p) => p.openDate },
+  { header: COL.closeDate, value: (p) => p.closeDate ?? "" },
+  { header: COL.duration, value: (p) => fmtDuration(p.tradeDurationSeconds) },
+];
+
 /** Column set depends on config flags + fleet mode + instance colors. */
 function buildColumns([
   cfg,
@@ -134,7 +166,7 @@ function buildColumns([
     cfg.showRowNumber
       ? {
           id: "no",
-          header: "No.",
+          header: COL.no,
           cell: ({ row }) => row.index + 1,
           meta: { className: "nfi-mono" },
           enableSorting: false,
@@ -143,7 +175,7 @@ function buildColumns([
     showBotColumn
       ? {
           id: "bot",
-          header: "Bot",
+          header: COL.bot,
           cell: ({ row }) => (
             <InstanceTag
               color={colors.colorOf(
@@ -158,7 +190,7 @@ function buildColumns([
     cfg.showPair
       ? {
           id: "pair",
-          header: "Pair",
+          header: COL.pair,
           accessorFn: (p) => p.pair,
           sortFn: (a, b) =>
             (a.original.pair ?? "").localeCompare(b.original.pair ?? ""),
@@ -167,7 +199,7 @@ function buildColumns([
     cfg.showDirection
       ? {
           id: "dir",
-          header: "Dir",
+          header: COL.direction,
           cell: ({ row }) => (
             <Tag type={row.original.isShort ? "red" : "green"}>
               {row.original.isShort ? "SHORT" : "LONG"}
@@ -179,7 +211,7 @@ function buildColumns([
     cfg.showStake
       ? {
           id: "stake",
-          header: "Stake",
+          header: COL.stake,
           accessorFn: (p) => p.stakeAmount,
           cell: ({ row }) => row.original.stakeAmount.toFixed(2),
         }
@@ -187,7 +219,7 @@ function buildColumns([
     cfg.showOpenRate
       ? {
           id: "open",
-          header: "Open",
+          header: COL.openRate,
           cell: ({ row }) => fmt(row.original.openRate, 4),
           enableSorting: false,
         }
@@ -195,7 +227,7 @@ function buildColumns([
     cfg.showCloseRate
       ? {
           id: "close",
-          header: "Close",
+          header: COL.closeRate,
           cell: ({ row }) => fmt(row.original.closeRate, 4),
           enableSorting: false,
         }
@@ -203,7 +235,7 @@ function buildColumns([
     cfg.showCloseProfit
       ? {
           id: "profit",
-          header: "PnL",
+          header: COL.profit,
           accessorFn: (p) => p.closeProfitAbs ?? p.profitAbs ?? 0,
           cell: ({ row }) => {
             const profitAbs =
@@ -220,7 +252,7 @@ function buildColumns([
     cfg.showProfitPct
       ? {
           id: "profitPct",
-          header: "PnL %",
+          header: COL.profitPct,
           accessorFn: (p) => p.closeProfitPct ?? p.profitPct ?? 0,
           cell: ({ row }) => (
             <PnlPill
@@ -234,15 +266,23 @@ function buildColumns([
     cfg.showExitReason
       ? {
           id: "exit",
-          header: "Exit reason",
+          header: COL.exitReason,
           cell: ({ row }) => row.original.exitReason || "—",
+          enableSorting: false,
+        }
+      : null,
+    cfg.showEnterTag
+      ? {
+          id: "tag",
+          header: COL.enterTag,
+          cell: ({ row }) => row.original.enterTag?.trim() || "—",
           enableSorting: false,
         }
       : null,
     cfg.showCloseDate
       ? {
           id: "closeDate",
-          header: "Closed",
+          header: COL.closeDate,
           accessorFn: (p) => parseTradeTime(p.closeDate ?? p.openDate),
           cell: ({ row }) => fmtDate(row.original.closeDate),
           sortDescFirst: true,
@@ -251,7 +291,7 @@ function buildColumns([
     cfg.showDuration
       ? {
           id: "duration",
-          header: "Duration",
+          header: COL.duration,
           cell: ({ row }) =>
             row.original.tradeDurationSeconds !== undefined
               ? `${Math.round(row.original.tradeDurationSeconds / 60)}m`
@@ -262,7 +302,7 @@ function buildColumns([
     cfg.showStrategy
       ? {
           id: "strategy",
-          header: "Strategy",
+          header: COL.strategy,
           cell: ({ row }) => row.original.strategy ?? "—",
           enableSorting: false,
         }
@@ -368,6 +408,14 @@ export function ClosedPositionsWidget({
     { id: cfg.sortBy, desc: CLOSED_SORT_DIR[cfg.sortBy] === "desc" },
   ];
 
+  // "Order by" writes widget config — shared by the settings modal and
+  // the table toolbar below.
+  const onSortChange = (id: string): void => {
+    patch({
+      sortBy: Schema.decodeUnknownSync(ClosedPositionsSortBy)(id),
+    });
+  };
+
   return (
     <>
       <WidgetSettingsModal
@@ -411,11 +459,7 @@ export function ClosedPositionsWidget({
           label="Order by"
           items={ORDER_BY_ITEMS.map((item) => ({ ...item }))}
           value={cfg.sortBy}
-          onChange={(id) =>
-            patch({
-              sortBy: Schema.decodeUnknownSync(ClosedPositionsSortBy)(id),
-            })
-          }
+          onChange={onSortChange}
         />
         <div className="nfi-settings-toggles">
           {(
@@ -427,7 +471,7 @@ export function ClosedPositionsWidget({
               ["showStake", "Stake"],
               ["showOpenRate", "Open rate"],
               ["showCloseRate", "Close rate"],
-              ["showCloseProfit", "Close profit"],
+              ["showCloseProfit", COL.profit],
               ["showProfitPct", "Profit %"],
               ["showExitReason", "Exit reason"],
               ["showCloseDate", "Close date"],
@@ -455,64 +499,57 @@ export function ClosedPositionsWidget({
           <div
             style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
           >
-            <div
-              style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}
-            >
-              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
-                <Search
-                  size="sm"
-                  placeholder="Filter pair, bot, exit reason…"
-                  labelText="Filter closed positions"
-                  value={filter}
-                  onChange={(e) =>
-                    filterStore.setState(() => e.target.value ?? "")
-                  }
-                />
-              </div>
-              <div style={{ flex: "0 0 170px" }}>
-                <SettingsSelect
-                  id={`cpos-sort-inline-${panelId}`}
-                  label="Order by"
-                  items={ORDER_BY_ITEMS.map((item) => ({ ...item }))}
-                  value={cfg.sortBy}
-                  onChange={(id) =>
-                    patch({
-                      sortBy: Schema.decodeUnknownSync(ClosedPositionsSortBy)(
-                        id,
-                      ),
-                    })
-                  }
-                />
-              </div>
-            </div>
             {positions.length > 0 ? (
-              <div className="nfi-table-scroll">
-                <NfiDataTable
-                  columns={columns}
-                  data={positions}
-                  getRowId={(p) =>
-                    `${p.instanceId ?? cfg.instanceId}-${p.tradeId}`
-                  }
-                  sorting={sorting}
-                  renderExpandedRow={(row) => (
-                    <SubOrdersTable
-                      rowKey={row.id}
-                      orders={row.original.orders ?? []}
-                      initiallyVisible={maxVisible}
-                    />
-                  )}
+              <NfiTableContainer>
+                <NfiTableToolbar
+                  label="Closed positions table actions"
+                  search={{
+                    id: `cpos-filter-${panelId}`,
+                    value: filter,
+                    onChange: (value) => filterStore.setState(() => value),
+                    placeholder: "Filter pair, bot, exit reason…",
+                    labelText: "Filter closed positions",
+                  }}
+                  orderBy={{
+                    id: `cpos-sort-inline-${panelId}`,
+                    value: cfg.sortBy,
+                    items: ORDER_BY_ITEMS.map((item) => ({ ...item })),
+                    onChange: onSortChange,
+                  }}
+                  exportMenu={{
+                    filenameBase: `closed-positions-${cfg.instanceId}`,
+                    columns: EXPORT_COLUMNS,
+                    rows: positions,
+                  }}
                 />
-                <LoadMoreRow
-                  onLoadMore={loadMore}
-                  shown={held.rows.length}
-                  total={hasSearch ? undefined : src.total}
-                  loading={held.loadingMore}
-                  done={!canLoadMore}
-                  atLimit={windowSize >= MAX_WINDOW}
-                  error={held.rows.length > 0 ? src.error : null}
-                  rearm={held.rows.length}
-                />
-              </div>
+                <div className="nfi-table-scroll">
+                  <NfiDataTable
+                    columns={columns}
+                    data={positions}
+                    getRowId={(p) =>
+                      `${p.instanceId ?? cfg.instanceId}-${p.tradeId}`
+                    }
+                    sorting={sorting}
+                    renderExpandedRow={(row) => (
+                      <SubOrdersTable
+                        rowKey={row.id}
+                        orders={row.original.orders ?? []}
+                        initiallyVisible={maxVisible}
+                      />
+                    )}
+                  />
+                  <LoadMoreRow
+                    onLoadMore={loadMore}
+                    shown={held.rows.length}
+                    total={hasSearch ? undefined : src.total}
+                    loading={held.loadingMore}
+                    done={!canLoadMore}
+                    atLimit={windowSize >= MAX_WINDOW}
+                    error={held.rows.length > 0 ? src.error : null}
+                    rearm={held.rows.length}
+                  />
+                </div>
+              </NfiTableContainer>
             ) : (
               <EmptyState
                 title="No matches"
@@ -541,12 +578,12 @@ export const ClosedPositionsWidgetDef = defineWidget({
   defaultConfig: CLOSED_POSITIONS_DEFAULTS,
   component: ClosedPositionsWidget,
   capabilities: ["instances.closed-positions", "instances.closed-all"],
-  // Width floor is the dashboard-column set's intrinsic content width
-  // (bot, pair, dir, stake, open, close, pnl%, exit reason, close date)
-  // plus the expander column so the table never scrolls sideways; height
-  // pins chrome + header + several readable rows and lets history scroll
-  // vertically.
-  minWidth: 1300,
+  // Width floor keeps the core columns (pair, pnl%, exit reason)
+  // readable without scrolling; wider column sets scroll horizontally
+  // inside `.nfi-table-scroll` instead of tripping the too-small wall, so
+  // side-by-side cells stay usable. Height pins chrome + header + several
+  // readable rows and lets history scroll vertically.
+  minWidth: 720,
   minHeight: 400,
   defaultWidth: 1100,
   defaultHeight: 480,

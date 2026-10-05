@@ -16,6 +16,7 @@ import { formatQueryError, runApi } from "../api";
 import { hydrateCapabilities, useCapabilities } from "../auth/capabilities";
 import { refreshSessionState } from "../auth/session";
 import { dismissRootSetup } from "../auth/firstRun";
+import { useDocumentTitle } from "../workspace/useDocumentTitle";
 
 /**
  * First-run root setup (`/setup`). Shown while the deployment has no root
@@ -55,6 +56,8 @@ export function RootSetupPage() {
     formStore,
     (s) => s,
   );
+
+  useDocumentTitle("Create root account — nfi-desk");
 
   useStoreEffect(() => {
     void hydrateCapabilities();

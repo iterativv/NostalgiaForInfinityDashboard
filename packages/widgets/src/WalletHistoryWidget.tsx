@@ -282,6 +282,6 @@ export const WalletHistoryWidgetDef = defineWidget({
   capabilities: ["instances.balance-history"],
   minWidth: 700,
   minHeight: 400,
-  defaultWidth: 480,
+  defaultWidth: 700,
   defaultHeight: 400,
 });

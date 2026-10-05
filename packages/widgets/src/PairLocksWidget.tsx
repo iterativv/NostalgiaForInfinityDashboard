@@ -26,6 +26,7 @@ import {
 } from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
+import { COL } from "./shared/columns";
 import { InstanceIdField, booleanWithDefault } from "./shared/config";
 import { fmtDate } from "./shared/format";
 import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
@@ -69,7 +70,7 @@ function buildColumns([
   const defs: (NfiColumnDef<PairLock | TaggedPairLock> | null)[] = [
     {
       id: "pair",
-      header: "Pair",
+      header: COL.pair,
       cell: ({ row }) => (
         <>
           {row.original.pair}
@@ -84,7 +85,7 @@ function buildColumns([
     fleet
       ? {
           id: "bot",
-          header: "Bot",
+          header: COL.bot,
           cell: ({ row }) => {
             const botId =
               "instanceId" in row.original
@@ -109,14 +110,14 @@ function buildColumns([
       : null,
     {
       id: "until",
-      header: "Until",
+      header: COL.until,
       cell: ({ row }) => fmtDate(row.original.lockEndTime),
       meta: { className: "nfi-mono", style: { textAlign: "left" } },
       enableSorting: false,
     },
     {
       id: "reason",
-      header: "Reason",
+      header: COL.lockReason,
       cell: ({ row }) => (
         <span style={{ opacity: 0.8 }}>{row.original.reason || "—"}</span>
       ),
@@ -125,7 +126,7 @@ function buildColumns([
     },
     {
       id: "state",
-      header: "State",
+      header: COL.status,
       cell: ({ row }) => (
         <Tag type={row.original.active ? "gray" : "outline"} size="sm">
           {row.original.active ? "locked" : "expired"}

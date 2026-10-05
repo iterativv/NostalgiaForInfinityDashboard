@@ -215,3 +215,107 @@ export function accentStyleFor(
 
   return vars;
 }
+
+/**
+ * Color-blind safe token layer, merged OVER the accent overrides on the
+ * Theme wrapper (`<Theme style={{ ...accent, ...cb }}>`).
+ *
+ * Red/green semantics (PnL text, pills, reachability/profit/direction tags)
+ * become blue/orange — distinguishable under protanopia, deuteranopia and
+ * tritanopia alike:
+ * - good/success follows the blue tag + support ramp (light themes use the
+ *   -60/-70 steps, dark themes the -50/-40 steps, mirroring Carbon's own
+ *   contrast mapping);
+ * - bad/error follows the orange family the same way;
+ * - green tags inherit the blue tag tokens verbatim (`var()` — whatever the
+ *   current theme renders blue tags as, green tags become), red tags take
+ *   the orange steps (Carbon ships no orange tag to inherit from).
+ *
+ * Canvas charts cannot resolve `var()` (canvas fillStyle needs literals),
+ * so they switch literal palettes from the widgets store instead — see
+ * `shared/colorBlind.ts`, whose flag this function follows.
+ */
+export function colorBlindStyleFor(theme: CarbonTheme): CSSProperties {
+  const f = FAMILIES.orange;
+  const dark = CARBON_THEMES_DARK.has(theme);
+
+  const vars: CSSProperties & Record<`--cds-${string}`, string> = dark
+    ? {
+        "--cds-support-success": FAMILIES.blue[50],
+        "--cds-support-error": f[40],
+        "--cds-tag-background-green": "var(--cds-tag-background-blue)",
+        "--cds-tag-color-green": "var(--cds-tag-color-blue)",
+        "--cds-tag-hover-green": "var(--cds-tag-hover-blue)",
+        "--cds-tag-background-red": f[90],
+        "--cds-tag-color-red": f[40],
+        "--cds-tag-hover-red": f[90],
+      }
+    : {
+        "--cds-support-success": FAMILIES.blue[60],
+        "--cds-support-error": f[60],
+        "--cds-tag-background-green": "var(--cds-tag-background-blue)",
+        "--cds-tag-color-green": "var(--cds-tag-color-blue)",
+        "--cds-tag-hover-green": "var(--cds-tag-hover-blue)",
+        "--cds-tag-background-red": f[20],
+        "--cds-tag-color-red": f[70],
+        "--cds-tag-hover-red": f[20],
+      };
+
+  return vars;
+}
+
+/**
+ * High-contrast theme layer, merged OVER the accent overrides on the Theme
+ * wrapper (`<Theme style={{ ...accent, ...hc, ...cb }}>`).
+ *
+ * Pure black/white surfaces, full-strength text and stronger borders over
+ * whichever base theme is active — hues (accent, support, tags) are
+ * untouched, so this combines with the color-blind safe palette (applied
+ * after, winning any overlap).
+ */
+export function highContrastStyleFor(theme: CarbonTheme): CSSProperties {
+  const vars: CSSProperties & Record<`--cds-${string}`, string> =
+    CARBON_THEMES_DARK.has(theme)
+      ? {
+          "--cds-background": "#000000",
+          "--cds-layer-01": "#161616",
+          "--cds-layer-02": "#262626",
+          "--cds-layer-03": "#393939",
+          "--cds-field-01": "#161616",
+          "--cds-field-02": "#262626",
+          "--cds-background-inverse": "#ffffff",
+          "--cds-text-primary": "#ffffff",
+          "--cds-text-secondary": "#e0e0e0",
+          "--cds-text-placeholder": "#a8a8a8",
+          "--cds-text-helper": "#e0e0e0",
+          "--cds-text-inverse": "#000000",
+          "--cds-icon-primary": "#ffffff",
+          "--cds-icon-secondary": "#e0e0e0",
+          "--cds-border-subtle": "#6f6f6f",
+          "--cds-border-strong": "#e0e0e0",
+          "--cds-border-inverse": "#ffffff",
+          "--cds-focus": "#ffffff",
+        }
+      : {
+          "--cds-background": "#ffffff",
+          "--cds-layer-01": "#f4f4f4",
+          "--cds-layer-02": "#ffffff",
+          "--cds-layer-03": "#e0e0e0",
+          "--cds-field-01": "#f4f4f4",
+          "--cds-field-02": "#ffffff",
+          "--cds-background-inverse": "#000000",
+          "--cds-text-primary": "#000000",
+          "--cds-text-secondary": "#393939",
+          "--cds-text-placeholder": "#6f6f6f",
+          "--cds-text-helper": "#393939",
+          "--cds-text-inverse": "#ffffff",
+          "--cds-icon-primary": "#000000",
+          "--cds-icon-secondary": "#393939",
+          "--cds-border-subtle": "#8d8d8d",
+          "--cds-border-strong": "#161616",
+          "--cds-border-inverse": "#000000",
+          "--cds-focus": "#000000",
+        };
+
+  return vars;
+}

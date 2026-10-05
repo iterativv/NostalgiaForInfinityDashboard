@@ -159,6 +159,6 @@ export const EquityCurveWidgetDef = defineWidget({
   capabilities: ["instances.profit-history", "instances.profit-history-all"],
   minWidth: 700,
   minHeight: 400,
-  defaultWidth: 640,
+  defaultWidth: 700,
   defaultHeight: 420,
 });

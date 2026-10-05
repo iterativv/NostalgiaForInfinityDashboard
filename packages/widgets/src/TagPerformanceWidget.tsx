@@ -35,6 +35,9 @@ import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
 import { SettingsSelect } from "./shared/SettingsSelect";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
+import { type ExportColumn } from "./shared/export";
+import { COL } from "./shared/columns";
+import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
   closeWidgetSettings,
   useWidgetSettingsOpen,
@@ -81,11 +84,11 @@ const TAG_SORT_ITEMS: ReadonlyArray<{
   readonly id: TagSortKey;
   readonly text: string;
 }> = [
-  { id: "profitAbs", text: "Total profit" },
-  { id: "trades", text: "Trades" },
-  { id: "winrate", text: "Winrate" },
-  { id: "profitPctAvg", text: "Avg %" },
-  { id: "tag", text: "Tag" },
+  { id: "profitAbs", text: COL.totalProfit },
+  { id: "trades", text: COL.trades },
+  { id: "winrate", text: COL.winRate },
+  { id: "profitPctAvg", text: COL.avgPct },
+  { id: "tag", text: COL.enterTag },
 ];
 
 /**
@@ -101,7 +104,7 @@ function buildColumns([cfg, stake]: readonly [
   const defs: (NfiColumnDef<TagPerformanceRow> | null)[] = [
     {
       id: "tag",
-      header: cfg.groupBy === "enter" ? "Tag" : "Exit reason",
+      header: cfg.groupBy === "enter" ? COL.enterTag : COL.exitReason,
       cell: ({ row }) => (
         <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
           {row.original.tag}
@@ -111,14 +114,14 @@ function buildColumns([cfg, stake]: readonly [
     },
     {
       id: "trades",
-      header: "Trades",
+      header: COL.trades,
       cell: ({ row }) => row.original.trades,
       enableSorting: false,
     },
     cfg.showWins
       ? {
           id: "wins",
-          header: "W",
+          header: COL.wins,
           cell: ({ row }) => row.original.wins,
           enableSorting: false,
         }
@@ -126,7 +129,7 @@ function buildColumns([cfg, stake]: readonly [
     cfg.showLosses
       ? {
           id: "losses",
-          header: "L",
+          header: COL.losses,
           cell: ({ row }) => row.original.losses,
           enableSorting: false,
         }
@@ -134,7 +137,7 @@ function buildColumns([cfg, stake]: readonly [
     cfg.showWinrate
       ? {
           id: "winrate",
-          header: "Winrate",
+          header: COL.winRate,
           cell: ({ row }) => `${(row.original.winrate * 100).toFixed(1)}%`,
           enableSorting: false,
         }
@@ -142,7 +145,15 @@ function buildColumns([cfg, stake]: readonly [
     cfg.showProfitAbs
       ? {
           id: "profitAbs",
-          header: `Total ${stake}`,
+          header: () => (
+            <span
+              title={
+                stake ? `Total profit in ${stake}` : "Total profit"
+              }
+            >
+              {COL.totalProfit}
+            </span>
+          ),
           cell: ({ row }) => (
             <Tag type={row.original.profitAbs >= 0 ? "green" : "red"}>
               {row.original.profitAbs.toFixed(2)}
@@ -154,7 +165,7 @@ function buildColumns([cfg, stake]: readonly [
     cfg.showAvgPct
       ? {
           id: "avgPct",
-          header: "Avg %",
+          header: COL.avgPct,
           cell: ({ row }) => (
             <span className={pnlClass(row.original.profitPctAvg)}>
               {row.original.profitPctAvg.toFixed(2)}%
@@ -251,7 +262,29 @@ export function TagPerformanceWidget({
     });
 
   const groupItems = TAG_GROUP_ITEMS.map((i) => ({ ...i }));
-  const sortItems = TAG_SORT_ITEMS.map((i) => ({ ...i }));
+
+  const sortItems = TAG_SORT_ITEMS.map((i) => ({
+    ...i,
+    text:
+      i.id === "tag"
+        ? groupBy === "enter"
+          ? COL.enterTag
+          : COL.exitReason
+        : i.text,
+  }));
+
+  const exportColumns: ReadonlyArray<ExportColumn<TagPerformanceRow>> = [
+    {
+      header: groupBy === "enter" ? COL.enterTag : COL.exitReason,
+      value: (r) => r.tag,
+    },
+    { header: COL.trades, value: (r) => r.trades },
+    { header: COL.wins, value: (r) => r.wins },
+    { header: COL.losses, value: (r) => r.losses },
+    { header: COL.winRate, value: (r) => r.winrate },
+    { header: COL.totalProfit, value: (r) => r.profitAbs },
+    { header: COL.avgPct, value: (r) => r.profitPctAvg },
+  ];
 
   return (
     <>
@@ -312,11 +345,11 @@ export function TagPerformanceWidget({
         <div className="nfi-settings-toggles">
           {(
             [
-              ["showWins", "Wins"],
-              ["showLosses", "Losses"],
-              ["showWinrate", "Winrate"],
-              ["showProfitAbs", "Total profit"],
-              ["showAvgPct", "Avg %"],
+              ["showWins", COL.wins],
+              ["showLosses", COL.losses],
+              ["showWinrate", COL.winRate],
+              ["showProfitAbs", COL.totalProfit],
+              ["showAvgPct", COL.avgPct],
             ] as const
           ).map(([key, label]) => (
             <SettingsToggle
@@ -335,13 +368,23 @@ export function TagPerformanceWidget({
         error={state.error}
       >
         {rows.length > 0 ? (
-          <div className="nfi-table-scroll">
-            <NfiDataTable
-              columns={columns}
-              data={rows}
-              getRowId={(row) => row.tag}
+          <NfiTableContainer>
+            <NfiTableToolbar
+              label="Tag performance table actions"
+              exportMenu={{
+                filenameBase: `tag-performance-${cfg.instanceId}`,
+                columns: exportColumns,
+                rows,
+              }}
             />
-          </div>
+            <div className="nfi-table-scroll">
+              <NfiDataTable
+                columns={columns}
+                data={rows}
+                getRowId={(row) => row.tag}
+              />
+            </div>
+          </NfiTableContainer>
         ) : (
           <EmptyState
             title="No tag data"

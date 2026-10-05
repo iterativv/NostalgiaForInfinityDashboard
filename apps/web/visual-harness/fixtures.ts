@@ -308,6 +308,12 @@ export const FIXTURES = {
         timeframe: p.timeframe,
         enterTag: p.enterTag,
         leverage: p.leverage,
+        orders: p.orders?.map((o) => ({
+          side: o.side,
+          status: o.status,
+          isEntry: o.isEntry,
+          tag: o.tag,
+        })),
       };
     }),
   },
@@ -353,6 +359,12 @@ export const FIXTURES = {
         enterTag: p.enterTag,
         exitReason: p.exitReason,
         leverage: p.leverage,
+        orders: p.orders?.map((o) => ({
+          side: o.side,
+          status: o.status,
+          isEntry: o.isEntry,
+          tag: o.tag,
+        })),
       };
     }),
     tradesCount: 6,

@@ -14,6 +14,7 @@ import { useLocalStore } from "@nfi/ui";
 import { formatQueryError } from "../api";
 import { login } from "../auth/session";
 import { useFirstRunGate } from "../auth/firstRun";
+import { useDocumentTitle } from "../workspace/useDocumentTitle";
 
 /**
  * Sign-in page (`/login`). Thin by design: credentials go straight to the
@@ -45,8 +46,11 @@ export function LoginPage() {
   });
 
   const { username, password, error, busy } = useStore(formStore, (s) => s);
+
   // Fresh deployment: /login has nothing to authenticate against yet.
   useFirstRunGate();
+
+  useDocumentTitle("Sign in — nfi-desk");
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
