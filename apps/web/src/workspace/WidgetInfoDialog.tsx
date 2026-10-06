@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 import { Schema } from "effect";
+import { createPortal } from "react-dom";
 import type { AnyWidgetDefinition } from "@nfi/widget-sdk";
 import type { PanelInstance } from "@nfi/api-contract";
 import type { JsonValue } from "@nfi/capabilities";
@@ -96,7 +97,22 @@ export function WidgetInfoDialog({
     ? Object.entries(config).filter(([, value]) => value !== undefined)
     : [];
 
-  return (
+  // Portal into the Carbon Theme subtree, like the widget settings dialogs:
+  // the dialog is opened from inside a Trellis panel (transformed ancestors
+  // trap fixed-position overlays in their stacking context), so an inline
+  // Modal renders behind sibling panels. Portalling escapes the grid/panel
+  // clipping while keeping the user's theme tokens. Falls back to inline
+  // when no theme scope exists (tests, harness).
+  if (typeof document === "undefined") return null;
+
+  const host =
+    document.querySelector(
+      "#root .cds--g100, #root .cds--g90, #root .cds--g10, #root .cds--white",
+    ) ??
+    document.querySelector(".cds--g100, .cds--g90, .cds--g10, .cds--white") ??
+    null;
+
+  const dialog = (
     <Modal
       open
       passiveModal
@@ -204,4 +220,8 @@ export function WidgetInfoDialog({
       </div>
     </Modal>
   );
+
+  if (!host) return dialog;
+
+  return createPortal(dialog, host);
 }

@@ -43,6 +43,7 @@ function stubService(
     getBlacklist: () => Effect.die("unused"),
     getTradeCount: () => Effect.die("unused"),
     getProfitBuckets: () => Effect.die("unused"),
+    getLogs: () => Effect.die("unused"),
     ...overrides,
   };
 }

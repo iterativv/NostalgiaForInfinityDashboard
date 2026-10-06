@@ -16,6 +16,7 @@ import {
 import { capabilitiesStore, hydrateCapabilities } from "../auth/capabilities";
 import { effectiveGranted, viewAsStore } from "../auth/viewAs";
 import { useFirstRunGate } from "../auth/firstRun";
+import { hydrateAppearanceDefaults } from "../capabilities/appearance";
 import { hydrateSensitivity } from "../capabilities/sensitivity";
 import { widgetRegistry } from "./registry";
 import {
@@ -28,7 +29,7 @@ import { buildCommands } from "./commands";
 import { WorkspaceRenderer } from "./WorkspaceRenderer";
 import { WidgetPicker } from "./WidgetPicker";
 import { clearPendingSlotTarget, GridPresetsHeaderButton } from "./TrellisPresets";
-import { AddPageDialog } from "./AddPageDialog";
+import { AddPageDialog, ChangePageIconDialog } from "./AddPageDialog";
 import { PagesBar } from "./PagesBar";
 import { PageShareMenu } from "./PageShareMenu";
 import { StatusBar } from "./StatusBar";
@@ -40,7 +41,7 @@ import { consumeTerminalIntent } from "./terminalIntent";
 import { openInstanceConnections } from "./credentialsFix";
 import { buildPositionSearch } from "./urlState";
 import { useDocumentTitle } from "./useDocumentTitle";
-import { HOME_PAGE_ID, isHomePageId } from "./pages";
+import { HOME_PAGE_ID, getPresetPage, isHomePageId, normalizePageIcon } from "./pages";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
 import {
   activateWorkspacePanel,
@@ -49,6 +50,7 @@ import {
   closeWorkspacePanel,
   deletePage,
   dockFloatingTab,
+  getCachedWorkspace,
   hydrateWorkspace,
   moveWorkspaceAutoItem,
   moveWorkspacePanel,
@@ -60,6 +62,7 @@ import {
   resizeWorkspaceAutoItem,
   resizeWorkspaceFlowItem,
   resizeWorkspaceMasonryItem,
+  setPageIcon,
   switchActivePage,
   workspaceStore,
 } from "./store";
@@ -141,6 +144,8 @@ export function AppShell({
     pickerFor: PickerTarget | null;
     // Add-page dialog (pages bar "+"): custom page with icon.
     addPageOpen: boolean;
+    // Change-icon dialog target (page actions menu → Change icon).
+    iconFor: string | null;
   }
 
   const overlayStore = useLocalStore<ShellOverlayState>({
@@ -148,11 +153,13 @@ export function AppShell({
     pickerFor: null,
     // Add-page dialog (pages bar "+"): custom page with icon.
     addPageOpen: false,
+    iconFor: null,
   });
 
   const paletteOpen = useStore(overlayStore, (s) => s.paletteOpen);
   const pickerFor = useStore(overlayStore, (s) => s.pickerFor);
   const addPageOpen = useStore(overlayStore, (s) => s.addPageOpen);
+  const iconFor = useStore(overlayStore, (s) => s.iconFor);
 
   // The shell is shared by the terminal and the off-terminal pages
   // (/settings, /public, …). Page-level chrome (active page highlight,
@@ -265,10 +272,16 @@ export function AppShell({
 
   useStoreEffect(() => {
     // Boot order matters: the grant first, then page defaults (landing page
-    // other than Home), then the workspace (which consumes the defaults).
+    // other than Home) + appearance defaults (root's shared look, seeded
+    // before the first panel render) + sensitivity, then the workspace
+    // (which consumes the defaults).
     void (async () => {
       await hydrateCapabilities();
-      await Promise.allSettled([hydrateSensitivity(), hydratePageDefaults()]);
+      await Promise.allSettled([
+        hydrateSensitivity(),
+        hydratePageDefaults(),
+        hydrateAppearanceDefaults(),
+      ]);
       await hydrateWorkspace();
     })();
 
@@ -431,6 +444,17 @@ export function AppShell({
     });
   };
 
+  const handleChangeIcon = (pageId: string) => {
+    if (readOnly) return;
+    overlayStore.setState((p) => ({
+      ...p,
+      pickerFor: null,
+      paletteOpen: false,
+      addPageOpen: false,
+      iconFor: pageId,
+    }));
+  };
+
   const panelCount = Object.keys(workspace.panels).length;
 
   // Signed-out visitors are read-only: card grips/handles hide and every
@@ -526,6 +550,7 @@ export function AppShell({
             onDelete={handleDeletePage}
             onRename={handleRenamePage}
             onReset={handleResetPage}
+            onChangeIcon={handleChangeIcon}
             locked={readOnly}
           />
           <div className="nfi-topbar-actions">
@@ -654,6 +679,33 @@ export function AppShell({
               overlayStore.setState((p) => ({ ...p, addPageOpen: false }))
             }
             onAdded={ensureTerminal}
+          />
+        ) : null}
+        {iconFor ? (
+          <ChangePageIconDialog
+            pageName={
+              pages.find((p) => p.id === iconFor)?.name ??
+              getCachedWorkspace(iconFor)?.name ??
+              "Page"
+            }
+            currentIcon={
+              pages.find((p) => p.id === iconFor)?.icon ??
+              normalizePageIcon(getCachedWorkspace(iconFor)?.icon)
+            }
+            defaultLabel={
+              iconFor === HOME_PAGE_ID || isHomePageId(iconFor)
+                ? "House (default)"
+                : getPresetPage(iconFor) !== undefined
+                  ? `${getPresetPage(iconFor)?.title ?? "Preset"} (default)`
+                  : "None (default)"
+            }
+            onPick={(icon) => {
+              setPageIcon(iconFor, icon);
+              overlayStore.setState((p) => ({ ...p, iconFor: null }));
+            }}
+            onClose={() =>
+              overlayStore.setState((p) => ({ ...p, iconFor: null }))
+            }
           />
         ) : null}
         <DialogHost />

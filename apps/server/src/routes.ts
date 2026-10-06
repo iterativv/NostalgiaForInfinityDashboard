@@ -4,6 +4,7 @@
 import { HttpApiBuilder } from "@effect/platform";
 import { NfiApi } from "@nfi/api-contract";
 import { runCapabilityForHttp } from "./capabilities/context.js";
+import { getAppearance, updateAppearance } from "./appearance.js";
 import { getSensitivity, updateSensitivity } from "./sensitivity.js";
 
 /**
@@ -15,9 +16,9 @@ import { getSensitivity, updateSensitivity } from "./sensitivity.js";
  * owns no endpoint logic. Auth gates availability by capability id
  * (`ENDPOINT_CAPABILITIES` in `@nfi/api-contract`).
  *
- * The sensitivity endpoints are the documented exception (meta-info, not a
- * capability): everyone reads the criteria, only root may write them
- * (guard in `sensitivity.ts`).
+ * The sensitivity + appearance endpoints are the documented exceptions
+ * (meta-info, not capabilities): everyone reads the criteria/defaults,
+ * only root may write them (guards in `sensitivity.ts` / `appearance.ts`).
  */
 
 export const SystemGroupLive = HttpApiBuilder.group(
@@ -31,6 +32,8 @@ export const SystemGroupLive = HttpApiBuilder.group(
       )
       .handle("sensitivity", () => getSensitivity())
       .handle("sensitivityUpdate", ({ payload }) => updateSensitivity(payload))
+      .handle("appearance", () => getAppearance())
+      .handle("appearanceUpdate", ({ payload }) => updateAppearance(payload))
       .handle("pageDefaults", ({ urlParams }) =>
         runCapabilityForHttp("system.page-defaults", {
           userId: urlParams.userId,

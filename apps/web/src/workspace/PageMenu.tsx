@@ -8,6 +8,7 @@ import { useStore } from "@tanstack/react-store";
 import {
   Close,
   Edit,
+  Image,
   OverflowMenuVertical,
   Restart,
 } from "@carbon/icons-react";
@@ -23,9 +24,9 @@ import {
  * dark menu styles).
  *
  * It replaces the old per-page × close button: every added page offers
- * Rename, Reset layout (discard any widget/layout modification and restore
- * the canonical Home / preset / default layout) and Delete; Home offers
- * Rename + Reset only (it cannot be deleted).
+ * Rename, Change icon, Reset layout (discard any widget/layout modification
+ * and restore the canonical Home / preset / default layout) and Delete;
+ * Home offers Rename + Change icon + Reset only (it cannot be deleted).
  *
  * Click-only: the trigger toggles the menu, outside pointer down or
  * Escape closes it. (The earlier hover-to-open variant was removed with
@@ -42,6 +43,7 @@ export function PageActionsMenu({
   onRename,
   onReset,
   onDelete,
+  onChangeIcon,
   triggerClassName = "nfi-page-menu",
 }: {
   pageName: string;
@@ -52,6 +54,8 @@ export function PageActionsMenu({
   /** Discard widget/layout modifications, restore the canonical layout. */
   onReset: (pageId: string) => void;
   onDelete: (pageId: string) => void;
+  /** Open the icon picker for this page (Home, preset or custom). */
+  onChangeIcon: (pageId: string) => void;
   triggerClassName?: string;
 }) {
   // Menu state in one component store: open + anchor rect.
@@ -131,7 +135,7 @@ export function PageActionsMenu({
   // Anchor below the trigger, right-aligned, flipped above near the
   // viewport bottom and clamped horizontally.
   const menuStyle: CSSProperties = (() => {
-    const items = 2 + (canDelete ? 1 : 0);
+    const items = 3 + (canDelete ? 1 : 0);
     const height = items * 37 + 12;
 
     if (!menu.anchor) {
@@ -199,6 +203,19 @@ export function PageActionsMenu({
                 >
                   <Edit size={16} />
                   Rename
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="nfi-tabmenu-item"
+                  title="Change this page's icon in the pages bar"
+                  onClick={() => {
+                    onChangeIcon(pageId);
+                    close();
+                  }}
+                >
+                  <Image size={16} />
+                  Change icon
                 </button>
                 <button
                   type="button"

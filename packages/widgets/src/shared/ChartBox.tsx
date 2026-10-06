@@ -53,7 +53,10 @@ export function ChartBox({
       ref={setElement}
       style={{
         flex: "1 1 auto",
-        minHeight: min,
+        // `--nfi-chart-min` (set on stacked-mobile trellis surfaces in
+        // styles.css) raises the floor when the cell has no fixed height;
+        // unset everywhere else, so this stays exactly `min` px.
+        minHeight: `max(${min}px, var(--nfi-chart-min, 0px))`,
         minWidth: 0,
         width: "100%",
         maxWidth: "100%",

@@ -65,7 +65,12 @@ import {
   useWidgetSettingsOpen,
 } from "./shared/widgetSettingsBus";
 import { OpenPositionsConfigSchema } from "./OpenPositionsWidget";
-import { type ExportColumn } from "./shared/export";
+import {
+  expandPositionRows,
+  TRADE_ORDER_EXPORT_COLUMNS,
+  withOrderRows,
+  type ExportColumn,
+} from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 
@@ -123,8 +128,8 @@ export const CLOSED_POSITIONS_DEFAULTS: ClosedPositionsConfig =
 /** Window growth cap — matches the closed-positions capability limit cap. */
 const MAX_WINDOW = 5_000;
 
-/** Full-row CSV/XLSX columns (all fields, not just the visible set). */
-const EXPORT_COLUMNS: ReadonlyArray<
+/** Position-side CSV/XLSX columns (all fields, not just the visible set). */
+const POSITION_EXPORT_COLUMNS: ReadonlyArray<
   ExportColumn<SourcedClosedPosition>
 > = [
   { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
@@ -152,6 +157,16 @@ const EXPORT_COLUMNS: ReadonlyArray<
   { header: COL.duration, value: (p) => fmtDuration(p.tradeDurationSeconds) },
 ];
 
+/**
+ * Grouped CSV/XLSX columns: position columns + sub-order columns.
+ * One position row (order cells empty, merged in XLSX) followed by one
+ * row per sub-order (position cells empty, merged in XLSX).
+ */
+const EXPORT_COLUMNS = withOrderRows({
+  positionColumns: POSITION_EXPORT_COLUMNS,
+  orderColumns: TRADE_ORDER_EXPORT_COLUMNS,
+});
+
 /** Column set depends on config flags + fleet mode + instance colors. */
 function buildColumns([
   cfg,
@@ -163,11 +178,11 @@ function buildColumns([
   InstanceColors,
 ]): NfiColumnDef<SourcedClosedPosition>[] {
   const defs: (NfiColumnDef<SourcedClosedPosition> | null)[] = [
-    cfg.showRowNumber
+    cfg.showTradeId
       ? {
-          id: "no",
-          header: COL.no,
-          cell: ({ row }) => row.index + 1,
+          id: "tradeId",
+          header: COL.tradeId,
+          cell: ({ row }) => row.original.tradeId,
           meta: { className: "nfi-mono" },
           enableSorting: false,
         }
@@ -378,6 +393,9 @@ export function ClosedPositionsWidget({
     { inputs: shallowStore, output: shallowStore },
   );
 
+  /** Grouped export rows: position row + sub-order rows per position. */
+  const exportRows = expandPositionRows(positions, (p) => p.orders);
+
   /**
    * Deeper history probably exists: the window can still grow AND either
    * the backend's closed-trade total exceeds the rows shown, or (searches,
@@ -464,7 +482,7 @@ export function ClosedPositionsWidget({
         <div className="nfi-settings-toggles">
           {(
             [
-              ["showRowNumber", "Row number"],
+              ["showTradeId", COL.tradeId],
               ["showBot", "Bot"],
               ["showPair", "Pair"],
               ["showDirection", "Direction"],
@@ -519,7 +537,7 @@ export function ClosedPositionsWidget({
                   exportMenu={{
                     filenameBase: `closed-positions-${cfg.instanceId}`,
                     columns: EXPORT_COLUMNS,
-                    rows: positions,
+                    rows: exportRows,
                   }}
                 />
                 <div className="nfi-table-scroll">

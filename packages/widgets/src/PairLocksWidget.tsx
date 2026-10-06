@@ -73,8 +73,8 @@ function buildColumns([
       header: COL.pair,
       cell: ({ row }) => (
         <>
-          {row.original.pair}
-          {row.original.side !== undefined ? (
+          {row.original.pair ?? "—"}
+          {row.original.side !== undefined && row.original.side !== "" ? (
             <span style={{ opacity: 0.6 }}> {row.original.side}</span>
           ) : null}
         </>
@@ -179,12 +179,17 @@ export function PairLocksWidget({
   const patch = (p: Partial<PairLocksConfig>) =>
     applyWidgetSettings(panelId, "pair-locks", cfg, p);
 
-  const locks = (data?.locks ?? []).filter(
-    (lock) => cfg.showExpired || lock.active,
-  );
+  // Backend payloads vary across freqtrade versions (bare array vs
+  // `{locks}`, extra fields) — the client normalizes to `{locks}`, but
+  // guard the array here too so a foreign body can never throw the render.
+  const allLocks = Array.isArray(data?.locks) ? data.locks : [];
+  const locks = allLocks.filter((lock) => cfg.showExpired || lock.active);
 
-  const active = (data?.locks ?? []).filter((lock) => lock.active).length;
-  const reasons = new Set(locks.map((lock) => lock.reason));
+  const active = allLocks.filter((lock) => lock.active).length;
+
+  const reasons = new Set(
+    locks.map((lock) => lock.reason ?? ""),
+  );
 
   return (
     <>
@@ -220,7 +225,7 @@ export function PairLocksWidget({
               <Stat
                 label="Active locks"
                 value={String(active)}
-                sub={`${data?.locks.length ?? 0} total`}
+                sub={`${allLocks.length} total`}
               />
               <Stat
                 label="Pairs locked"
@@ -235,19 +240,29 @@ export function PairLocksWidget({
               <NfiDataTable
                 columns={columns}
                 data={locks}
-                getRowId={(lock) => {
+                getRowId={(lock, index) => {
                   const botId =
                     "instanceId" in lock ? lock.instanceId : undefined;
 
-                  return `${botId ?? cfg.instanceId}-${lock.id}-${lock.pair}`;
+                  // Index suffix: freqtrade reuses small lock ids across
+                  // restarts, and fleet rows from different bots can share
+                  // id+pair when attribution is missing — duplicate keys
+                  // collapse expansion/selection state and warn in dev.
+                  return `${botId ?? cfg.instanceId}-${lock.id}-${lock.pair}-${index}`;
                 }}
               />
             </div>
           </div>
         ) : (
           <EmptyState
-            title="No pair locks"
-            hint="Locked pairs appear here while freqtrade pauses them."
+            title={
+              allLocks.length > 0 ? "No active locks" : "No pair locks"
+            }
+            hint={
+              allLocks.length > 0
+                ? `${allLocks.length} expired ${allLocks.length === 1 ? "lock" : "locks"} on record ${fleet ? "across the fleet" : `on “${cfg.instanceId}”`} — enable “Show expired locks” in Settings to review ${allLocks.length === 1 ? "it" : "them"}.`
+                : `Nothing is paused right now — that is the normal state. Freqtrade locks a pair only while a protection (cooldown, max drawdown, …) pauses it, and each lock clears automatically at its expiry. Showing ${fleet ? "the whole fleet" : `“${cfg.instanceId}”`}; switch instances in Settings if you expected locks elsewhere.`
+            }
           />
         )}
       </WidgetFrame>
@@ -259,7 +274,8 @@ export const PairLocksWidgetDef = defineWidget({
   type: "pair-locks",
   hasSettings: true,
   title: "Pair Locks",
-  description: "Pairs currently locked from trading, with reason and expiry.",
+  description:
+    "Pairs freqtrade has temporarily paused. A lock appears only while a protection (cooldown, max drawdown, …) holds the pair, with the reason and when it clears — an empty list simply means nothing is paused right now.",
   configSchema: PairLocksConfigSchema,
   defaultConfig: PAIR_LOCKS_DEFAULTS,
   component: PairLocksWidget,

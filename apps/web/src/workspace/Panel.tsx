@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Component, memo, type ReactNode } from "react";
+import { Component, memo, useSyncExternalStore, type ReactNode } from "react";
 import { Button } from "@carbon/react";
 import { Close } from "@carbon/icons-react";
 import { useStore } from "@tanstack/react-store";
@@ -88,6 +88,35 @@ function usePanelBodySize(elStore: Store<HTMLDivElement | null>): {
   }, [el]);
 
   return useStore(sizeStore, (size) => size);
+}
+
+/**
+ * The stacked-workspace breakpoint (styles.css `@media (max-width: 56rem)`):
+ * below it every pane is a full-width card at its natural height in one
+ * scrolling column. A "cell" there is exactly as large as its content, so
+ * both small-cell affordances below are meaningless — the minimum-size wall
+ * could false-positive (a 480px-min chart in a ~400px-tall natural card)
+ * and the small-screen scale-down would fight the natural height: it sizes
+ * its wrapper to bodyHeight / scale, which an auto-height body wraps,
+ * growing the card on every measure.
+ */
+const STACKED_MEDIA_QUERY = "(max-width: 56rem)";
+
+const stackedMedia =
+  typeof matchMedia === "undefined" ? undefined : matchMedia(STACKED_MEDIA_QUERY);
+
+function subscribeStacked(callback: () => void): () => void {
+  stackedMedia?.addEventListener("change", callback);
+
+  return () => stackedMedia?.removeEventListener("change", callback);
+}
+
+function useStackedWorkspace(): boolean {
+  return useSyncExternalStore(
+    subscribeStacked,
+    () => stackedMedia?.matches ?? false,
+    () => false,
+  );
 }
 
 export function PanelPlaceholder({
@@ -246,10 +275,15 @@ function PanelImpl({
 
   // Preference: widget minimum dimensions off — every cell renders the
   // widget raw (no "needs more room" wall, no small-screen scale-down).
-  const minSizesDisabled = useStore(
+  // Stacked mobile implies it: panes there grow to their content, so there
+  // is no cell to be "below minimum" (see useStackedWorkspace).
+  const minSizesPrefOff = useStore(
     prefsStore,
     (state) => state.disableWidgetMinSize,
   );
+
+  const stacked = useStackedWorkspace();
+  const minSizesDisabled = minSizesPrefOff || stacked;
 
   if (widgetType === undefined) {
     return (

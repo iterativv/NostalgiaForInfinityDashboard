@@ -16,6 +16,7 @@ export function EmptyPane({
   title,
   actionLabel = "Add widget",
   onAdd,
+  onClose,
 }: {
   /** "No widgets yet.", "Workspace is empty.", "Empty pane", … */
   title: string;
@@ -26,10 +27,34 @@ export function EmptyPane({
    * Absent = label only (locked / read-only surfaces).
    */
   onAdd?: (anchor: DOMRect | null) => void;
+  /**
+   * Closes this empty pane (slot placeholders from grid presets).
+   * Absent = no close affordance (workspace-level empties).
+   */
+  onClose?: () => void;
 }) {
   return (
     <div className="nfi-slot">
       <div className="nfi-slot-inner">
+        {onClose ? (
+          <button
+            type="button"
+            className="nfi-slot-close"
+            title="Close empty pane"
+            aria-label="Close empty pane"
+            onClick={onClose}
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden
+            >
+              <path d="M12 4.7 11.3 4 8 7.3 4.7 4 4 4.7 7.3 8 4 11.3 4.7 12 8 8.7 11.3 12 12 11.3 8.7 8z" />
+            </svg>
+          </button>
+        ) : null}
         <p className="nfi-slot-label">{title}</p>
         {onAdd ? (
           <button

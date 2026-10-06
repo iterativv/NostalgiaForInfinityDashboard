@@ -64,6 +64,7 @@ export const migrateWorkspaces: Effect.Effect<
         version INTEGER NOT NULL,
         layout_json TEXT NOT NULL,
         active_panel_id TEXT,
+        trellis_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -175,6 +176,7 @@ const WorkspaceRow = Schema.Struct({
   activePanelId: Schema.NullOr(Schema.String),
   icon: Schema.NullOr(Schema.String),
   origin: Schema.NullOr(Schema.String),
+  trellisJson: Schema.NullOr(Schema.String),
   updatedAt: Schema.String,
 });
 
@@ -194,6 +196,21 @@ const assembleWorkspace = (
 ): Effect.Effect<Workspace, ParseError> =>
   Effect.gen(function* () {
     const layout = yield* parseJson(row.layoutJson);
+
+    // Shared Trellis document (opaque): NULL/empty/corrupt = absent (the
+    // renderer falls back to compiling `layout`). Corrupt JSON must not fail
+    // the whole workspace load — it only affects arrangement.
+    let trellis: unknown = undefined;
+
+    if (row.trellisJson !== null && row.trellisJson !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(row.trellisJson);
+
+        if (parsed instanceof Object) trellis = parsed;
+      } catch {
+        trellis = undefined;
+      }
+    }
 
     // Panel ids/widget types stay plain strings here; the Workspace decode
     // below validates and brands them along with the rest of the document.
@@ -225,6 +242,7 @@ const assembleWorkspace = (
       // NULL columns decode as absent optional fields.
       icon: row.icon ?? undefined,
       origin: row.origin === "user" ? "user" : undefined,
+      trellis,
     });
   });
 
@@ -298,9 +316,14 @@ export const WorkspaceRepoLive: Layer.Layer<
           yield* Schema.encode(Workspace.fields.layout)(workspace.layout),
         );
 
+        const trellisJson =
+          workspace.trellis === undefined
+            ? null
+            : JSON.stringify(workspace.trellis);
+
         yield* sql`
-          INSERT INTO workspaces (id, name, schema_version, version, layout_json, active_panel_id, icon, origin, created_at, updated_at)
-          VALUES (${workspace.id}, ${workspace.name}, ${workspace.schemaVersion}, ${workspace.version}, ${layoutJson}, ${workspace.activePanelId}, ${workspace.icon ?? null}, ${workspace.origin ?? null}, ${now}, ${now})
+          INSERT INTO workspaces (id, name, schema_version, version, layout_json, active_panel_id, icon, origin, trellis_json, created_at, updated_at)
+          VALUES (${workspace.id}, ${workspace.name}, ${workspace.schemaVersion}, ${workspace.version}, ${layoutJson}, ${workspace.activePanelId}, ${workspace.icon ?? null}, ${workspace.origin ?? null}, ${trellisJson}, ${now}, ${now})
           ON CONFLICT (id) DO UPDATE SET
             name = excluded.name,
             schema_version = excluded.schema_version,
@@ -309,6 +332,7 @@ export const WorkspaceRepoLive: Layer.Layer<
             active_panel_id = excluded.active_panel_id,
             icon = excluded.icon,
             origin = excluded.origin,
+            trellis_json = excluded.trellis_json,
             updated_at = excluded.updated_at
         `;
       });
@@ -338,6 +362,7 @@ export const WorkspaceRepoLive: Layer.Layer<
               active_panel_id AS activePanelId,
               icon,
               origin,
+              trellis_json AS trellisJson,
               updated_at AS updatedAt
             FROM workspaces
             WHERE id = ${id}

@@ -64,7 +64,8 @@ describe("packBentoRows", () => {
   it("handles edge inputs without empty rows", () => {
     expect(packBentoRows([])).toEqual([]);
     expect(packBentoRows([3])).toEqual([[0]]);
-    // 2 + 2 fits the 5-unit row; a third narrow (6 units) starts a new one.
+    // Three 2-unit cards exceed the 5-unit row budget: the pair packs,
+    // the third opens its own row.
     expect(packBentoRows([2, 2, 2])).toEqual([[0, 1], [2]]);
     expect(packBentoRows([5, 5])).toEqual([[0], [1]]);
     // Degenerate spans coerce instead of collapsing the grid.

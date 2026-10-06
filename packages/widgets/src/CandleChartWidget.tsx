@@ -14,7 +14,7 @@
  * chart — overlays stay locked with an explanation instead of failing.
  */
 
-import { NumberInput } from "@carbon/react";
+import { Button, NumberInput } from "@carbon/react";
 import { Schema } from "effect";
 import {
   BollingerBands,
@@ -35,6 +35,8 @@ import {
 } from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
+import { useCandlePending } from "./shared/candlePending";
+import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 import {
   InstanceIdField,
   booleanWithDefault,
@@ -64,6 +66,7 @@ import {
 import {
   averageEntryPrice as computeAverageEntry,
   buildTradeMarkers,
+  earliestEntrySecond,
   timeframeSeconds,
 } from "./shared/tradeOverlay";
 
@@ -311,18 +314,42 @@ export function CandleChartWidget({
     { enabled: tradesAccess.allowed },
   );
 
-  const state = queryState(candlesQ.error, candlesQ.isLoading);
-
-  const marketError = market.allowed
-    ? null
-    : `Not authorized — needs ${market.missing.join(", ")}`;
-
   const showSettings = useWidgetSettingsOpen(panelId);
 
   const patch = (p: Partial<CandleChartConfig>) =>
     applyWidgetSettings(panelId, "candle-chart", cfg, p);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
+
+  // Timeframe switches refetch while a cached EMPTY result would otherwise
+  // flash "no analyzed data" with no loader — hold loading through a short
+  // grace so long analyses read as loading.
+  const candlesPending = useCandlePending(
+    `${cfg.instanceId}|${cfg.pair}|${cfg.timeframe}|${limit}`,
+    candles.length >= 2,
+    candlesQ.isLoading,
+  );
+
+  const state = queryState(
+    candlesQ.error,
+    candlesQ.isLoading || candlesPending,
+  );
+
+  const marketError = market.allowed
+    ? null
+    : `Not authorized — needs ${market.missing.join(", ")}`;
+
+  // Strategy timeframe (when the grant allows reading it): the only
+  // timeframe guaranteed to have live candles. Names the recovery button
+  // below and marks the button row — never gates rendering by itself.
+  const strategyTf = useStrategyTimeframe(cfg.instanceId);
+
+  const strategyFallback =
+    strategyTf !== undefined &&
+    strategyTf !== cfg.timeframe &&
+    TIMEFRAME_ITEMS.some((t) => t.id === strategyTf)
+      ? strategyTf
+      : undefined;
 
   // Pair self-heal: futures exchanges whitelist `BTC/USDT:USDT` while spot
   // lists `BTC/USDT`. When the configured pair is not on the whitelist,
@@ -384,6 +411,31 @@ export function CandleChartWidget({
           stakeAmount: p.stakeAmount,
         })),
       );
+    },
+    { inputs: shallow },
+  );
+
+  // Short direction for the PnL fill (same as position-candle twins).
+  const followedIsShort = useDerived(
+    [pairOpen] as const,
+    ([open]): boolean =>
+      open.length > 0 && open.every((p) => p.isShort === true),
+    { inputs: shallow },
+  );
+
+  // Entry-anchored fill start, snapped to the candle bucket.
+  const entrySince = useDerived(
+    [pairOpen, cfg.timeframe] as const,
+    ([open, timeframe]): number | null => {
+      const at = earliestEntrySecond(open);
+
+      if (at === null) return null;
+
+      const tfSec = timeframeSeconds(timeframe);
+
+      if (tfSec === null) return at;
+
+      return Math.floor(at / tfSec) * tfSec;
     },
     { inputs: shallow },
   );
@@ -818,8 +870,14 @@ export function CandleChartWidget({
                     }
                     onClick={() => patch({ timeframe: tf.id })}
                     aria-pressed={cfg.timeframe === tf.id}
+                    title={
+                      tf.id === strategyTf
+                        ? "Strategy timeframe — always has live candles"
+                        : `Show ${tf.id} candles`
+                    }
                   >
                     {tf.text}
+                    {tf.id === strategyTf ? " ●" : ""}
                   </button>
                 ))}
               </div>
@@ -1037,13 +1095,35 @@ export function CandleChartWidget({
               subplot={subplot}
               tradeMarkers={tradeMarkers}
               avgEntryPrice={avgEntry}
+              avgEntryIsShort={followedIsShort}
+              avgEntrySince={entrySince}
             />
           </div>
         ) : (
           <EmptyState
             title="No candles"
-            hint={`Freqtrade has no analyzed data for ${cfg.pair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed. Pick a listed pair and the strategy timeframe in the tab's ⋯ menu.`}
-          />
+            hint={
+              strategyFallback !== undefined
+                ? `Your bot analyzes ${strategyFallback} — ${cfg.timeframe} isn't analyzed for ${cfg.pair}, so there's no live chart for it.`
+                : `Freqtrade has no analyzed data for ${cfg.pair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed. Pick a listed pair and the strategy timeframe in the tab's ⋯ menu.`
+            }
+          >
+            {strategyFallback !== undefined ? (
+              <Button
+                size="sm"
+                kind="tertiary"
+                onClick={() => {
+                  const next = TIMEFRAME_ITEMS.find(
+                    (t) => t.id === strategyFallback,
+                  );
+
+                  if (next) patch({ timeframe: next.id });
+                }}
+              >
+                Show {strategyFallback} instead
+              </Button>
+            ) : null}
+          </EmptyState>
         )}
       </WidgetFrame>
     </>

@@ -197,6 +197,14 @@ export const migrate: Effect.Effect<
   yield* sql`ALTER TABLE workspace_panels ADD COLUMN title TEXT`.pipe(
     Effect.catchIf(isDuplicateColumn, () => Effect.void),
   );
+  // Shared Trellis layout document (opaque JSON from `getDocument()`). NULL =
+  // no shared arrangement yet — renderers fall back to compiling the NFI
+  // `layout` tree. Without this column every browser keeps its own Trellis
+  // arrangement in localStorage, so "Save layout for anonymous" can never
+  // make incognito identical.
+  yield* sql`ALTER TABLE workspaces ADD COLUMN trellis_json TEXT`.pipe(
+    Effect.catchIf(isDuplicateColumn, () => Effect.void),
+  );
   yield* migrateInstances;
   yield* migrateSettings;
   yield* migrateUsers;

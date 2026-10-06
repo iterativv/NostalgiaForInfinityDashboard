@@ -179,3 +179,87 @@ export function AddPageDialog({
     </div>
   );
 }
+
+/**
+ * Change-page-icon dialog — the "Change icon" action of the page actions
+ * menu. Works for every page kind: custom pages store the pick directly,
+ * Home stores an override (cleared = house glyph), preset pages store an
+ * override (cleared = built-in preset icon).
+ */
+export function ChangePageIconDialog({
+  pageName,
+  currentIcon,
+  defaultLabel,
+  onPick,
+  onClose,
+}: {
+  pageName: string;
+  /** Currently effective icon (override or built-in); undefined = default look. */
+  currentIcon: PageIconKey | undefined;
+  /** Caption for the "cleared" choice (e.g. "House (default)" on Home). */
+  defaultLabel: string;
+  onPick: (icon: PageIconKey | undefined) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="nfi-palette-overlay"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Change icon for ${pageName}`}
+        className="nfi-layouts nfi-addpage"
+      >
+        <div className="nfi-layouts-head">
+          <div>
+            <h2>Change icon</h2>
+            <p>{pageName}</p>
+          </div>
+          <Button kind="ghost" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+        <div className="nfi-addpage-field">
+          <span className="nfi-addpage-label">Icon</span>
+          <div
+            className="nfi-addpage-icons"
+            role="radiogroup"
+            aria-label="Page icon"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={currentIcon === undefined}
+              className="nfi-addpage-icon"
+              title={defaultLabel}
+              onClick={() => {
+                onPick(undefined);
+              }}
+            >
+              <span className="nfi-addpage-none">{defaultLabel}</span>
+            </button>
+            {PAGE_ICON_KEYS.map((key) => (
+              <button
+                key={key}
+                type="button"
+                role="radio"
+                aria-checked={currentIcon === key}
+                className="nfi-addpage-icon"
+                title={key}
+                onClick={() => {
+                  onPick(key);
+                }}
+              >
+                <PageIconView iconKey={key} size={16} />
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

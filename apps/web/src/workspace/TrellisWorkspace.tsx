@@ -16,6 +16,7 @@ import {
   useView,
   useViewTitle,
   useOptionalWorkspace,
+  type LayoutDocument,
   type Params as TrellisParams,
   type ViewApi,
 } from "@danfessler/trellis-react";
@@ -54,6 +55,7 @@ import {
   activateWorkspacePanel,
   closeWorkspacePanel,
   pinTabToFloating,
+  updateTrellisDocument,
   workspaceStore,
 } from "./store";
 
@@ -72,14 +74,19 @@ import {
  * 1. Render a workspace — `<Workspace>` fills `.nfi-workspace-host`.
  * 2. Register view types — single `<ViewType id="widget">`; each view is
  *    one NFI panel (`params: { panelId }`).
- * 3. Describe the initial layout — the current `Workspace.layout` tree is
- *    compiled once (on mount) to `<Split>/<Stage>/<Panel>/<View>`.
- *    After mount the user owns the layout.
+ * 3. Describe the initial layout — the shared `Workspace.trellis` document
+ *    mounts directly when present (every visitor renders the arrangement the
+ *    admin saved); otherwise the `Workspace.layout` tree compiles once (on
+ *    mount) to `<Split>/<Stage>/<Panel>/<View>`. After mount the user owns
+ *    the layout.
  * 4. Read view state in content — `WidgetView` uses `useView()` +
  *    `useViewTitle()` and renders the existing `Panel` (header off; the
  *    tab strip + actions live in the Trellis tab bar via `accessory`).
  * 5. Open views — new store panels are opened with `ws.open("widget")`.
- * 6. Remember the layout — `storageKey` per page + `version`.
+ * 6. Remember the layout — Trellis edits report through `onDocumentChange`
+ *    into the workspace store, which persists the shared backend `trellis`
+ *    field (de-bounced autosave, or the view-as banner Save while
+ *    previewing) so anonymous visitors render the identical arrangement.
  *
  * Tab actions restored (previously in `TabGroup`): the `accessory` renders
  * the strip "+" (canvas-level add) and the full `TabActionsMenu`
@@ -119,6 +126,59 @@ function viewIdForPanel(panelId: string): string {
 
 function panelIdForViewId(viewId: string): string | null {
   return viewId.startsWith("view-") ? viewId.slice("view-".length) : null;
+}
+
+/** Shared-document shell: schema 1 plus a non-null views record. */
+const SharedTrellisDocSchema = Schema.Struct({
+  schema: Schema.Literal(1),
+  views: Schema.Unknown,
+});
+
+/**
+ * Narrow an opaque backend `trellis` value (or a localStorage migration
+ * candidate) to a Trellis `LayoutDocument` Trellis itself can mount.
+ * Anything else (absent, corrupt, wrong shape) fails the predicate — the
+ * renderer falls back to compiling the NFI `layout` tree via `toTrellis`.
+ */
+function isSharedTrellisDocument(value: unknown): value is LayoutDocument {
+  const decoded = Schema.decodeUnknownEither(SharedTrellisDocSchema)(value);
+
+  if (Either.isLeft(decoded)) return false;
+
+  return (
+    decoded.right.views instanceof Object &&
+    !Array.isArray(decoded.right.views)
+  );
+}
+
+/**
+ * One-time migration from the pre-shared era: Trellis arrangements used to
+ * persist per browser in `localStorage` (`nfi-trellis-<page>`), so an admin's
+ * carefully arranged dashboard never reached incognito no matter how often
+ * they hit "Save layout for anonymous". The backend `trellis` field replaces
+ * that key. When the backend has no arrangement yet but this browser does,
+ * adopt the local copy as the initial document (the first save then shares
+ * it) and drop the key so the two sources can never diverge again.
+ */
+function takeLocalTrellisMigration(pageId: string): LayoutDocument | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(`nfi-trellis-${pageId}`);
+
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    const doc = isSharedTrellisDocument(parsed) ? parsed : null;
+
+    try {
+      localStorage.removeItem(`nfi-trellis-${pageId}`);
+    } catch {
+      // Best-effort cleanup only.
+    }
+
+    return doc;
+  } catch {
+    return null;
+  }
 }
 
 interface FullscreenRequest {
@@ -595,8 +655,9 @@ const NFI_TOKENS = {
  *   outlived its panels) are closed;
  * - with zero store panels left, Trellis resets to the empty workspace so
  *   no degenerate skeleton (stuck splits, slivered empty slot) survives.
- * Trellis-owned moves (drag/split/float) persist via `storageKey` and need
- * no store round-trip.
+ * Trellis-owned moves (drag/split/float) report through `onDocumentChange`
+ * into the workspace store — that store round-trip is what shares the
+ * arrangement to the backend.
  */
 function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
   const ws = useOptionalWorkspace();
@@ -656,6 +717,24 @@ function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
               // in its panel — a stale `into` falls back to side/stage
               // placement and must leave the slot grid untouched.
               placed = opened.panelId === target.panelId;
+
+              if (!placed) {
+                // Placement fell back (stale panel id, raced preset
+                // re-apply): dock the freshly opened view into the slot's
+                // panel explicitly instead of stranding it elsewhere and
+                // leaving the empty pane behind as a second tab.
+                try {
+                  ws.dock(opened.id, { into: target.panelId });
+
+                  const moved = ws
+                    .getSnapshot()
+                    .views.find((v) => v.id === opened.id);
+
+                  placed = moved?.panelId === target.panelId;
+                } catch {
+                  placed = false;
+                }
+              }
             } catch {
               placed = false;
             }
@@ -665,14 +744,39 @@ function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
             if (placed) {
               // Retire the exact placeholder first (cannot miss), then sweep
               // any other slot views still sharing its panel (stale
-              // traversal ids after repeated preset applies) so no "Empty
-              // pane" tab survives next to the new widget.
+              // traversal ids after repeated preset applies, or a docked
+              // twin) so no "Empty pane" tab survives next to the new
+              // widget. The sweep re-reads the live snapshot (not the
+              // pre-open one above) so a slot mounted between the two calls
+              // is still caught.
               void ws.close(target.viewId, { force: true });
 
               for (const slot of ws.views({ type: "slot" })) {
                 if (slot.panelId === target.panelId && slot.id !== target.viewId) {
                   void ws.close(slot.id, { force: true });
                 }
+              }
+
+              // Belt and braces: any slot tab still sharing the NEW
+              // widget's panel after the closes above is a leftover — the
+              // widget owns that panel now.
+              try {
+                const after = ws.getSnapshot();
+                const widgetView = after.views.find((v) => v.id === viewId);
+
+                if (widgetView) {
+                  for (const slot of after.views) {
+                    if (
+                      slot.type === "slot" &&
+                      slot.panelId === widgetView.panelId &&
+                      slot.id !== viewId
+                    ) {
+                      void ws.close(slot.id, { force: true });
+                    }
+                  }
+                }
+              } catch {
+                // Snapshot read is best-effort; the closes above already ran.
               }
             }
           }
@@ -726,7 +830,7 @@ export function TrellisWorkspace({
 }: {
   workspace: NfiWorkspace;
   registry: WidgetRegistry;
-  /** Scopes Trellis persistence (`storageKey`) per page. */
+  /** Selects the page's shared Trellis arrangement. */
   activePageId: string;
   onActivatePanel: (panelId: string) => void;
   onActivateTab: (tabsId: string, panelId: string) => void;
@@ -770,6 +874,25 @@ export function TrellisWorkspace({
     [activePageId, workspace.layout],
   );
 
+  // Shared arrangement: the backend `trellis` document is the single source
+  // of truth every visitor renders (including signed-out/incognito via the
+  // public `page-home` load). Captured once per page mount and passed as the
+  // Trellis `document` — later in-memory edits report back through
+  // `onDocumentChange` into the workspace store (which schedules the backend
+  // save) WITHOUT feeding back into this prop, so there is no
+  // setDocument/change loop. Absent (older documents, fresh pages) falls
+  // back to the compiled NFI layout children; a one-time localStorage
+  // migration adopts this browser's pre-shared arrangement when the backend
+  // has none yet, so an existing admin layout is not lost by the upgrade.
+  // Stable per page mount: later backend saves of the same arrangement must
+  // not re-seed the live Trellis document (that would loop setDocument).
+  const initialSharedDoc = useMemo<LayoutDocument | null>(() => {
+    if (isSharedTrellisDocument(workspace.trellis)) return workspace.trellis;
+
+    return takeLocalTrellisMigration(activePageId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePageId]);
+
   // Empty page: don't mount Trellis at all — the shared empty state
   // directly — unless a preset was just picked for it (pending layout),
   // which mounts Trellis with the slot grid as its initial document.
@@ -794,25 +917,27 @@ export function TrellisWorkspace({
 
   return (
     <Workspace
-      // Trellis reads storageKey/version/layout once per mount — remount
-      // per page or every page would show the first-loaded layout.
+      // Trellis reads document/layout once per mount — remount
+      // per page or every page would show the first-loaded layout. No
+      // storageKey: the backend trellis document is the shared arrangement
+      // (per-browser localStorage is exactly what made anonymous views
+      // diverge), with the compiled NFI layout as the fallback for
+      // documents without one.
       key={activePageId}
       theme={CARBON_THEMES_DARK.has(colorTheme) ? "dark" : "light"}
       tokens={NFI_TOKENS}
       tabs={{ fill: false, inset: 0 }}
       navigation="focus"
-      storageKey={`nfi-trellis-${activePageId}`}
-      // v4: v3 persisted documents predate the 2-D grid compiler (every
-      // bento page mounted as a single full-width column) — discard them
-      // and rebuild from the NFI document. Panel configs are untouched;
-      // only Trellis divider/dock positions reset.
-      version={4}
+      document={initialSharedDoc ?? undefined}
       // A preset picked on the empty page becomes the initial document
-      // (the pick handler already dropped any stale persisted doc that
-      // would override it). Absent everywhere else.
-      defaultLayout={pendingForPage?.doc}
+      // (only when there is no shared arrangement — a shared doc already
+      // describes the stage). Absent everywhere else.
+      defaultLayout={initialSharedDoc ? undefined : (pendingForPage?.doc ?? undefined)}
       panelMenu={false}
       className="nfi-trellis"
+      onDocumentChange={(doc) => {
+        updateTrellisDocument(activePageId, doc);
+      }}
       onFocus={(viewId) => {
         if (viewId === null) return;
         const ws = getTrellisWorkspaceHandle();

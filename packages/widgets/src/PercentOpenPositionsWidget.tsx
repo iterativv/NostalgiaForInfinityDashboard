@@ -7,7 +7,7 @@
  *
  * Backed by `instances.open-positions.relative`: safe for publicly
  * shareable pages (allocation weights are shares of a server-side total
- * that is never exposed). Mirrors the main table's affordances — numbered
+ * that is never exposed). Mirrors the main table's affordances — trade-ID
  * rows, server-side search, "Order by", column toggles and an expandable
  * sub-order facet list (relative orders carry no prices/amounts).
  *
@@ -51,7 +51,12 @@ import {
 } from "./shared/tradeSort";
 import { useTimeFormat } from "./shared/timeFormat";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
-import { type ExportColumn } from "./shared/export";
+import {
+  expandPositionRows,
+  RELATIVE_ORDER_EXPORT_COLUMNS,
+  withOrderRows,
+  type ExportColumn,
+} from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -89,8 +94,8 @@ const ORDER_BY_ITEMS: ReadonlyArray<{ id: RelOpenSortKey; text: string }> = [
 
 export const PercentOpenPositionsConfigSchema = Schema.Struct({
   instanceId: InstanceIdField,
-  /** Row-number column (1 = first row of the current ordering). */
-  showRowNumber: booleanWithDefault(true),
+  /** Position id column (freqtrade trade id). */
+  showTradeId: booleanWithDefault(true),
   showDirection: booleanWithDefault(true),
   /** Wallet share column (`allocationWeight` as percent). */
   showWallet: booleanWithDefault(true),
@@ -111,8 +116,10 @@ export const PERCENT_OPEN_POSITIONS_DEFAULTS: PercentOpenPositionsConfig =
 
 const EMPTY_POSITIONS: ReadonlyArray<RelativeOpenPosition> = [];
 
-/** Full-row CSV/XLSX columns (percent-only — never absolute amounts). */
-const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<RelativeOpenPosition>> = [
+/** Position-side CSV/XLSX columns (percent-only — never absolute amounts). */
+const POSITION_EXPORT_COLUMNS: ReadonlyArray<
+  ExportColumn<RelativeOpenPosition>
+> = [
   { header: COL.tradeId, value: (p) => p.tradeId },
   { header: COL.pair, value: (p) => p.pair },
   { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
@@ -131,16 +138,26 @@ const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<RelativeOpenPosition>> = [
   { header: COL.openDate, value: (p) => p.openDate },
 ];
 
+/**
+ * Grouped CSV/XLSX columns: position columns + sub-order columns.
+ * One position row (order cells empty, merged in XLSX) followed by one
+ * row per sub-order (position cells empty, merged in XLSX).
+ */
+const EXPORT_COLUMNS = withOrderRows({
+  positionColumns: POSITION_EXPORT_COLUMNS,
+  orderColumns: RELATIVE_ORDER_EXPORT_COLUMNS,
+});
+
 /** Column set depends on the widget config's column toggles. */
 function buildColumns([
   cfg,
 ]: readonly [PercentOpenPositionsConfig]): NfiColumnDef<RelativeOpenPosition>[] {
   const defs: (NfiColumnDef<RelativeOpenPosition> | null)[] = [
-    cfg.showRowNumber
+    cfg.showTradeId
       ? {
-          id: "no",
-          header: COL.no,
-          cell: ({ row }) => row.index + 1,
+          id: "tradeId",
+          header: COL.tradeId,
+          cell: ({ row }) => row.original.tradeId,
           meta: { className: "nfi-mono" },
           enableSorting: false,
         }
@@ -276,6 +293,9 @@ export function PercentOpenPositionsWidget({
     { inputs: shallowStore, output: shallowStore },
   );
 
+  /** Grouped export rows: position row + sub-order rows per position. */
+  const exportRows = expandPositionRows(positions, (p) => p.orders);
+
   const deployed = positions.reduce(
     (sum, p) => sum + (p.allocationWeight ?? 0),
     0,
@@ -330,7 +350,7 @@ export function PercentOpenPositionsWidget({
         <div className="nfi-settings-toggles">
           {(
             [
-              ["showRowNumber", "Row number"],
+              ["showTradeId", COL.tradeId],
               ["showDirection", "Direction"],
               ["showWallet", COL.walletPct],
               ["showLeverage", "Leverage"],
@@ -400,7 +420,7 @@ export function PercentOpenPositionsWidget({
                   exportMenu={{
                     filenameBase: `open-trades-pct-${cfg.instanceId}`,
                     columns: EXPORT_COLUMNS,
-                    rows: positions,
+                    rows: exportRows,
                   }}
                 />
                 <div className="nfi-table-scroll">

@@ -168,7 +168,7 @@ export const RelativeEquityWidgetDef = defineWidget({
   hasSettings: true,
   title: "Performance Index",
   description:
-    "Public-shareable performance index rebased to 100 — one colored curve per instance, never absolute profit.",
+    "How each bot is doing over time, in points instead of money so it is safe to share. Every bot starts at 100 at the left edge: a line climbing above 100 means that bot has profited since then, falling below 100 means it has lost. One color per bot (solid line = all profit including open trades, dimmed line = closed trades only) — compare the shapes, not the absolute heights, since each bot is rebased on its own history.",
   configSchema: RelativeEquityConfigSchema,
   defaultConfig: RELATIVE_EQUITY_DEFAULTS,
   component: RelativeEquityWidget,

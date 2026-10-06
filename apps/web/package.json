@@ -1,6 +1,6 @@
 {
   "name": "@nfi/web",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "private": true,
   "scripts": {
@@ -13,12 +13,12 @@
   },
   "dependencies": {
     "@carbon/charts": "1.27.20",
-    "@carbon/icons-react": "^11.88.0",
-    "@carbon/react": "^1.94.0",
-    "@carbon/styles": "^1.115.0",
+    "@carbon/icons-react": "^11.89.0",
+    "@carbon/react": "^1.117.0",
+    "@carbon/styles": "^1.116.0",
     "@danfessler/trellis": "0.3.0",
     "@danfessler/trellis-react": "0.3.0",
-    "@effect/platform": "^0.97.0",
+    "@effect/platform": "^0.97.2",
     "@ibm/plex-mono": "^2.5.0",
     "@ibm/plex-sans": "^1.1.0",
     "@nfi/api-contract": "workspace:*",
@@ -26,26 +26,26 @@
     "@nfi/ui": "workspace:*",
     "@nfi/widget-sdk": "workspace:*",
     "@nfi/widgets": "workspace:*",
-    "@tanstack/react-form": "^1.0.0",
-    "@tanstack/react-query": "^5.0.0",
-    "@tanstack/react-router": "^1.0.0",
-    "@tanstack/react-store": "^0.9.0",
-    "@tanstack/react-table": "^9.2.4",
-    "@tanstack/store": "^0.9.0",
-    "effect": "^3.17.14",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "@tanstack/react-form": "^1.33.5",
+    "@tanstack/react-query": "^5.104.1",
+    "@tanstack/react-router": "^1.170.41",
+    "@tanstack/react-store": "^0.11.2",
+    "@tanstack/react-table": "^9.2.6",
+    "@tanstack/store": "^0.11.2",
+    "effect": "^3.22.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@repo/eslint-config": "workspace:*",
     "@repo/typescript-config": "workspace:*",
-    "@types/node": "26.4.1",
-    "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.5",
-    "@vitejs/plugin-react": "^4.3.0",
-    "eslint": "10.9.1",
+    "@types/node": "26.6.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "eslint": "10.12.0",
     "typescript": "7.0.2",
-    "vite": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
   }
 }

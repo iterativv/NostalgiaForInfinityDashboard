@@ -49,6 +49,17 @@ export function setColorBlindSafe(enabled: boolean): void {
   }
 }
 
+/** True when this browser already stored an explicit palette choice. */
+export function hasStoredColorBlind(): boolean {
+  if (typeof localStorage === "undefined") return false;
+
+  try {
+    return localStorage.getItem(COLOR_BLIND_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /** Reactive read for components (re-renders when the setting changes). */
 export function useColorBlindSafe(): boolean {
   return useStore(colorBlindStore, (enabled) => enabled);

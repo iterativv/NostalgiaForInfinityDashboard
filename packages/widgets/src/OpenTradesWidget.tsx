@@ -34,7 +34,12 @@ import { parseTradeTime, sortOpenPositions, type OpenSortKey, type SortDir } fro
 
 import { SettingsSelect } from "./shared/SettingsSelect";
 import { SettingsToggle } from "./shared/SettingsToggle";
-import { type ExportColumn } from "./shared/export";
+import {
+  expandPositionRows,
+  TRADE_ORDER_EXPORT_COLUMNS,
+  withOrderRows,
+  type ExportColumn,
+} from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import { useTimeFormat } from "./shared/timeFormat";
@@ -61,8 +66,8 @@ export type OpenTradesSortBy = typeof OpenTradesSortBy.Type;
 export const OpenTradesConfigSchema = Schema.Struct({
   /** An instance id, or `all` for every open position in the fleet. */
   instanceId: InstanceIdField,
-  /** Row-number column (1 = first row of the current ordering). */
-  showRowNumber: booleanWithDefault(true),
+  /** Position id column (freqtrade trade id). */
+  showTradeId: booleanWithDefault(true),
   sortBy: Schema.optionalWith(OpenTradesSortBy, {
     default: (): OpenTradesSortBy => "openDate",
   }),
@@ -92,8 +97,10 @@ const OPEN_TRADES_SORT_DIR: Record<OpenSortKey, SortDir> = {
 
 const EMPTY_POSITIONS: ReadonlyArray<SourcedOpenPosition> = [];
 
-/** Full-row CSV/XLSX columns (all fields, not just the visible set). */
-const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<SourcedOpenPosition>> = [
+/** Position-side CSV/XLSX columns (all fields, not just the visible set). */
+const POSITION_EXPORT_COLUMNS: ReadonlyArray<
+  ExportColumn<SourcedOpenPosition>
+> = [
   { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
   { header: COL.tradeId, value: (p) => p.tradeId },
   { header: COL.pair, value: (p) => p.pair },
@@ -108,6 +115,16 @@ const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<SourcedOpenPosition>> = [
   { header: COL.openDate, value: (p) => p.openDate },
 ];
 
+/**
+ * Grouped CSV/XLSX columns: position columns + sub-order columns.
+ * One position row (order cells empty, merged in XLSX) followed by one
+ * row per sub-order (position cells empty, merged in XLSX).
+ */
+const EXPORT_COLUMNS = withOrderRows({
+  positionColumns: POSITION_EXPORT_COLUMNS,
+  orderColumns: TRADE_ORDER_EXPORT_COLUMNS,
+});
+
 /** Column set depends on the row-number toggle, fleet mode + colors. */
 function buildColumns([
   cfg,
@@ -119,11 +136,11 @@ function buildColumns([
   InstanceColors,
 ]): NfiColumnDef<SourcedOpenPosition>[] {
   const defs: (NfiColumnDef<SourcedOpenPosition> | null)[] = [
-    cfg.showRowNumber
+    cfg.showTradeId
       ? {
-          id: "no",
-          header: COL.no,
-          cell: ({ row }) => row.index + 1,
+          id: "tradeId",
+          header: COL.tradeId,
+          cell: ({ row }) => row.original.tradeId,
           meta: { className: "nfi-mono" },
           enableSorting: false,
         }
@@ -210,15 +227,17 @@ export function OpenTradesWidget({
 
   // Server already filtered; ordering is the table's controlled sorting
   // state — "Order by" persists as widget config, TanStack Table sorts. The
-  // rows are also pre-sorted with the shared comparator so `row.index` (the
-  // DATA-array position, which the No. column shows) always matches the
-  // displayed order.
+  // rows are also pre-sorted with the shared comparator so the trade-ID
+  // column stays aligned with the displayed order.
   const positions = useDerived(
     [source.data ?? EMPTY_POSITIONS, cfg.sortBy] as const,
     ([rows, sortBy]) =>
       sortOpenPositions(rows, sortBy, OPEN_TRADES_SORT_DIR[sortBy]),
     { inputs: shallowStore, output: shallowStore },
   );
+
+  /** Grouped export rows: position row + sub-order rows per position. */
+  const exportRows = expandPositionRows(positions, (p) => p.orders);
 
   const showBotColumn = cfg.instanceId === ALL_INSTANCES;
 
@@ -264,9 +283,9 @@ export function OpenTradesWidget({
         />
         <SettingsToggle
           id={`open-trades-rowno-${panelId}`}
-          label="Row number"
-          toggled={cfg.showRowNumber}
-          onToggle={(v) => patch({ showRowNumber: v })}
+          label="Trade ID"
+          toggled={cfg.showTradeId}
+          onToggle={(v) => patch({ showTradeId: v })}
         />
       </WidgetSettingsModal>
       <WidgetFrame
@@ -300,7 +319,7 @@ export function OpenTradesWidget({
                   exportMenu={{
                     filenameBase: `open-trades-${cfg.instanceId}`,
                     columns: EXPORT_COLUMNS,
-                    rows: positions,
+                    rows: exportRows,
                   }}
                 />
                 <div className="nfi-table-scroll">

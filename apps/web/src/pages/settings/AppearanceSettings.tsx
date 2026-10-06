@@ -20,6 +20,12 @@ import {
   setDisableWidgetMinSize,
   setHighContrast,
 } from "../../store";
+import { capabilitiesStore } from "../../auth/capabilities";
+import {
+  saveAppearanceDefaults,
+  useAppearanceDefaults,
+} from "../../capabilities/appearance";
+import { useLocalStore } from "@nfi/ui";
 import {
   TIME_FORMAT_ITEMS,
   colorBlindStore,
@@ -38,6 +44,11 @@ import { Dropdown } from "@carbon/react";
  * `--cds-*` overrides follow the store live — see `main.tsx` /
  * `carbonTheme.ts`; the time format store drives every timestamp, table
  * date and chart axis in the widgets package).
+ *
+ * Root users additionally get a "shared default" action: it snapshots their
+ * current appearance to the backend, and browsers without stored values seed
+ * from it on boot — anonymous and new visitors match root by default, while
+ * anyone who changed a setting keeps their own override.
  */
 export function AppearanceSettings() {
   const colorTheme = useStore(prefsStore, (state) => state.colorTheme);
@@ -52,6 +63,35 @@ export function AppearanceSettings() {
   const colorBlindSafe = useStore(colorBlindStore, (enabled) => enabled);
 
   const highContrast = useStore(prefsStore, (state) => state.highContrast);
+
+  const role = useStore(capabilitiesStore, (state) => state.role);
+
+  const shared = useAppearanceDefaults();
+
+  const saveStore = useLocalStore<{ busy: boolean; done: boolean; error: string | null }>({
+    busy: false,
+    done: false,
+    error: null,
+  });
+
+  const saveState = useStore(saveStore, (s) => s);
+
+  const saveSharedDefault = () => {
+    if (saveState.busy) return;
+    saveStore.setState(() => ({ busy: true, done: false, error: null }));
+    void saveAppearanceDefaults()
+      .then(() => saveStore.setState(() => ({ busy: false, done: true, error: null })))
+      .catch((cause: unknown) =>
+        saveStore.setState(() => ({
+          busy: false,
+          done: false,
+          error:
+            cause instanceof Error
+              ? cause.message
+              : "Could not save the shared default.",
+        })),
+      );
+  };
 
   const swatchStyle = (color: string): CSSProperties => ({
     display: "inline-block",
@@ -171,6 +211,43 @@ export function AppearanceSettings() {
         swaps red/green semantics (PnL, pills, tags, candles, instance
         colors) for blue/orange throughout the desk.
       </p>
+      {role === "root" ? (
+        <div style={{ marginTop: "1.5rem" }}>
+          <h3 style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: "0.5rem" }}>
+            Shared default for all visitors
+          </h3>
+          <p style={{ fontSize: "0.875rem", opacity: 0.7, marginBottom: "0.75rem" }}>
+            Browsers without their own saved appearance start from your snapshot
+            below, so anonymous and new visitors see the desk exactly as you
+            arranged it. Anyone who changes a setting keeps their own choice —
+            this only sets the starting point, it never overrides them.
+            {shared.defaults
+              ? " A shared default is currently saved."
+              : " No shared default is saved yet — visitors use the built-in defaults."}
+          </p>
+          <button
+            type="button"
+            className="cds--btn cds--btn--secondary cds--btn--sm"
+            disabled={saveState.busy}
+            onClick={saveSharedDefault}
+            title="Snapshot your current appearance above as the starting point for every visitor"
+          >
+            {saveState.busy
+              ? "Saving…"
+              : "Save my current appearance as the shared default"}
+          </button>
+          {saveState.done ? (
+            <p style={{ fontSize: "0.8125rem", opacity: 0.7, marginTop: "0.5rem" }} role="status">
+              Shared default saved — fresh browsers now start from these settings.
+            </p>
+          ) : null}
+          {saveState.error ? (
+            <p style={{ fontSize: "0.8125rem", color: "var(--cds-support-error, #ff8389)", marginTop: "0.5rem" }} role="alert">
+              {saveState.error}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

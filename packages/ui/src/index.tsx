@@ -344,13 +344,20 @@ export function Stat({
   );
 }
 
-export function EmptyState({ title, hint }: { title: string; hint?: string }) {
+export function EmptyState({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  /** Optional action row (e.g. a one-click recovery button) under the copy. */
+  children?: ReactNode;
+}) {
   return (
-    <WidgetStateView
-      tone="empty"
-      title={title}
-      hint={hint ?? "Nothing to show yet."}
-    />
+    <WidgetStateView tone="empty" title={title} hint={hint ?? "Nothing to show yet."}>
+      {children}
+    </WidgetStateView>
   );
 }
 

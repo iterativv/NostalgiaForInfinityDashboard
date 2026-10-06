@@ -71,10 +71,21 @@ export type BackendConfigResponse = typeof BackendConfigResponse.Type;
 export const BotStatus = Schema.Struct({
   state: Schema.String,
   strategy: Schema.optional(Schema.String),
+  /**
+   * Strategy implementation version (NFI `v18.0.119`, …).
+   * Primary source is `GET /api/v1/show_config` (`strategy_version`);
+   * older bots omit it, so the backend falls back to parsing the
+   * `Bot heartbeat … version='…, strategy_version: …'` log line from
+   * `GET /api/v1/logs` (and, last, the `/version` string itself).
+   * Absent when no source yields one — never fails the status read.
+   */
+  strategyVersion: Schema.optional(Schema.String),
   exchange: Schema.optional(Schema.String),
   stakeCurrency: Schema.optional(Schema.String),
   dryRun: Schema.optional(Schema.Boolean),
   tradingMode: Schema.optional(Schema.String),
+  /** Freqtrade version (`GET /api/v1/version`); absent when unreadable. */
+  version: Schema.optional(Schema.String),
 });
 
 export type BotStatus = typeof BotStatus.Type;
@@ -486,6 +497,13 @@ export const BotConfigSummary = Schema.Struct({
   maxOpenTrades: Schema.optional(Schema.Unknown),
   dryRun: Schema.optional(Schema.Boolean),
   tradingMode: Schema.optional(Schema.String),
+  /**
+   * Strategy timeframe (e.g. `"5m"`, from `GET /strategy/<name>`): the only
+   * timeframe guaranteed to have live `pair_candles`. Candle widgets use it
+   * to explain (and recover from) empty unanalyzed timeframes. Absent when
+   * the strategy endpoint is unreachable — never fails the config read.
+   */
+  timeframe: Schema.optional(Schema.String),
 });
 
 export type BotConfigSummary = typeof BotConfigSummary.Type;
@@ -635,6 +653,8 @@ export const FleetInstanceSummary = Schema.Struct({
   /** Bot state from `show_config` (`running`, `stopped`, …). */
   state: Schema.optional(Schema.String),
   strategy: Schema.optional(Schema.String),
+  /** Strategy implementation version (same source as `BotStatus.strategyVersion`). */
+  strategyVersion: Schema.optional(Schema.String),
   dryRun: Schema.optional(Schema.Boolean),
   openCount: Schema.optional(Schema.Number),
   maxOpenTrades: Schema.optional(Schema.Number),
@@ -1430,9 +1450,26 @@ export const Workspace = Schema.Struct({
   panels: Schema.Record({ key: Schema.String, value: PanelInstance }),
   activePanelId: Schema.NullOr(PanelId),
   /**
+   * Shared Trellis layout document (opaque JSON: root/views/floating/hidden/
+   * navigation as produced by `@danfessler/trellis` `getDocument()`).
+   *
+   * Trellis owns docking, splits, dividers and tabbing after mount — the NFI
+   * `layout` tree only seeds the FIRST render (compiled via `toTrellis`).
+   * Without a shared copy every browser keeps its own Trellis arrangement in
+   * `localStorage` (`nfi-trellis-<page>`), so an admin arranging the dashboard
+   * and hitting "Save layout for anonymous" never moves the anonymous view:
+   * both stay on divergent local copies. Storing the Trellis document here
+   * makes the backend the single source of truth — every visitor (including
+   * signed-out/incognito via the public `page-home` load) renders the exact
+   * arrangement the admin saved. Absent (older documents, fresh pages) falls
+   * back to compiling `layout`.
+   */
+  trellis: Schema.optional(Schema.Unknown),
+  /**
    * Pages-bar icon key (resolved by the web `PAGE_ICONS` map); absent pages
-   * render without an icon. Only custom pages use it — preset pages derive
-   * their icon from code.
+   * render without an icon. Custom pages choose one at creation; Home and
+   * preset pages fall back to their built-in icons unless the user picked an
+   * override (stored here via the page actions menu).
    */
   icon: Schema.optional(Schema.String.pipe(Schema.minLength(1))),
   /**
@@ -2166,6 +2203,71 @@ export const UpdatePageDefaultsResponse = GetPageDefaultsResponse;
 
 export type UpdatePageDefaultsResponse = typeof UpdatePageDefaultsResponse.Type;
 
+// ---------------------------------------------------------------------------
+// Appearance defaults (root-owned, deployment-wide).
+// ---------------------------------------------------------------------------
+//
+// The "Appearance & layout" settings tab (theme, accent, time format,
+// color-blind palette, contrast, widget-minimum guard) otherwise lives in
+// per-browser localStorage — a fresh incognito window would render the
+// hardcoded defaults while root sees their own choices (e.g. warnings root
+// disabled still walling anonymous). The root user snapshots their current
+// appearance here once; every browser WITHOUT its own stored values seeds
+// from this document on boot, so visitors match root by default while anyone
+// who touches a setting keeps their own override. UI-only values (never
+// balances, credentials or grants), so the read is public like sensitivity
+// and only root may write.
+//
+// Literals are duplicated here (not imported from the web/widgets packages —
+// the contract cannot depend on them): they are stable ids also hardcoded in
+// the web prefs schema. Unknown future values decode as absent per key, so
+// an old client never chokes on a newer default.
+
+export const AppearanceDefaults = Schema.Struct({
+  /** Carbon base theme (`white`, `g10`, `g90`, `g100`). */
+  colorTheme: Schema.optional(
+    Schema.Literal("white", "g10", "g90", "g100"),
+  ),
+  /** Accent color family. */
+  accentColor: Schema.optional(
+    Schema.Literal(
+      "blue",
+      "cyan",
+      "teal",
+      "green",
+      "purple",
+      "magenta",
+      "red",
+      "orange",
+    ),
+  ),
+  /** Time-format preset id (validated against the widgets catalog client-side). */
+  timeFormat: Schema.optional(Schema.String.pipe(Schema.minLength(1))),
+  /** Color-blind safe (blue/orange) palette. */
+  colorBlindSafe: Schema.optional(Schema.Boolean),
+  /** High-contrast theme layer. */
+  highContrast: Schema.optional(Schema.Boolean),
+  /** Render widgets below their minimum readable size (no "needs more room" wall). */
+  disableWidgetMinSize: Schema.optional(Schema.Boolean),
+});
+
+export type AppearanceDefaults = typeof AppearanceDefaults.Type;
+
+export const AppearanceDefaultsResponse = Schema.Struct({
+  /** Root's snapshot (null = never saved: browsers use hardcoded defaults). */
+  defaults: Schema.NullOr(AppearanceDefaults),
+});
+
+export type AppearanceDefaultsResponse = typeof AppearanceDefaultsResponse.Type;
+
+export const UpdateAppearanceDefaultsRequest = Schema.Struct({
+  /** Full replacement snapshot of the shared defaults. */
+  defaults: AppearanceDefaults,
+});
+
+export type UpdateAppearanceDefaultsRequest =
+  typeof UpdateAppearanceDefaultsRequest.Type;
+
 export const UserRole = Schema.Literal("root", "user", "anonymous");
 
 export type UserRole = typeof UserRole.Type;
@@ -2202,6 +2304,8 @@ const ENDPOINT_CAPABILITY_TABLE = {
   // Not capabilities: readable by everyone, root-guarded in the handler.
   "System.sensitivity": [],
   "System.sensitivityUpdate": [],
+  "System.appearance": [],
+  "System.appearanceUpdate": [],
   "Bot.status": ["bot.status"],
   "Bot.balance": ["bot.balance"],
   "Bot.profit": ["bot.profit"],
@@ -2476,6 +2580,17 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
           .setPayload(UpdatePageDefaultsRequest)
           .addSuccess(UpdatePageDefaultsResponse)
           .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get("appearance", "/api/system/appearance")
+          .addSuccess(AppearanceDefaultsResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.put("appearanceUpdate", "/api/system/appearance")
+          .addSuccess(AppearanceDefaultsResponse)
+          .addError(BackendError, { status: 502 })
+          .setPayload(UpdateAppearanceDefaultsRequest),
       ),
   )
   .add(

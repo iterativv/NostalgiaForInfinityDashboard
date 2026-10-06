@@ -20,19 +20,35 @@ body {
 /* Thin scrollbars as the CSS fallback (dialogs, menus, widget-internal
    scrollers like tables and chip clouds). The workspace's main scrollers —
    panel bodies and tab strips — hide the native bar entirely and draw their
-   own 6px overlay thumbs through SlimScroll: modern Chrome/Firefox honor
-   `scrollbar-width` and ignore ::-webkit-scrollbar, so CSS alone cannot
-   shrink the native bar below browser sizing. Both properties inherit, so
-   one rule on the root covers every descendant — including Carbon portals
-   mounted directly under <body>. */
+   own slim overlay thumbs through SlimScroll. The universal rules below
+   cover every descendant — including Carbon portals mounted directly under
+   <body> and widget-internal scrollers. */
 html {
   scrollbar-width: thin;
   scrollbar-color: var(--cds-border-strong) transparent;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cds-border-strong) transparent;
+}
+
+/* A non-auto standard `scrollbar-width`/`scrollbar-color` overrides
+   ::-webkit-scrollbar styling, so the rules above force the browser-fat
+   "thin" bar in engines that still style the pseudo. Reset to auto there
+   and the 4px bars below win again; Firefox does not know the pseudo,
+   fails this @supports, and keeps the standard thin bar. */
+@supports selector(::-webkit-scrollbar) {
+  html,
+  * {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+}
+
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -41,7 +57,7 @@ html {
 
 ::-webkit-scrollbar-thumb {
   background: var(--cds-border-strong);
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -99,7 +115,7 @@ html {
   min-width: 100%;
 }
 
-/* Overlay bars: 10px invisible hit lane, 6px thumb inside. Decorative —
+/* Overlay bars: 10px invisible hit lane, 4px thumb inside. Decorative —
    the scroller keeps native wheel/keyboard scrolling. */
 .nfi-slim-track {
   position: absolute;
@@ -123,17 +139,17 @@ html {
 .nfi-slim-thumb {
   position: absolute;
   background: var(--cds-border-strong);
-  border-radius: 3px;
+  border-radius: 2px;
 }
 
 .nfi-slim-track-v .nfi-slim-thumb {
-  right: 2px;
-  width: 6px;
+  right: 3px;
+  width: 4px;
 }
 
 .nfi-slim-track-h .nfi-slim-thumb {
-  bottom: 2px;
-  height: 6px;
+  bottom: 3px;
+  height: 4px;
 }
 
 .nfi-slim-thumb:hover,
@@ -153,6 +169,9 @@ html {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  /* Mobile browsers: 100vh spans the URL-bar overlay; dvh tracks the real
+     viewport so the status bar isn't hidden behind browser chrome. */
+  height: 100dvh;
   background: var(--cds-background);
 }
 
@@ -1237,7 +1256,6 @@ button.nfi-auto-empty:focus-visible {
   max-width: 100%;
   min-width: 0;
   border: 1px solid transparent;
-  scrollbar-width: thin;
 }
 
 /* Carbon table shell shared by every data table (`NfiTableContainer`):
@@ -1304,6 +1322,21 @@ button.nfi-auto-empty:focus-visible {
   background: var(--cds-layer-01);
   border-left: 2px solid var(--cds-border-subtle);
   padding: 0.375rem 0.5rem;
+}
+
+/* No hover bands inside expansions: the parent row already carries hover,
+   and highlighting the detail wrapper (directly, or via the parent-hover
+   spillover) plus every nested sub-order row stacks into confusing nested
+   folders. Only the parent row and the "Load older" button keep hover. */
+.nfi-table-scroll tbody tr.cds--parent-row.cds--expandable-row:hover + tr[data-child-row] > td,
+.nfi-table-scroll tbody tr[data-child-row]:hover > td {
+  background-color: var(--cds-layer-01);
+  color: inherit;
+}
+
+.nfi-table-scroll .nfi-suborders-table tbody tr:hover > td,
+.nfi-table-scroll .nfi-suborders-table tbody tr:hover > th {
+  background-color: transparent;
 }
 
 /* The expander column stays narrow — a chevron, never a content column. */
@@ -1469,7 +1502,6 @@ button.nfi-auto-empty:focus-visible {
   gap: 1.5rem;
   overflow-x: auto;
   padding: 0.25rem 0;
-  scrollbar-width: thin;
   white-space: nowrap;
 }
 
@@ -1577,10 +1609,6 @@ button.nfi-auto-empty:focus-visible {
 }
 
 @media (max-width: 40rem) {
-  .nfi-statusbar {
-    font-size: 0.6875rem;
-  }
-
   .nfi-topbar-actions {
     gap: 0;
   }
@@ -1917,6 +1945,7 @@ button.nfi-auto-empty:focus-visible {
 }
 
 .nfi-slot-inner {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -1930,6 +1959,37 @@ button.nfi-auto-empty:focus-visible {
 
 .nfi-slot-inner:hover {
   border-color: var(--cds-border-interactive, #ffffff);
+}
+
+/* Dismiss affordance for fillable empty panes (grid-preset slots): a quiet
+   icon-only button pinned to the corner — the pane itself stays the Add
+   target, the × only retires the placeholder. */
+.nfi-slot-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  padding: 0;
+  color: var(--cds-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.nfi-slot-close:hover,
+.nfi-slot-close:focus-visible {
+  color: var(--cds-text-primary);
+  background: var(--cds-layer-hover, rgba(0 0 0 / 4%));
+}
+
+.nfi-slot-close:focus-visible {
+  outline: 1px solid var(--cds-border-interactive);
+  outline-offset: -1px;
 }
 
 .nfi-slot-label {
@@ -2244,6 +2304,19 @@ button.nfi-auto-empty:focus-visible {
 
 .nfi-statusbar-spacer {
   flex: 1 1 auto;
+}
+
+/* Phones: the readout can't fit one row — wrap instead of truncating.
+   (Declared after the base rules above: same specificity, later wins.) */
+@media (max-width: 40rem) {
+  .nfi-statusbar {
+    height: auto;
+    min-height: 1.75rem;
+    flex-wrap: wrap;
+    row-gap: 0.125rem;
+    padding-block: 0.25rem;
+    font-size: 0.6875rem;
+  }
 }
 
 /* --- Command palette ---------------------------------------------------- */
@@ -2796,12 +2869,26 @@ button.nfi-auto-empty:focus-visible {
   color: #161616;
 }
 
-/* Widget settings popup (Carbon Modal body). */
+/* Widget settings popup (Carbon Modal body). Portalled into the Carbon
+   Theme subtree so it escapes panel/grid overflow clipping and still
+   resolves the user's theme tokens — never render it inline. */
+.nfi-widget-settings-dialog {
+  z-index: 9200;
+}
+
+.nfi-widget-settings-dialog .cds--modal-container {
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+}
+
 .nfi-widget-settings {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   padding-top: 0.5rem;
+  max-height: calc(100vh - 12rem);
+  overflow-y: auto;
+  min-width: 0;
 }
 
 /* Settings scope selector ("This tab" | "All widgets") at the form top. */
@@ -3569,14 +3656,16 @@ button.nfi-auto-empty:focus-visible {
    Trellis tiles the stage with absolutely-positioned panels (equal splits
    by default), so on phones side-by-side cells squeeze below every
    widget's readable minimum and row splits divide a short stage into
-   slivers. Below 56rem the workspace becomes a scrolling column instead:
-   each tab bar is followed by its content at a readable height, and
-   overflowing row splits "wrap down to the bottom" in DOM order. The
-   Trellis document is untouched (pure render override), so widening
-   restores the tiled layout with dividers intact. Divider drags and
-   cross-panel tab drops are best-effort here — they still compute against
-   the tiled geometry — while scrolling, tabbing and in-panel actions work
-   as usual. */
+   slivers. Below 56rem the workspace becomes one scrolling column: each
+   tab bar is followed by its content at its NATURAL height — widgets grow
+   to fit (tables stretch the page, charts keep a readable floor via
+   --nfi-chart-min) and the column is the only scroller, so no pane ever
+   gets an internal scrollbar. Row splits "wrap down to the bottom" in DOM
+   order. The Trellis document is untouched (pure render override), so
+   widening restores the tiled layout with dividers intact. Divider drags
+   and cross-panel tab drops are best-effort here — they still compute
+   against the tiled geometry — while scrolling, tabbing and in-panel
+   actions work as usual. */
 @media (max-width: 56rem) {
   .nfi-trellis .trellis {
     contain: none;
@@ -3602,28 +3691,71 @@ button.nfi-auto-empty:focus-visible {
     margin: 8px 8px 0 !important;
   }
 
-  /* Content: fixed readable height (clears every widget minimum, so no
-     "needs more room" walls); taller widgets scroll internally. The margin
-     joins each surface to its tab bar above. Trellis pins the content box
-     to the tiled geometry with inline styles — the override below restores
-     it to the full stacked surface. */
+  /* Trellis judges compact/frame-only ("icon instead of a bar", hidden
+     tab titles) from the TILED cell geometry — a saved 78px-wide cell
+     stays flagged after the CSS stacks it full-width. Restore the real
+     chrome (slot-only panels keep their hidden bars via data-tabbar). */
+  .nfi-trellis .trellis [data-trellis-part="panel"][data-frame-only]:not([data-tabbar="hidden"]) [data-trellis-part="tabbar"] {
+    display: flex;
+  }
+
+  .nfi-trellis .trellis [data-trellis-part="panel"][data-frame-only] [data-trellis-part="frame-icon"] {
+    display: none;
+  }
+
+  .nfi-trellis .trellis [data-trellis-part="panel"][data-compact] [data-trellis-part="tab-title"],
+  .nfi-trellis .trellis [data-trellis-part="panel"][data-compact] [data-trellis-part="tab-close"],
+  .nfi-trellis .trellis [data-trellis-part="panel"][data-compact] [data-trellis-part="tab-badge"] {
+    display: block;
+  }
+
+  /* Non-selected tab content drops out of the column (Trellis overlays
+     surfaces at the same tiled spot, but stacked they would ghost-stack
+     below the selected view instead). */
+  .nfi-trellis .trellis [data-trellis-part="surface"][inert] {
+    display: none;
+  }
+
+  /* Frame-only panels conceal their (selected) view behind the letter
+     icon — with the chrome restored above the view must paint. Each
+     surface directly follows its panel frame in the layer. */
+  .nfi-trellis .trellis [data-trellis-part="panel"][data-frame-only] + [data-trellis-part="surface"] {
+    display: block;
+    visibility: visible !important;
+  }
+
+  /* Content: natural height — the surface hugs its widget and the page
+     scrolls. Trellis pins the content box to the tiled geometry with
+     inline styles — the overrides below restore natural sizing. The
+     --nfi-chart-min floor keeps charts readable in the auto-height card
+     (ChartBox reads it; unset on desktop, where cells have fixed heights). */
   .nfi-trellis .trellis [data-trellis-part="surface"] {
     position: relative !important;
     transform: none !important;
     width: auto !important;
-    height: 35rem !important;
+    height: auto !important;
     margin: 0 8px 8px !important;
+    --nfi-chart-min: 280px;
   }
 
   .nfi-trellis .trellis [data-trellis-part="surface"] [data-trellis-part="content"] {
+    /* Trellis positions the content box absolutely over the tiled surface
+       (inset 0 + inline px sizing). Stacked, the surface must WRAP its
+       content instead: static flow restores the natural-height chain
+       surface → content → panel → body. */
+    position: static !important;
     width: 100% !important;
-    height: 100% !important;
+    height: auto !important;
   }
 
   /* The panel is a plain block child of the content box (flex only lays
-     out its own children), so it needs an explicit fill. */
+     out its own children), so it needs an explicit fill. With the whole
+     chain at natural height the panel body never overflows vertically —
+     its own scrollbar never appears and the trellis column is the only
+     scroller (floating windows and dialogs outside trellis surfaces keep
+     their internal scrollers). */
   .nfi-trellis .trellis [data-trellis-part="surface"] .nfi-panel {
-    height: 100% !important;
+    height: auto !important;
   }
 }
 /* Tabs: flat, 1px apart, 11px Plex labels like the old `.nfi-tab-button`.

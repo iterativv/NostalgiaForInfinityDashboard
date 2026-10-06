@@ -21,7 +21,7 @@
  * `instances.plot-config`).
  */
 
-import { NumberInput } from "@carbon/react";
+import { Button, NumberInput } from "@carbon/react";
 import { Schema } from "effect";
 import {
   BollingerBands,
@@ -42,6 +42,8 @@ import {
 } from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
+import { useCandlePending } from "./shared/candlePending";
+import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 import {
   InstanceIdField,
   booleanWithDefault,
@@ -275,18 +277,39 @@ export function PublicCandleChartWidget({
     { enabled: positionsAccess.allowed },
   );
 
-  const state = queryState(candlesQ.error, candlesQ.isLoading);
-
-  const accessError = marketAccess.allowed
-    ? null
-    : `Not authorized — needs ${marketAccess.missing.join(", ")}`;
-
   const showSettings = useWidgetSettingsOpen(panelId);
 
   const patch = (p: Partial<PublicCandleChartConfig>) =>
     applyWidgetSettings(panelId, "candle-chart-public", cfg, p);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
+
+  // Same timeframe-switch grace as the sensitive twin (see CandleChartWidget).
+  const candlesPending = useCandlePending(
+    `${cfg.instanceId}|${cfg.pair}|${cfg.timeframe}|${limit}`,
+    candles.length >= 2,
+    candlesQ.isLoading,
+  );
+
+  const state = queryState(
+    candlesQ.error,
+    candlesQ.isLoading || candlesPending,
+  );
+
+  const accessError = marketAccess.allowed
+    ? null
+    : `Not authorized — needs ${marketAccess.missing.join(", ")}`;
+
+  // Opportunistic: anonymous grants lack `instances.config`, so public
+  // pages usually fall back to the generic copy below.
+  const strategyTf = useStrategyTimeframe(cfg.instanceId);
+
+  const strategyFallback =
+    strategyTf !== undefined &&
+    strategyTf !== cfg.timeframe &&
+    TIMEFRAME_ITEMS.some((t) => t.id === strategyTf)
+      ? strategyTf
+      : undefined;
 
   // Pair self-heal: futures exchanges whitelist `BTC/USDT:USDT` while spot
   // lists `BTC/USDT`. When the configured pair is not on the whitelist,
@@ -753,8 +776,14 @@ export function PublicCandleChartWidget({
                     }
                     onClick={() => patch({ timeframe: tf.id })}
                     aria-pressed={cfg.timeframe === tf.id}
+                    title={
+                      tf.id === strategyTf
+                        ? "Strategy timeframe — always has live candles"
+                        : `Show ${tf.id} candles`
+                    }
                   >
                     {tf.text}
+                    {tf.id === strategyTf ? " ●" : ""}
                   </button>
                 ))}
               </div>
@@ -940,8 +969,28 @@ export function PublicCandleChartWidget({
         ) : (
           <EmptyState
             title="No candles"
-            hint={`Freqtrade has no analyzed data for ${cfg.pair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed. Pick a listed pair and the strategy timeframe in the tab's ⋯ menu.`}
-          />
+            hint={
+              strategyFallback !== undefined
+                ? `Your bot analyzes ${strategyFallback} — ${cfg.timeframe} isn't analyzed for ${cfg.pair}, so there's no live chart for it.`
+                : `Freqtrade has no analyzed data for ${cfg.pair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed. Pick a listed pair and the strategy timeframe in the tab's ⋯ menu.`
+            }
+          >
+            {strategyFallback !== undefined ? (
+              <Button
+                size="sm"
+                kind="tertiary"
+                onClick={() => {
+                  const next = TIMEFRAME_ITEMS.find(
+                    (t) => t.id === strategyFallback,
+                  );
+
+                  if (next) patch({ timeframe: next.id });
+                }}
+              >
+                Show {strategyFallback} instead
+              </Button>
+            ) : null}
+          </EmptyState>
         )}
       </WidgetFrame>
     </>

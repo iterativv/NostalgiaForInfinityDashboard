@@ -74,6 +74,7 @@ export const InstancesOverviewCapability = defineCapability({
             version: version?.version,
             state: status?.state,
             strategy: status?.strategy,
+            strategyVersion: status?.strategyVersion,
             dryRun: status?.dryRun,
             openCount: count?.current,
             maxOpenTrades: count?.max,

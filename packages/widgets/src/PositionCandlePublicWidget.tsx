@@ -16,7 +16,7 @@
  * grant, so the widget renders signed-out on shared pages.
  */
 
-import { NumberInput } from "@carbon/react";
+import { Button, NumberInput } from "@carbon/react";
 import { Schema } from "effect";
 import { RSI } from "lightweight-charts-indicators";
 import type {
@@ -61,6 +61,7 @@ import {
 } from "./shared/CandleChart";
 import {
   buildPositionHistoryMarkers,
+  earliestEntrySecond,
   parsePositionTime,
   positionDirection,
   positionExitText,
@@ -78,6 +79,8 @@ import {
   PositionPairChips,
   type PositionChipOption,
 } from "./shared/PositionPairChips";
+import { useCandlePending } from "./shared/candlePending";
+import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 
 /** OHLCV candles (public market data). */
 export const POSITION_CANDLE_PUBLIC_MARKET: Capability = "instances.candles";
@@ -132,9 +135,9 @@ export const PositionCandlePublicConfigSchema = Schema.Struct({
   showBollinger: booleanWithDefault(false),
   showVwap: booleanWithDefault(true),
   showVolume: booleanWithDefault(true),
-  /** Position-history markers (entries/exits with tags, percentages only). */
+  /** Position-history markers — always on (legacy flag). */
   showPositions: booleanWithDefault(true),
-  /** Entry-level line with green/red profit/loss shading. */
+  /** Entry-level line with green/red profit/loss shading — always on (legacy). */
   showEntryLevel: booleanWithDefault(true),
   subplot: Schema.optionalWith(PositionCandlePublicSubplot, {
     default: (): PositionCandlePublicSubplot => "rsi",
@@ -384,11 +387,6 @@ export function PositionCandlePublicWidget({
     { enabled: marketAccess.allowed },
   );
 
-  const state = queryState(
-    marketAccess.allowed ? (candlesQ.error ?? openRelQ.error) : null,
-    marketAccess.allowed && (candlesQ.isLoading || openRelQ.isLoading),
-  );
-
   const accessError = marketAccess.allowed
     ? null
     : `Not authorized — needs ${marketAccess.missing.join(", ")}`;
@@ -399,6 +397,31 @@ export function PositionCandlePublicWidget({
     applyWidgetSettings(panelId, "position-candle-public", cfg, p);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
+
+  // Same timeframe-switch grace as the sensitive twin: hold loading instead
+  // of flashing "no analyzed data" while the fresh seed is in flight.
+  const candlesPending = useCandlePending(
+    `${cfg.instanceId}|${effectivePair}|${cfg.timeframe}|${limit}`,
+    candles.length >= 2,
+    candlesQ.isLoading,
+  );
+
+  const state = queryState(
+    marketAccess.allowed ? (candlesQ.error ?? openRelQ.error) : null,
+    marketAccess.allowed &&
+      (candlesQ.isLoading || openRelQ.isLoading || candlesPending),
+  );
+
+  // Opportunistic like the public candle twin: anonymous grants lack
+  // `instances.config`, so shared pages keep the generic copy.
+  const strategyTf = useStrategyTimeframe(cfg.instanceId);
+
+  const strategyFallback =
+    strategyTf !== undefined &&
+    strategyTf !== cfg.timeframe &&
+    TIMEFRAME_ITEMS.some((t) => t.id === strategyTf)
+      ? strategyTf
+      : undefined;
 
   // Pair self-heal: same settled-variant adoption as the other charts.
   useStoreEffect(() => {
@@ -441,17 +464,45 @@ export function PositionCandlePublicWidget({
     { inputs: shallow },
   );
 
+  // Short direction drives the PnL fill side (see CandleChart
+  // `avgEntryIsShort`): all-short follows invert, mixed defaults to long.
+  const followedIsShort = useDerived(
+    [pairOpen] as const,
+    ([open]): boolean =>
+      open.length > 0 && open.every((p) => p.isShort === true),
+    { inputs: shallow },
+  );
+
+  // Entry-anchored fill start (relative payloads carry no order times, so
+  // the open dates back it): shading covers entry → newest, never the
+  // pre-entry history that made the old fill misleading.
+  const entrySince = useDerived(
+    [pairOpen, cfg.timeframe] as const,
+    ([open, timeframe]): number | null => {
+      const at = earliestEntrySecond(open);
+
+      if (at === null) return null;
+
+      const tfSec = timeframeSeconds(timeframe);
+
+      if (tfSec === null) return at;
+
+      return Math.floor(at / tfSec) * tfSec;
+    },
+    { inputs: shallow },
+  );
+
   const positionMarkers = useDerived(
     [
       pairOpen,
       pairClosed,
       bars,
       cfg.timeframe,
-      cfg.showPositions,
       positionsAccess.allowed,
     ] as const,
-    ([open, closed, bars, timeframe, show, allowed]): TvTradeMarker[] => {
-      if (!allowed || !show || bars.length === 0) return [];
+    ([open, closed, bars, timeframe, allowed]): TvTradeMarker[] => {
+      // Position charts always show markers (no toggle).
+      if (!allowed || bars.length === 0) return [];
 
       const tfSec = timeframeSeconds(timeframe);
 
@@ -508,9 +559,9 @@ export function PositionCandlePublicWidget({
   // series fill (see `entryLevelBaseline`). Null = entries predate the
   // loaded window, so the line stays hidden instead of guessing.
   const entryBaseline = useDerived(
-    [pairOpen, candles, cfg.timeframe, cfg.showEntryLevel] as const,
-    ([open, candles, timeframe, show]): number | null => {
-      if (!show) return null;
+    [pairOpen, candles, cfg.timeframe] as const,
+    ([open, candles, timeframe]): number | null => {
+      // Position charts always show the entry level (no toggle).
       const tfSec = timeframeSeconds(timeframe);
 
       if (tfSec === null) return null;
@@ -724,18 +775,6 @@ export function PositionCandlePublicWidget({
             toggled={cfg.showVolume}
             onToggle={(v) => patch({ showVolume: v })}
           />
-          <SettingsToggle
-            id={`poscp-pos-${panelId}`}
-            label="Position history"
-            toggled={cfg.showPositions}
-            onToggle={(v) => patch({ showPositions: v })}
-          />
-          <SettingsToggle
-            id={`poscp-entry-${panelId}`}
-            label="Entry level + PnL"
-            toggled={cfg.showEntryLevel}
-            onToggle={(v) => patch({ showEntryLevel: v })}
-          />
         </div>
         <SettingsSelect
           id={`poscp-sub-${panelId}`}
@@ -774,33 +813,13 @@ export function PositionCandlePublicWidget({
               overflow: "hidden",
             }}
           >
-            {positionsAccess.allowed ? (
-              <PositionPairChips
-                options={chipOptions}
-                activeKey={pinned.length > 0 ? pinned : null}
-                autoActive={pinned.length === 0}
-                onAuto={() => patch({ pair: "" })}
-                onPick={(key) => patch({ pair: key })}
-              />
-            ) : null}
             <div className="nfi-candle-toolbar">
-              {availablePairs.length > 0 ? (
-                <span title={`${candles.length} candles loaded`}>
-                  <PairCombobox
-                    id={`poscp-pair-${panelId}`}
-                    value={effectivePair}
-                    pairs={availablePairs}
-                    onChange={(pair) => patch({ pair })}
-                  />
-                </span>
-              ) : (
-                <span
-                  className="nfi-candle-pair"
-                  title={`${candles.length} candles loaded`}
-                >
-                  {effectivePair}
-                </span>
-              )}
+              <span
+                className="nfi-candle-pair"
+                title={`${candles.length} candles loaded`}
+              >
+                {effectivePair}
+              </span>
               <div className="nfi-tf-group" role="group" aria-label="Timeframe">
                 {TIMEFRAME_ITEMS.map((tf) => (
                   <button
@@ -813,11 +832,26 @@ export function PositionCandlePublicWidget({
                     }
                     onClick={() => patch({ timeframe: tf.id })}
                     aria-pressed={cfg.timeframe === tf.id}
+                    title={
+                      tf.id === strategyTf
+                        ? "Strategy timeframe — always has live candles"
+                        : `Show ${tf.id} candles`
+                    }
                   >
                     {tf.text}
+                    {tf.id === strategyTf ? " ●" : ""}
                   </button>
                 ))}
               </div>
+              {positionsAccess.allowed ? (
+                <PositionPairChips
+                  options={chipOptions}
+                  activeKey={pinned.length > 0 ? pinned : null}
+                  autoActive={pinned.length === 0}
+                  onAuto={() => patch({ pair: "" })}
+                  onPick={(key) => patch({ pair: key })}
+                />
+              ) : null}
               <div
                 className="nfi-tf-group"
                 role="group"
@@ -879,43 +913,45 @@ export function PositionCandlePublicWidget({
                   </button>
                 ))}
               </div>
-              {positionsAccess.allowed ? (
-                <div
-                  className="nfi-tf-group"
-                  role="group"
-                  aria-label="Position history"
-                  title="Toggle position-history markers and entry level"
+              <div
+                className="nfi-tf-group"
+                role="group"
+                aria-label="Subplot"
+                title="Toggle RSI/MACD subplot"
+              >
+                <button
+                  type="button"
+                  className={
+                    cfg.subplot === "rsi"
+                      ? "nfi-tf-btn nfi-tf-active"
+                      : "nfi-tf-btn"
+                  }
+                  onClick={() =>
+                    patch({ subplot: cfg.subplot === "rsi" ? "none" : "rsi" })
+                  }
+                  aria-pressed={cfg.subplot === "rsi"}
+                  title="Toggle RSI subplot"
                 >
-                  <button
-                    type="button"
-                    className={
-                      cfg.showPositions
-                        ? "nfi-tf-btn nfi-tf-active"
-                        : "nfi-tf-btn"
-                    }
-                    onClick={() => patch({ showPositions: !cfg.showPositions })}
-                    aria-pressed={cfg.showPositions}
-                    title="Toggle position-history markers"
-                  >
-                    Positions
-                  </button>
-                  <button
-                    type="button"
-                    className={
-                      cfg.showEntryLevel
-                        ? "nfi-tf-btn nfi-tf-active"
-                        : "nfi-tf-btn"
-                    }
-                    onClick={() =>
-                      patch({ showEntryLevel: !cfg.showEntryLevel })
-                    }
-                    aria-pressed={cfg.showEntryLevel}
-                    title="Toggle entry-level line with PnL shading"
-                  >
-                    Entry
-                  </button>
-                </div>
-              ) : null}
+                  RSI
+                </button>
+                <button
+                  type="button"
+                  className={
+                    cfg.subplot === "macd"
+                      ? "nfi-tf-btn nfi-tf-active"
+                      : "nfi-tf-btn"
+                  }
+                  onClick={() =>
+                    patch({
+                      subplot: cfg.subplot === "macd" ? "none" : "macd",
+                    })
+                  }
+                  aria-pressed={cfg.subplot === "macd"}
+                  title="Toggle MACD subplot"
+                >
+                  MACD
+                </button>
+              </div>
               <span className="nfi-candle-quote">
                 <span
                   className={
@@ -996,6 +1032,9 @@ export function PositionCandlePublicWidget({
               subplot={subplot}
               tradeMarkers={positionMarkers}
               avgEntryPrice={entryBaseline}
+              avgEntryIsShort={followedIsShort}
+              avgEntrySince={entrySince}
+              followMarkers
               avgEntryTitle={
                 entryBaseline !== null
                   ? `entry lvl ${entryBaseline.toFixed(chartPrecision)}`
@@ -1005,7 +1044,7 @@ export function PositionCandlePublicWidget({
             {!pinnedOpen && pinned.length > 0 ? (
               <p style={{ fontSize: "0.75rem", opacity: 0.6, margin: 0 }}>
                 {pinned} has no open position — showing its history. Pick a
-                chip above to follow a live one.
+                chip in the toolbar to follow a live one.
               </p>
             ) : null}
           </div>
@@ -1015,9 +1054,27 @@ export function PositionCandlePublicWidget({
             hint={
               effectivePair.length === 0
                 ? "Flat is a position too — the chart follows your next open trade automatically. Pick an instance in ⚙ settings."
-                : `Freqtrade has no analyzed data for ${effectivePair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed.`
+                : strategyFallback !== undefined
+                  ? `Your bot analyzes ${strategyFallback} — ${cfg.timeframe} isn't analyzed for ${effectivePair}, so there's no live chart for it.`
+                  : `Freqtrade has no analyzed data for ${effectivePair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed.`
             }
-          />
+          >
+            {effectivePair.length > 0 && strategyFallback !== undefined ? (
+              <Button
+                size="sm"
+                kind="tertiary"
+                onClick={() => {
+                  const next = TIMEFRAME_ITEMS.find(
+                    (t) => t.id === strategyFallback,
+                  );
+
+                  if (next) patch({ timeframe: next.id });
+                }}
+              >
+                Show {strategyFallback} instead
+              </Button>
+            ) : null}
+          </EmptyState>
         )}
       </WidgetFrame>
     </>

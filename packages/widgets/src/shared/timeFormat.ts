@@ -206,6 +206,17 @@ export const timeFormatPreset = (id: TimeFormatId): TimeFormatPreset =>
       }
     : PRESETS[id];
 
+/** True when this browser already stored an explicit time-format choice. */
+export function hasStoredTimeFormat(): boolean {
+  if (typeof localStorage === "undefined") return false;
+
+  try {
+    return localStorage.getItem(TIME_FORMAT_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /** Reactive read for components (re-renders when the setting changes). */
 export function useTimeFormat(): TimeFormatId {
   return useStore(timeFormatStore, (id) => id);

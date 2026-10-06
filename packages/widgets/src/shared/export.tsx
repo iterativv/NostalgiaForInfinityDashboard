@@ -2,22 +2,36 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 /**
- * Table export — CSV / XLSX download for position-related tables.
+ * Table export — CSV / XLSX / JSON download for position-related tables.
  *
  * Every position table (open/closed positions, their `.relative` twins,
- * and the aggregations built from them) offers the same two-button export
+ * and the aggregations built from them) offers the same export
  * (`ExportMenu`, rendered in the widget frame's `actions` slot). Columns
  * are plain header + value accessors so exports carry raw values — never
  * the table's rendered JSX (tags, pills, links).
  *
+ * Position tables export grouped rows (`expandPositionRows` +
+ * `withOrderRows`): the header is `position columns + sub-order columns`.
+ * Each position emits one position row (position cells filled, order cells
+ * empty) followed by one row per sub-order (position cells empty, order
+ * cells filled). CSV leaves the empty side blank; XLSX additionally merges
+ * the empty side — horizontally per row, and vertically across a
+ * position's order rows — so each group reads as one block.
+ * JSON carries the same row objects, pretty-printed (2-space indent).
+ *
  * CSV follows RFC 4180 quoting with a UTF-8 BOM so Excel opens it
  * directly. XLSX goes through SheetJS (`xlsx`, dynamically imported so the
- * heavy parser stays out of the initial bundle).
+ * heavy parser stays out of the initial bundle) via `aoa_to_sheet` so
+ * duplicate headers (e.g. position `Amount` + order `Amount`) keep their
+ * own columns. JSON uses the same headers as keys, suffixing repeats as
+ * `Amount (2)` so no column is lost.
  */
 
 import { useState } from "react";
 import { Button } from "@carbon/react";
 import { Download } from "@carbon/icons-react";
+import type { RelativeOrder, TradeOrder } from "@nfi/api-contract";
+import { COL } from "./columns";
 
 /** One exportable column: header text + raw cell value. */
 export interface ExportColumn<T> {
@@ -27,6 +41,208 @@ export interface ExportColumn<T> {
 
 /** Cell values a table export renders: text, numbers, flags or blanks. */
 export type CsvCellValue = string | number | boolean | null | undefined;
+
+/**
+ * One grouped export row: a position row, or one sub row per order.
+ * `position` is always the owning position; `order` is present on
+ * sub rows only.
+ */
+export interface FlatExportRow<P, O> {
+  readonly kind: "position" | "order";
+  readonly position: P;
+  readonly order?: O;
+}
+
+/**
+ * Positions → grouped export rows: one `{ kind: "position" }` row per
+ * position, each followed by its `{ kind: "order" }` sub rows (in the
+ * stored order order). Positions without orders export as a lone
+ * position row.
+ */
+export function expandPositionRows<P, O>(
+  rows: ReadonlyArray<P>,
+  getOrders: (position: P) => ReadonlyArray<O> | undefined,
+): Array<FlatExportRow<P, O>> {
+  const out: Array<FlatExportRow<P, O>> = [];
+
+  for (const position of rows) {
+    out.push({ kind: "position", position });
+
+    for (const order of getOrders(position) ?? [])
+      out.push({ kind: "order", position, order });
+  }
+
+  return out;
+}
+
+/**
+ * Position columns + order columns → one grouped column set for
+ * `expandPositionRows` output. Position rows fill the position cells
+ * (order cells blank); sub-order rows leave every position cell blank
+ * and fill the order cells.
+ */
+export type GroupedExportColumns<T> = ReadonlyArray<ExportColumn<T>> & {
+  /** Leading position-column count — the XLSX merge boundary. */
+  readonly positionColumnCount: number;
+};
+
+export function withOrderRows<P, O>(args: {
+  readonly positionColumns: ReadonlyArray<ExportColumn<P>>;
+  readonly orderColumns: ReadonlyArray<ExportColumn<O>>;
+}): GroupedExportColumns<FlatExportRow<P, O>> {
+  const positions = args.positionColumns.map(
+    (column): ExportColumn<FlatExportRow<P, O>> => ({
+      header: column.header,
+      value: (row) =>
+        row.kind === "position" ? column.value(row.position) : undefined,
+    }),
+  );
+
+  const orders = args.orderColumns.map(
+    (column): ExportColumn<FlatExportRow<P, O>> => ({
+      header: column.header,
+      value: (row) =>
+        row.order !== undefined ? column.value(row.order) : undefined,
+    }),
+  );
+
+  return Object.assign([...positions, ...orders], {
+    positionColumnCount: args.positionColumns.length,
+  });
+}
+
+/** One SheetJS merge range (`!merges` entry). */
+export interface XlsxMerge {
+  readonly s: { readonly r: number; readonly c: number };
+  readonly e: { readonly r: number; readonly c: number };
+}
+
+/**
+ * Grouped rows → XLSX merge ranges. Position rows merge the empty
+ * order-side cells horizontally; a position's order rows merge the empty
+ * position side into one block — horizontally within one row and
+ * additionally vertically across the group's order rows. Header row
+ * (r = 0) never merges; plain (non-grouped) column sets yield no merges.
+ */
+export function buildGroupedMerges<T extends object>(
+  columns: ReadonlyArray<ExportColumn<T>>,
+  rows: ReadonlyArray<T>,
+): Array<XlsxMerge> {
+  const total = columns.length;
+
+  // Grouped column sets carry their boundary as an own property; plain
+  // sets have none and read as 0 (no merges either way).
+  // SAFETY: Object.hasOwn confirmed the marker exists; withOrderRows only
+  // ever writes an integer count, and junk fails the isInteger re-check.
+  const boundary = Object.hasOwn(columns, "positionColumnCount")
+    ? (columns as GroupedExportColumns<T>).positionColumnCount
+    : 0;
+
+  if (!Number.isInteger(boundary) || boundary <= 0 || boundary >= total)
+    return [];
+
+  const merges: Array<XlsxMerge> = [];
+  const orderSideWidth = total - boundary;
+
+  // First sheet row of the current group's order block (null between groups).
+  let orderStart: number | null = null;
+
+  /** Close the pending order block at `endExclusive` (sheet-row space). */
+  const flushOrders = (endExclusive: number): void => {
+    if (orderStart === null) return;
+
+    const start = orderStart;
+
+    orderStart = null;
+
+    if (boundary >= 2) {
+      // One rectangle over the whole block: horizontal for a lone order
+      // row, horizontal + vertical for several.
+      merges.push({
+        s: { r: start, c: 0 },
+        e: { r: endExclusive - 1, c: boundary - 1 },
+      });
+    } else if (endExclusive - 1 > start) {
+      // Single position column: only a vertical merge is possible.
+      merges.push({ s: { r: start, c: 0 }, e: { r: endExclusive - 1, c: 0 } });
+    }
+  };
+
+  rows.forEach((row, index) => {
+    const sheetRow = index + 1;
+
+    const kind =
+      "kind" in row && (row.kind === "position" || row.kind === "order")
+        ? row.kind
+        : undefined;
+
+    if (kind === "position") {
+      flushOrders(sheetRow);
+
+      // Trailing order side is empty — merge into one block (needs ≥2 cols).
+      if (orderSideWidth >= 2)
+        merges.push({
+          s: { r: sheetRow, c: boundary },
+          e: { r: sheetRow, c: total - 1 },
+        });
+    } else if (kind === "order") {
+      if (orderStart === null) orderStart = sheetRow;
+    } else {
+      flushOrders(sheetRow);
+    }
+  });
+  flushOrders(rows.length + 1);
+
+  return merges;
+}
+
+/** Epoch-millis order stamp → ISO text (blank when absent). */
+const orderIso = (stamp: number | undefined): string | undefined =>
+  stamp !== undefined && Number.isFinite(stamp) && stamp > 0
+    ? new Date(stamp).toISOString()
+    : undefined;
+
+/** Order-side export columns shared by every absolute position table. */
+export const TRADE_ORDER_EXPORT_COLUMNS: ReadonlyArray<
+  ExportColumn<TradeOrder>
+> = [
+  { header: COL.orderId, value: (o) => o.orderId },
+  {
+    header: COL.date,
+    value: (o) => orderIso(o.filledTimestamp ?? o.timestamp),
+  },
+  { header: COL.side, value: (o) => o.side.toUpperCase() },
+  { header: COL.orderType, value: (o) => o.type },
+  { header: COL.status, value: (o) => o.status },
+  { header: COL.price, value: (o) => o.price },
+  { header: COL.amount, value: (o) => o.amount },
+  { header: COL.filled, value: (o) => o.filled },
+  { header: COL.remaining, value: (o) => o.remaining },
+  { header: COL.cost, value: (o) => o.cost },
+  { header: COL.orderTag, value: (o) => o.tag?.trim() || undefined },
+  {
+    header: COL.role,
+    value: (o) =>
+      o.isEntry === undefined ? undefined : o.isEntry ? "entry" : "exit",
+  },
+];
+
+/**
+ * Order-side export columns for the percent-only (relative) tables —
+ * no prices, amounts or timestamps exist on these by design.
+ */
+export const RELATIVE_ORDER_EXPORT_COLUMNS: ReadonlyArray<
+  ExportColumn<RelativeOrder>
+> = [
+  { header: COL.side, value: (o) => o.side.toUpperCase() },
+  {
+    header: COL.role,
+    value: (o) =>
+      o.isEntry === undefined ? undefined : o.isEntry ? "entry" : "exit",
+  },
+  { header: COL.orderTag, value: (o) => o.tag?.trim() || undefined },
+  { header: COL.status, value: (o) => o.status },
+];
 
 /** RFC 4180 cell quoting: quote when the text holds `"`, `,` or a newline. */
 export function csvCell(value: CsvCellValue): string {
@@ -53,6 +269,62 @@ export function rowsToCsv<T>(
   ];
 
   return `\uFEFF${lines.join("\r\n")}\r\n`;
+}
+
+/**
+ * Column headers with repeats suffixed (`Amount`, `Amount (2)`) so JSON
+ * objects keyed by header keep every column — e.g. position `Amount` +
+ * order `Amount` in the grouped position exports.
+ */
+export function dedupedExportHeaders<T>(
+  columns: ReadonlyArray<ExportColumn<T>>,
+): ReadonlyArray<string> {
+  const seen = new Map<string, number>();
+
+  return columns.map((column) => {
+    const count = (seen.get(column.header) ?? 0) + 1;
+
+    seen.set(column.header, count);
+
+    return count === 1 ? column.header : `${column.header} (${count})`;
+  });
+}
+
+/** Raw cell → JSON value: missing / non-finite numbers become `null`. */
+export function jsonCell(
+  value: string | number | boolean | null | undefined,
+): string | number | boolean | null {
+  if (value === null || value === undefined) return null;
+
+  // JSON has no NaN/Infinity spelling — non-finite numbers encode as null.
+  const nonFinite =
+    Number.isNaN(value) ||
+    value === Number.POSITIVE_INFINITY ||
+    value === Number.NEGATIVE_INFINITY;
+
+  if (nonFinite) return null;
+
+  return value;
+}
+
+/** Rows → pretty-printed JSON text (2-space indent, trailing newline). */
+export function rowsToJson<T>(
+  columns: ReadonlyArray<ExportColumn<T>>,
+  rows: ReadonlyArray<T>,
+): string {
+  const headers = dedupedExportHeaders(columns);
+
+  const records = rows.map((row) => {
+    const record: Record<string, string | number | boolean | null> = {};
+
+    columns.forEach((column, index) => {
+      record[headers[index] ?? ""] = jsonCell(column.value(row));
+    });
+
+    return record;
+  });
+
+  return `${JSON.stringify(records, null, 2)}\n`;
 }
 
 function stampOf(date: Date): string {
@@ -96,29 +368,43 @@ export function exportRowsToCsv<T>(
   );
 }
 
+/** Immediate pretty-JSON download (pure serialization — safe for tests). */
+export function exportRowsToJson<T>(
+  filenameBase: string,
+  columns: ReadonlyArray<ExportColumn<T>>,
+  rows: ReadonlyArray<T>,
+): void {
+  downloadBlob(
+    `${buildExportFilename(filenameBase)}.json`,
+    new Blob([rowsToJson(columns, rows)], {
+      type: "application/json;charset=utf-8",
+    }),
+  );
+}
+
 /** XLSX download via SheetJS (lazy import — keeps it out of the main chunk). */
-export async function exportRowsToXlsx<T>(
+export async function exportRowsToXlsx<T extends object>(
   filenameBase: string,
   columns: ReadonlyArray<ExportColumn<T>>,
   rows: ReadonlyArray<T>,
 ): Promise<void> {
   const XLSX = await import("xlsx");
 
-  const sheet = XLSX.utils.json_to_sheet(
-    rows.map((row) => {
-      const record: Record<string, string | number | boolean> = {};
-
-      for (const column of columns) {
+  const data: Array<Array<string | number | boolean>> = [
+    columns.map((column) => column.header),
+    ...rows.map((row) =>
+      columns.map((column) => {
         const value = column.value(row);
 
-        record[column.header] =
-          value === null || value === undefined ? "" : value;
-      }
+        return value === null || value === undefined ? "" : value;
+      }),
+    ),
+  ];
 
-      return record;
-    }),
-  );
+  const sheet = XLSX.utils.aoa_to_sheet(data);
+  const merges = buildGroupedMerges(columns, rows);
 
+  if (merges.length > 0) sheet["!merges"] = merges;
   const workbook = XLSX.utils.book_new();
 
   XLSX.utils.book_append_sheet(workbook, sheet, "positions");
@@ -126,10 +412,10 @@ export async function exportRowsToXlsx<T>(
 }
 
 /**
- * Two-button CSV/XLSX export for a widget frame's `actions` slot.
+ * CSV/XLSX/JSON export for a widget frame's `actions` slot.
  * Disabled (with a tooltip) when there is nothing to export.
  */
-export function ExportMenu<T>({
+export function ExportMenu<T extends object>({
   filenameBase,
   columns,
   rows,
@@ -173,6 +459,16 @@ export function ExportMenu<T>({
         onClick={onXlsx}
       >
         XLSX
+      </Button>
+      <Button
+        size="sm"
+        kind="ghost"
+        renderIcon={Download}
+        disabled={empty}
+        title={empty ? "Nothing to export yet" : "Download as JSON"}
+        onClick={() => exportRowsToJson(filenameBase, columns, rows)}
+      >
+        JSON
       </Button>
     </div>
   );

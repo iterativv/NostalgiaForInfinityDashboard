@@ -36,7 +36,12 @@ import {
 import type { SourcedOpenPosition } from "./shared/sources";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
-import { type ExportColumn } from "./shared/export";
+import {
+  expandPositionRows,
+  TRADE_ORDER_EXPORT_COLUMNS,
+  withOrderRows,
+  type ExportColumn,
+} from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -99,8 +104,8 @@ export const OpenPositionsConfigSchema = Schema.Struct({
   instanceId: InstanceIdField,
   /** Latest sub-orders shown in an expansion before "Load older". */
   maxVisibleOrders: numberWithDefault(5),
-  /** Row-number column (1 = first row of the current ordering). */
-  showRowNumber: booleanWithDefault(true),
+  /** Position id column (freqtrade trade id). */
+  showTradeId: booleanWithDefault(true),
   showBot: booleanWithDefault(false),
   showPair: booleanWithDefault(true),
   showDirection: booleanWithDefault(false),
@@ -135,13 +140,11 @@ function buildColumns([
   InstanceColors,
 ]): NfiColumnDef<SourcedOpenPosition>[] {
   const defs: (NfiColumnDef<SourcedOpenPosition> | null)[] = [
-    cfg.showRowNumber
+    cfg.showTradeId
       ? {
-          id: "no",
-          header: COL.no,
-          // Display position under the CURRENT ordering — `row.index` is the
-          // data-array position, which sorting can reorder away.
-          cell: ({ row }) => row.getDisplayIndex() + 1,
+          id: "tradeId",
+          header: COL.tradeId,
+          cell: ({ row }) => row.original.tradeId,
           meta: { className: "nfi-mono" },
           enableSorting: false,
         }
@@ -287,8 +290,10 @@ function buildColumns([
 
 const EMPTY_POSITIONS: ReadonlyArray<SourcedOpenPosition> = [];
 
-/** Full-row CSV/XLSX columns (all fields, not just the visible set). */
-const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<SourcedOpenPosition>> = [
+/** Position-side CSV/XLSX columns (all fields, not just the visible set). */
+const POSITION_EXPORT_COLUMNS: ReadonlyArray<
+  ExportColumn<SourcedOpenPosition>
+> = [
   { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
   { header: COL.tradeId, value: (p) => p.tradeId },
   { header: COL.pair, value: (p) => p.pair },
@@ -304,6 +309,16 @@ const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<SourcedOpenPosition>> = [
   { header: COL.strategy, value: (p) => p.strategy ?? "" },
   { header: COL.openDate, value: (p) => p.openDate },
 ];
+
+/**
+ * Grouped CSV/XLSX columns: position columns + sub-order columns.
+ * One position row (order cells empty, merged in XLSX) followed by one
+ * row per sub-order (position cells empty, merged in XLSX).
+ */
+const EXPORT_COLUMNS = withOrderRows({
+  positionColumns: POSITION_EXPORT_COLUMNS,
+  orderColumns: TRADE_ORDER_EXPORT_COLUMNS,
+});
 
 export function OpenPositionsWidget({
   config,
@@ -347,6 +362,8 @@ export function OpenPositionsWidget({
   };
 
   const positions = src.data ?? EMPTY_POSITIONS;
+  /** Grouped export rows: position row + sub-order rows per position. */
+  const exportRows = expandPositionRows(positions, (p) => p.orders);
   /** Bot attribution column: explicit toggle, or implied by fleet mode. */
   const showBotColumn = cfg.showBot || cfg.instanceId === "all";
 
@@ -414,7 +431,7 @@ export function OpenPositionsWidget({
         <div className="nfi-settings-toggles">
           {(
             [
-              ["showRowNumber", "Row number"],
+              ["showTradeId", COL.tradeId],
               ["showBot", "Bot"],
               ["showPair", "Pair"],
               ["showDirection", "Direction"],
@@ -469,7 +486,7 @@ export function OpenPositionsWidget({
                   exportMenu={{
                     filenameBase: `open-positions-${cfg.instanceId}`,
                     columns: EXPORT_COLUMNS,
-                    rows: positions,
+                    rows: exportRows,
                   }}
                 />
                 <div className="nfi-table-scroll">

@@ -114,14 +114,25 @@ export function UserMenu() {
 
   if (!state.authenticated) {
     return (
-      <Link
-        to="/login"
-        className="nfi-topbar-button"
-        aria-label="Sign in"
-        title="Sign in"
-      >
-        <UserAvatar size={16} />
-      </Link>
+      <>
+        <Link
+          to="/settings"
+          search={{ tab: "appearance" }}
+          className="nfi-topbar-button"
+          aria-label="Appearance settings"
+          title="Appearance settings — your own display preferences for this browser"
+        >
+          <Settings size={16} />
+        </Link>
+        <Link
+          to="/login"
+          className="nfi-topbar-button"
+          aria-label="Sign in"
+          title="Sign in"
+        >
+          <UserAvatar size={16} />
+        </Link>
+      </>
     );
   }
 

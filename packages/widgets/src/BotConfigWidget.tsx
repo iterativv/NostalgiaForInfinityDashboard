@@ -79,6 +79,7 @@ export function BotConfigWidget({
             <div className="nfi-stat-grid nfi-stat-grid--fill">
               <Stat label="Strategy" value={data.strategy ?? "—"} />
               <Stat label="Exchange" value={data.exchange ?? "—"} />
+              <Stat label="Timeframe" value={data.timeframe ?? "—"} />
               <Stat
                 label="Stake"
                 value={`${String(data.stakeAmount ?? "—")} ${data.stakeCurrency ?? ""}`}

@@ -13,20 +13,20 @@
     "lint": "eslint src --max-warnings 0"
   },
   "dependencies": {
-    "@carbon/icons-react": "^11.88.0",
-    "@carbon/react": "^1.94.0",
-    "@tanstack/react-store": "^0.9.3",
-    "@tanstack/react-table": "^9.2.4",
-    "@tanstack/store": "^0.9.3",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "@carbon/icons-react": "^11.89.0",
+    "@carbon/react": "^1.117.0",
+    "@tanstack/react-store": "^0.11.2",
+    "@tanstack/react-table": "^9.2.6",
+    "@tanstack/store": "^0.11.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@repo/eslint-config": "workspace:*",
     "@repo/typescript-config": "workspace:*",
-    "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.5",
-    "eslint": "10.9.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "eslint": "10.12.0",
     "typescript": "7.0.2"
   },
   "peerDependencies": {

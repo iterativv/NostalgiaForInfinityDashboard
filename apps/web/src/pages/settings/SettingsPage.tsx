@@ -5,6 +5,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStore } from "@tanstack/react-store";
 import { Tab, TabList, Tabs } from "@carbon/react";
 import { capabilitiesStore } from "../../auth/capabilities";
+import { SignInCta } from "../../auth/SignInCta";
 import { AppShell } from "../../workspace/AppShell";
 import type { RawSearch } from "../../workspace/urlState";
 import { useDocumentTitle } from "../../workspace/useDocumentTitle";
@@ -18,7 +19,9 @@ import { ManageUsersContent } from "../ManageUsersPage";
  * separated by tabs: appearance & layout, backend connection, freqtrade
  * instances and users & permissions (the users tab renders for callers
  * holding `users.list`; hiding it is cosmetic — the backend enforces every
- * capability either way). The active tab is the `?tab=` search param, so
+ * capability either way). Signed-out visitors get the appearance tab alone
+ * (their own per-browser preferences — no session needed); every other tab
+ * asks them to sign in. The active tab is the `?tab=` search param, so
  * sections deep-link and the aside's single "Settings" entry lands on a
  * sensible default.
  *
@@ -64,8 +67,16 @@ export function SettingsPage() {
     s.granted.includes("users.list"),
   );
 
+  // Signed-out visitors get their own appearance only: every other tab
+  // needs a session (connection/instances manage deployment state, users
+  // needs the grant). Appearance writes stay per-browser localStorage, so
+  // it is safe without signing in.
+  const authenticated = useStore(capabilitiesStore, (s) => s.authenticated);
+
   const tabs = TAB_LABELS.filter(
-    (entry) => entry.id !== "users" || canManageUsers,
+    (entry) =>
+      (entry.id !== "users" || canManageUsers) &&
+      (authenticated || entry.id === "appearance"),
   );
 
   const index = Math.max(
@@ -87,8 +98,9 @@ export function SettingsPage() {
           <div>
             <h2 className="nfi-users-title">Settings</h2>
             <p className="nfi-users-subtitle">
-              Appearance, the backend connection, freqtrade instances and user
-              access — every configuration surface in one place.
+              {authenticated
+                ? "Appearance, the backend connection, freqtrade instances and user access — every configuration surface in one place."
+                : "Appearance — your own display preferences for this browser. Sign in for the remaining sections."}
             </p>
           </div>
           <Tabs
@@ -113,9 +125,28 @@ export function SettingsPage() {
           {/* Tab content mounts on selection only — see module doc. */}
           <div className="nfi-settings-panel">
             {tab === "appearance" ? <AppearanceSettings /> : null}
-            {tab === "connection" ? <ConnectionSettings /> : null}
-            {tab === "instances" ? <InstancesManager /> : null}
-            {tab === "users" && canManageUsers ? <ManageUsersContent /> : null}
+            {authenticated ? (
+              <>
+                {tab === "connection" ? <ConnectionSettings /> : null}
+                {tab === "instances" ? <InstancesManager /> : null}
+                {tab === "users" && canManageUsers ? <ManageUsersContent /> : null}
+              </>
+            ) : tab === "appearance" ? null : (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.75rem",
+                  alignItems: "flex-start",
+                  padding: "1rem 0",
+                }}
+              >
+                <p style={{ fontSize: "0.875rem", opacity: 0.7, margin: 0 }}>
+                  This section needs a signed-in session.
+                </p>
+                <SignInCta />
+              </div>
+            )}
           </div>
         </div>
       </main>

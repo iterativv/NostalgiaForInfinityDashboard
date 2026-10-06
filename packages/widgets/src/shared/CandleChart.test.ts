@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 import { describe, expect, it } from "vitest";
-import { orderedByTime, toSec, utcSeconds } from "./CandleChart";
+import {
+  expandRangeToInclude,
+  orderedByTime,
+  toSec,
+  utcSeconds,
+} from "./CandleChart";
 
 /**
  * lightweight-charts asserts strictly ascending UNIQUE timestamps on every
@@ -69,5 +74,33 @@ describe("indicator time alignment", () => {
 
     // The bug: toSec(barSec) ≈ 1.7M seconds → 1970-01-21.
     expect(toSec(barSec)).toBeLessThan(10_000_000);
+  });
+});
+
+describe("expandRangeToInclude", () => {
+  it("leaves the range alone when the bar is already visible", () => {
+    const range = { from: 10, to: 100 };
+
+    expect(expandRangeToInclude(range, 10)).toBeNull();
+    expect(expandRangeToInclude(range, 55)).toBeNull();
+    expect(expandRangeToInclude(range, 100)).toBeNull();
+  });
+
+  it("widens left with context when the bar sits before the view", () => {
+    expect(expandRangeToInclude({ from: 50, to: 100 }, 40)).toEqual({
+      from: 34,
+      to: 100,
+    });
+  });
+
+  it("clamps the left edge at zero and widens right", () => {
+    expect(expandRangeToInclude({ from: 50, to: 100 }, 3)).toEqual({
+      from: 0,
+      to: 100,
+    });
+    expect(expandRangeToInclude({ from: 50, to: 100 }, 120)).toEqual({
+      from: 50,
+      to: 126,
+    });
   });
 });

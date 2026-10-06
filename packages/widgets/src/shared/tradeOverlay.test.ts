@@ -6,6 +6,7 @@ import {
   averageEntryPrice,
   buildPositionHistoryMarkers,
   buildTradeMarkers,
+  earliestEntrySecond,
   parsePositionTime,
   positionDirection,
   positionExitText,
@@ -267,5 +268,38 @@ describe("buildPositionHistoryMarkers", () => {
 
   it("returns nothing for empty input", () => {
     expect(buildPositionHistoryMarkers([], buckets, TF)).toEqual([]);
+  });
+});
+
+describe("earliestEntrySecond", () => {
+  const day = Date.UTC(2024, 4, 1);
+
+  it("prefers the earliest order fill time across positions", () => {
+    expect(
+      earliestEntrySecond([
+        {
+          openDate: "2024-05-01T00:00:00Z",
+          orders: [{ timestamp: day + 3_600_000 }],
+        },
+        {
+          openDate: "2024-05-01T00:00:00Z",
+          orders: [{ filledTimestamp: day + 1_800_000 }],
+        },
+      ]),
+    ).toBe(Math.floor((day + 1_800_000) / 1000));
+  });
+
+  it("falls back to open dates when orders carry no times", () => {
+    expect(
+      earliestEntrySecond([
+        { openDate: "2024-05-02T00:00:00Z", orders: [] },
+        { openDate: "2024-05-01T12:00:00Z" },
+      ]),
+    ).toBe(Date.UTC(2024, 4, 1, 12) / 1000);
+  });
+
+  it("returns null for empty or undated input", () => {
+    expect(earliestEntrySecond([])).toBeNull();
+    expect(earliestEntrySecond([{ openDate: "not a date" }])).toBeNull();
   });
 });

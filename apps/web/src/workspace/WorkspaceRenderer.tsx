@@ -15,11 +15,15 @@ import { TrellisWorkspace } from "./TrellisWorkspace";
  * Workspace → TrellisWorkspace → Workspace/ViewType/Split/Stage/Panel/View → Panel → WidgetRegistry → Widget
  * ```
  *
- * The NFI `Workspace` document (panels record + layout tree) is compiled
- * once per page to Trellis `<Split>/<Stage>/<Panel>/<View>` initial layout;
- * after mount Trellis owns docking, splitting, tabbing, floating, hiding
- * and zoom — every view stays mounted so iframes keep sessions and React
- * keeps state. Layout persists per page via Trellis `storageKey`.
+ * The NFI `Workspace` document (panels record + layout tree + shared
+ * `trellis` arrangement) seeds Trellis once per page: a stored `trellis`
+ * document mounts directly, otherwise the layout tree compiles to
+ * `<Split>/<Stage>/<Panel>/<View>` initial layout; after mount Trellis owns
+ * docking, splitting, tabbing, floating, hiding and zoom — every view stays
+ * mounted so iframes keep sessions and React keeps state. Trellis edits
+ * report back through `onDocumentChange` into the workspace store, so the
+ * backend `trellis` field stays the single shared arrangement every visitor
+ * (including anonymous) renders.
  *
  * Legacy bento/flow/masonry/split resize + move callbacks are Trellis-owned
  * now (divider/tab drags): they stay on the prop interface as no-ops so
@@ -49,7 +53,7 @@ export function WorkspaceRenderer({
 }: {
   workspace: Workspace;
   registry: WidgetRegistry;
-  /** Scopes Trellis persistence per page; defaults to the workspace id. */
+  /** Selects the page's shared Trellis arrangement; defaults to the workspace id. */
   activePageId?: string;
   onActivatePanel: (panelId: string) => void;
   onActivateTab: (tabsId: string, panelId: string) => void;

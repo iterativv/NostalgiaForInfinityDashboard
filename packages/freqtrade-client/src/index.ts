@@ -187,6 +187,15 @@ export interface FreqtradeClientService {
     bucket?: ProfitBucketKind,
     timescale?: number,
   ) => Effect.Effect<ProfitBucketsResponse, FreqtradeError>;
+  /**
+   * Recent bot logs (`GET /api/v1/logs?limit=<n>`).
+   * Used as a fallback source for the strategy version: older bots omit
+   * `strategy_version` from `show_config`, but every bot periodically logs
+   * `Bot heartbeat. PID=…, version='…, strategy_version: …', state='…'`.
+   */
+  readonly getLogs: (
+    limit?: number,
+  ) => Effect.Effect<FreqtradeLogs, FreqtradeError>;
 }
 
 export class FreqtradeClient extends Context.Tag("nfi/FreqtradeClient")<
@@ -654,6 +663,7 @@ const VersionPayload = payload(
 const ShowConfigFields = {
   state: stringOr("unknown"),
   strategy: optString,
+  strategy_version: optString,
   exchange: optString,
   stake_currency: optString,
   dry_run: optBoolean,
@@ -677,6 +687,18 @@ const ConfigPayload = payload(
     ),
     stake_amount: Schema.Unknown,
     max_open_trades: Schema.Unknown,
+  }),
+);
+
+/**
+ * `GET /strategy/<name>` subset: only the timeframe is read (strategy live
+ * data exists solely for it). Total like every payload — foreign bodies
+ * decode to all-`undefined`.
+ */
+const StrategyDetailPayload = payload(
+  Schema.Struct({
+    strategy: optString,
+    timeframe: optString,
   }),
 );
 
@@ -747,8 +769,44 @@ const OrderPayload = payload(
 
 type FreqtradeOrder = typeof OrderPayload.Type;
 
+/**
+ * Entry/exit role of an order.
+ *
+ * Freqtrade's `/status` + `/trades` order objects (`OrderSchema`) carry
+ * `ft_order_side` but no `ft_is_entry` — that flag only exists on the
+ * internal `Order.to_json()` shape. Derive it the same way freqtrade does
+ * (`ft_order_side == entry_side`): an explicit backend flag always wins,
+ * otherwise a known side decides, unknown sides stay unknown.
+ */
+/** ft_order_side as freqtrade JSON may hold it: side text, or junk/null. */
+export type FtOrderSideRaw = string | number | boolean | null | undefined;
+
+export const deriveOrderIsEntry = (
+  ftOrderSide: FtOrderSideRaw,
+  isShort: boolean | undefined,
+  explicit?: boolean,
+): boolean | undefined => {
+  if (explicit !== undefined) return explicit;
+
+  // Junk values (numbers, flags, null) stringify to text that never
+  // matches a known side, so they read as "unknown" exactly as before.
+  const side =
+    ftOrderSide === null || ftOrderSide === undefined
+      ? undefined
+      : String(ftOrderSide).toLowerCase();
+
+  if (side !== "buy" && side !== "sell" && side !== "stoploss")
+    return undefined;
+
+  return side === (isShort === true ? "sell" : "buy");
+};
+
+/** Narrow freqtrade's opaque ft_order_side to real side text at the boundary. */
+const isSideText = (value: unknown): value is string =>
+  Either.isRight(Schema.decodeUnknownEither(Schema.String)(value));
+
 /** Map a decoded freqtrade order payload to a `TradeOrder`. */
-const toTradeOrder = (order: FreqtradeOrder): TradeOrder => ({
+const toTradeOrder = (order: FreqtradeOrder, isShort?: boolean): TradeOrder => ({
   orderId: order.order_id,
   side: String(order.ft_order_side ?? order.side ?? ""),
   type: order.order_type,
@@ -759,7 +817,11 @@ const toTradeOrder = (order: FreqtradeOrder): TradeOrder => ({
   filled: order.filled,
   remaining: order.remaining,
   isOpen: order.is_open,
-  isEntry: order.ft_is_entry,
+  isEntry: deriveOrderIsEntry(
+    isSideText(order.ft_order_side) ? order.ft_order_side : null,
+    isShort,
+    order.ft_is_entry,
+  ),
   tag: order.ft_order_tag,
   timestamp: order.order_timestamp,
   filledTimestamp: order.order_filled_timestamp,
@@ -1067,6 +1129,73 @@ const ProfitBucketsPayload = payload(
   }),
 );
 
+/** `GET /logs`: `{log_count, logs}` where each log row is a JSON array. */
+const LogsPayload = payload(
+  Schema.Struct({
+    log_count: numberOrZero,
+    logs: arrayOrEmpty(Schema.Array(freqtradeJson)),
+  }),
+);
+
+/** Normalized recent-logs view returned by `getLogs`. */
+export interface FreqtradeLogs {
+  readonly logCount: number;
+  readonly logs: ReadonlyArray<ReadonlyArray<FreqtradeJson>>;
+}
+
+/**
+ * Extract a strategy version (`v18.0.119`, …) from a free-text fragment.
+ *
+ * Matches freqtrade's `strategy_version: <value>` rendering inside the bot
+ * heartbeat (`Bot heartbeat. PID=1, version='2026.8, strategy_version:
+ * v18.0.119', state='RUNNING'`) as well as a `/version` string that carries
+ * the same suffix. Pure — unit-tested.
+ */
+export const parseStrategyVersion = (
+  text: string | null | undefined,
+): string | undefined => {
+  if (text === null || text === undefined || text.length === 0)
+    return undefined;
+
+  const match = /strategy_version\s*[:=]\s*['"]?([^'"\s,\]]+)/i.exec(text);
+
+  if (!match) return undefined;
+
+  const version = match[1]?.trim().replace(/['"]+$/, "");
+
+  return version && version.length > 0 ? version : undefined;
+};
+
+/**
+ * Extract the newest strategy version from recent freqtrade logs.
+ *
+ * Log rows are JSON arrays (timestamp, level, logger, message, …); every
+ * cell is stringified and scanned for `strategy_version: …`. Rows are
+ * scanned newest-first (freqtrade appends chronologically), so the first
+ * hit is the freshest heartbeat. Pure — unit-tested.
+ */
+export const parseStrategyVersionFromLogs = (
+  logs: ReadonlyArray<ReadonlyArray<unknown>> | null | undefined,
+): string | undefined => {
+  if (!Array.isArray(logs) || logs.length === 0) return undefined;
+
+  for (let i = logs.length - 1; i >= 0; i--) {
+    const row = logs[i];
+
+    if (!Array.isArray(row)) continue;
+
+    for (const cell of row) {
+      // Cells are stringified regardless of kind: parse only matches
+      // strategy_version text, so non-string cells read as no match.
+      const version = parseStrategyVersion(String(cell ?? ""));
+
+      if (version !== undefined) return version;
+    }
+  }
+
+  return undefined;
+};
+
 const toFreqtradeError = (
   operation: string,
   cause: unknown,
@@ -1349,7 +1478,7 @@ export const makeFreqtradeService = (
       fundingFees: t.funding_fees,
       nrOfEntries: t.nr_of_successful_entries,
       nrOfExits: t.nr_of_successful_exits,
-      orders: t.orders.map(toTradeOrder),
+      orders: t.orders.map((o) => toTradeOrder(o, t.is_short)),
     });
 
     /** Newest-first window of closed trades, `offset` back from the newest. */
@@ -1387,6 +1516,26 @@ export const makeFreqtradeService = (
         } satisfies ClosedPositionsResponse;
       });
 
+    /**
+     * Strategy timeframe via `GET /strategy/<name>` (soft: `undefined`
+     * when the endpoint is unreachable or the field is blank — the config
+     * read must never fail for this enrichment).
+     */
+    const strategyTimeframe = (
+      strategy: string,
+    ): Effect.Effect<string | undefined, FreqtradeError> =>
+      getJson(
+        `/api/v1/strategy/${encodeURIComponent(strategy)}`,
+        "strategy",
+        StrategyDetailPayload,
+      ).pipe(
+        Effect.map((raw) => {
+          const timeframe = raw.timeframe?.trim();
+
+          return timeframe && timeframe.length > 0 ? timeframe : undefined;
+        }),
+      );
+
     const client: FreqtradeClientService = {
       ping: () => getJson("/api/v1/ping", "ping", PingPayload),
       getVersion: () => getJson("/api/v1/version", "version", VersionPayload),
@@ -1397,6 +1546,9 @@ export const makeFreqtradeService = (
               ({
                 state: raw.state,
                 strategy: raw.strategy,
+                strategyVersion: raw.strategy_version?.trim()
+                  ? raw.strategy_version.trim()
+                  : undefined,
                 exchange: raw.exchange,
                 stakeCurrency: raw.stake_currency,
                 dryRun: raw.dry_run,
@@ -1505,7 +1657,7 @@ export const makeFreqtradeService = (
                   nrOfEntries: t.nr_of_successful_entries,
                   nrOfExits: t.nr_of_successful_exits,
                   hasOpenOrders: t.has_open_orders,
-                  orders: t.orders.map(toTradeOrder),
+                  orders: t.orders.map((o) => toTradeOrder(o, t.is_short)),
                 })),
               }) satisfies OpenPositionsResponse,
           ),
@@ -1637,18 +1789,37 @@ export const makeFreqtradeService = (
       },
       getConfig: () =>
         getJson("/api/v1/show_config", "show_config", ConfigPayload).pipe(
-          Effect.map(
-            (raw) =>
-              ({
-                strategy: raw.strategy,
-                exchange: raw.exchange,
-                stakeCurrency: raw.stake_currency,
-                stakeAmount: raw.stake_amount,
-                maxOpenTrades: raw.max_open_trades,
-                dryRun: raw.dry_run,
-                tradingMode: raw.trading_mode,
-              }) satisfies BotConfigSummary,
-          ),
+          Effect.flatMap((raw) => {
+            const base = {
+              strategy: raw.strategy,
+              exchange: raw.exchange,
+              stakeCurrency: raw.stake_currency,
+              stakeAmount: raw.stake_amount,
+              maxOpenTrades: raw.max_open_trades,
+              dryRun: raw.dry_run,
+              tradingMode: raw.trading_mode,
+            };
+
+            const strategy = raw.strategy?.trim();
+
+            if (!strategy) {
+              return Effect.succeed({
+                ...base,
+                timeframe: undefined,
+              } satisfies BotConfigSummary);
+            }
+
+            return strategyTimeframe(strategy).pipe(
+              Effect.catchAll(() => Effect.succeed(undefined)),
+              Effect.map(
+                (timeframe) =>
+                  ({
+                    ...base,
+                    timeframe,
+                  }) satisfies BotConfigSummary,
+              ),
+            );
+          }),
         ),
       getLocks: () =>
         getJson("/api/v1/locks", "locks", LocksPayload).pipe(
@@ -1668,6 +1839,15 @@ export const makeFreqtradeService = (
 
             return { locks } satisfies LocksResponse;
           }),
+          // Older freqtrade builds have no `/locks` endpoint (404): report
+          // "no locks" instead of failing the widget — every other widget
+          // keeps working against those bots, locks must degrade the same
+          // way. Other failures (auth, unreachable) still surface as errors.
+          Effect.catchAll((cause) =>
+            cause instanceof FreqtradeError && cause.status === 404
+              ? Effect.succeed({ locks: [] } satisfies LocksResponse)
+              : Effect.fail(cause),
+          ),
         ),
       getBlacklist: () =>
         getJson("/api/v1/blacklist", "blacklist", BlacklistPayload).pipe(
@@ -1720,6 +1900,22 @@ export const makeFreqtradeService = (
                   trades: entry.trade_count,
                 })),
               }) satisfies ProfitBucketsResponse,
+          ),
+        ),
+      getLogs: (limit = 200) =>
+        getJson(
+          `/api/v1/logs?limit=${limit}`,
+          "logs",
+          LogsPayload,
+        ).pipe(
+          Effect.map(
+            (raw) =>
+              ({
+                logCount: raw.log_count,
+                logs: raw.logs.flatMap((row) =>
+                  Array.isArray(row) ? [[...row]] : [],
+                ),
+              }) satisfies FreqtradeLogs,
           ),
         ),
     };

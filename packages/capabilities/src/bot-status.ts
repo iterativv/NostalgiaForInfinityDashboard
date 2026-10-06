@@ -5,16 +5,38 @@ import { Effect } from "effect"
 import { BotStatus } from "@nfi/api-contract"
 import { defineCapability, NoOptions } from "./definition.js"
 import { toBackendError } from "./errors.js"
+import { resolveStrategyVersion } from "./strategy-version.js"
 
-/** `bot.status` — default-instance bot state/strategy/exchange summary. */
+/** `bot.status` — default-instance bot state/strategy/exchange/version summary. */
 export const BotStatusCapability = defineCapability({
   name: "bot.status",
   optionsSchema: NoOptions,
   resultSchema: BotStatus,
-  description: "Default-instance bot state, strategy and exchange summary.",
+  description:
+    "Default-instance bot state, strategy, exchange and version summary.",
   streamable: true,
   pollMs: 10_000,
   exposes: ["bot-state"],
   run: (_options, ctx) =>
-    ctx.defaultService.getStatus().pipe(Effect.mapError((cause) => toBackendError("status", cause))),
+    Effect.gen(function* () {
+      const status = yield* ctx.defaultService.getStatus();
+
+      // Version is informational: an unreadable `/version` must never fail
+      // the status read.
+      const version = yield* ctx.defaultService
+        .getVersion()
+        .pipe(Effect.orElseSucceed(() => null));
+
+      const strategyVersion = yield* resolveStrategyVersion(
+        ctx.defaultService,
+        status.strategyVersion,
+        version?.version,
+      );
+
+      return {
+        ...status,
+        version: version?.version,
+        strategyVersion,
+      };
+    }).pipe(Effect.mapError((cause) => toBackendError("status", cause))),
 })

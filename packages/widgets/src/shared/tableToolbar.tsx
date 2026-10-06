@@ -6,7 +6,7 @@
  *
  * Every data table renders the same chrome (the Carbon DataTable pattern):
  * a persistent filter search, an order-by select and an overflow menu
- * holding the CSV/XLSX export — instead of bespoke search rows plus
+ * holding the CSV/XLSX/JSON export — instead of bespoke search rows plus
  * header buttons scattered per widget. Widgets compose `NfiTableToolbar`
  * with exactly the sections their table has (all three for the filtered
  * position tables, export-only for the aggregation tables) and wrap
@@ -26,8 +26,13 @@ import {
   TableToolbarMenu,
   TableToolbarSearch,
 } from "@carbon/react";
+import {
+  exportRowsToCsv,
+  exportRowsToJson,
+  exportRowsToXlsx,
+  type ExportColumn,
+} from "./export";
 import { Download } from "@carbon/icons-react";
-import { exportRowsToCsv, exportRowsToXlsx, type ExportColumn } from "./export";
 
 /** Filter search section (persistent Carbon toolbar search). */
 export interface ToolbarSearchProps {
@@ -46,14 +51,14 @@ export interface ToolbarOrderProps {
   readonly onChange: (id: string) => void;
 }
 
-/** Export overflow section (CSV + XLSX of the exported rows). */
+/** Export overflow section (CSV + XLSX + JSON of the exported rows). */
 export interface ToolbarExportProps<T> {
   readonly filenameBase: string;
   readonly columns: ReadonlyArray<ExportColumn<T>>;
   readonly rows: ReadonlyArray<T>;
 }
 
-export function NfiTableToolbar<T>({
+export function NfiTableToolbar<T extends object>({
   label,
   search,
   orderBy,
@@ -133,6 +138,17 @@ export function NfiTableToolbar<T>({
               disabled={empty || busy}
               itemText={busy ? "Preparing…" : "Export XLSX"}
               onClick={onXlsx}
+            />
+            <OverflowMenuItem
+              disabled={empty}
+              itemText="Export JSON"
+              onClick={() =>
+                exportRowsToJson(
+                  exportMenu.filenameBase,
+                  exportMenu.columns,
+                  exportMenu.rows,
+                )
+              }
             />
           </TableToolbarMenu>
         ) : null}

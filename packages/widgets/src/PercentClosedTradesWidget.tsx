@@ -6,7 +6,7 @@
  * stats (the "non-sensitive" twin of the closed trades table).
  *
  * Backed by `instances.closed-positions.relative`: no coin/fiat amounts
- * ever leave the backend. Mirrors the main table's affordances — numbered
+ * ever leave the backend. Mirrors the main table's affordances — trade-ID
  * rows, server-side search (rides the stream subscription), "Order by",
  * growing-window infinite load, column toggles and an expandable sub-order
  * facet list (relative orders carry no prices/amounts).
@@ -64,7 +64,12 @@ import {
 } from "./shared/tradeSort";
 import { useTimeFormat } from "./shared/timeFormat";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
-import { type ExportColumn } from "./shared/export";
+import {
+  expandPositionRows,
+  RELATIVE_ORDER_EXPORT_COLUMNS,
+  withOrderRows,
+  type ExportColumn,
+} from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -107,8 +112,8 @@ export const PercentClosedTradesConfigSchema = Schema.Struct({
   instanceId: InstanceIdField,
   /** Page size for the growing window (also the initial window). */
   limit: numberWithDefault(50),
-  /** Row-number column (1 = first row of the current ordering). */
-  showRowNumber: booleanWithDefault(true),
+  /** Position id column (freqtrade trade id). */
+  showTradeId: booleanWithDefault(true),
   showDirection: booleanWithDefault(true),
   showHeld: booleanWithDefault(true),
   showExit: booleanWithDefault(true),
@@ -129,8 +134,10 @@ export const PERCENT_CLOSED_TRADES_DEFAULTS: PercentClosedTradesConfig =
 /** Window growth cap — matches the relative closed capability limit cap. */
 const MAX_WINDOW = 5_000;
 
-/** Full-row CSV/XLSX columns (percent-only — never absolute amounts). */
-const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<RelativeClosedPosition>> = [
+/** Position-side CSV/XLSX columns (percent-only — never absolute amounts). */
+const POSITION_EXPORT_COLUMNS: ReadonlyArray<
+  ExportColumn<RelativeClosedPosition>
+> = [
   { header: COL.tradeId, value: (p) => p.tradeId },
   { header: COL.pair, value: (p) => p.pair },
   { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
@@ -146,6 +153,16 @@ const EXPORT_COLUMNS: ReadonlyArray<ExportColumn<RelativeClosedPosition>> = [
   { header: COL.closeDate, value: (p) => p.closeDate ?? "" },
 ];
 
+/**
+ * Grouped CSV/XLSX columns: position columns + sub-order columns.
+ * One position row (order cells empty, merged in XLSX) followed by one
+ * row per sub-order (position cells empty, merged in XLSX).
+ */
+const EXPORT_COLUMNS = withOrderRows({
+  positionColumns: POSITION_EXPORT_COLUMNS,
+  orderColumns: RELATIVE_ORDER_EXPORT_COLUMNS,
+});
+
 /** Column set depends on the widget config's column toggles. */
 function buildColumns([
   cfg,
@@ -153,11 +170,11 @@ function buildColumns([
   PercentClosedTradesConfig,
 ]): NfiColumnDef<RelativeClosedPosition>[] {
   const defs: (NfiColumnDef<RelativeClosedPosition> | null)[] = [
-    cfg.showRowNumber
+    cfg.showTradeId
       ? {
-          id: "no",
-          header: COL.no,
-          cell: ({ row }) => row.index + 1,
+          id: "tradeId",
+          header: COL.tradeId,
+          cell: ({ row }) => row.original.tradeId,
           meta: { className: "nfi-mono" },
           enableSorting: false,
         }
@@ -310,6 +327,9 @@ export function PercentClosedTradesWidget({
     { inputs: shallowStore, output: shallowStore },
   );
 
+  /** Grouped export rows: position row + sub-order rows per position. */
+  const exportRows = expandPositionRows(positions, (p) => p.orders);
+
   const withPnl = positions.filter(
     (p) => p.closeProfitPct !== undefined && Number.isFinite(p.closeProfitPct),
   );
@@ -402,7 +422,7 @@ export function PercentClosedTradesWidget({
         <div className="nfi-settings-toggles">
           {(
             [
-              ["showRowNumber", "Row number"],
+              ["showTradeId", COL.tradeId],
               ["showDirection", "Direction"],
               ["showHeld", COL.duration],
               ["showExit", "Exit reason"],
@@ -479,7 +499,7 @@ export function PercentClosedTradesWidget({
                   exportMenu={{
                     filenameBase: `closed-trades-pct-${cfg.instanceId}`,
                     columns: EXPORT_COLUMNS,
-                    rows: positions,
+                    rows: exportRows,
                   }}
                 />
                 <div className="nfi-table-scroll">

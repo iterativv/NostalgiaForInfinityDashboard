@@ -221,6 +221,44 @@ export function parsePositionTime(value: string | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
+/**
+ * Earliest entry second across open positions (whole UTC seconds): order
+ * fill times first, position open dates (UTC-pinned) as the fallback.
+ *
+ * The entry-level PnL fill shades "price vs entry" — starting that fill at
+ * the first candle paints profit/loss over history that predates the
+ * position, which reads as gains that never existed. Callers anchor the
+ * fill at this second (snapped to their candle bucket) instead.
+ */
+export function earliestEntrySecond(
+  positions: ReadonlyArray<{
+    readonly orders?: ReadonlyArray<OverlayOrder> | undefined;
+    readonly openDate: string;
+  }>,
+): number | null {
+  let earliest: number | null = null;
+
+  const considerMs = (timeMs: number | null): void => {
+    if (timeMs === null) return;
+
+    const second = Math.floor(timeMs / 1000);
+
+    if (earliest === null || second < earliest) earliest = second;
+  };
+
+  for (const position of positions) {
+    for (const order of position.orders ?? []) considerMs(orderEventMs(order));
+  }
+
+  if (earliest !== null) return earliest;
+
+  for (const position of positions) {
+    considerMs(parsePositionTime(position.openDate));
+  }
+
+  return earliest;
+}
+
 /** One position-history event feeding the public marker builder. */
 export interface PositionMarkerEvent {
   /** Event time in epoch millis (UTC) — e.g. `parsePositionTime(openDate)`. */

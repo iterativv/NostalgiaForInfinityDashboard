@@ -6,7 +6,6 @@ import { Button, OverflowMenu, OverflowMenuItem } from "@carbon/react";
 import { Add, Home } from "@carbon/icons-react";
 import { useElementStore, useLocalStore, useStoreEffect } from "@nfi/ui";
 import type { PageSummary } from "./store";
-import { getPresetPage } from "./pages";
 import { PageIconView } from "./pageIcons";
 import { PageActionsMenu } from "./PageMenu";
 
@@ -26,11 +25,24 @@ import { PageActionsMenu } from "./PageMenu";
  */
 
 function PageIcon({ page }: { page: PageSummary }) {
-  if (page.home) return <Home size={14} />;
+  // Home renders its house glyph unless the user picked an override via
+  // the page actions menu; presets fall back to their built-in icon.
+  if (page.home) {
+    if (page.icon) {
+      return (
+        <PageIconView
+          iconKey={page.icon}
+          size={14}
+        />
+      );
+    }
+
+    return <Home size={14} />;
+  }
 
   return (
     <PageIconView
-      iconKey={page.preset ? getPresetPage(page.id)?.icon : page.icon}
+      iconKey={page.icon}
       size={14}
     />
   );
@@ -45,6 +57,7 @@ export function PagesBar({
   onDelete,
   onRename,
   onReset,
+  onChangeIcon,
   locked = false,
 }: {
   pages: ReadonlyArray<PageSummary>;
@@ -61,6 +74,8 @@ export function PagesBar({
   onDelete: (pageId: string) => void;
   onRename: (pageId: string) => void;
   onReset: (pageId: string) => void;
+  /** Open the icon picker for a page (Home, preset or custom). */
+  onChangeIcon: (pageId: string) => void;
   /** True on read-only surfaces (signed out): add/actions hide. */
   locked?: boolean;
 }) {
@@ -171,6 +186,7 @@ export function PagesBar({
                   onRename={onRename}
                   onReset={onReset}
                   onDelete={onDelete}
+                  onChangeIcon={onChangeIcon}
                 />
               ) : null}
             </div>

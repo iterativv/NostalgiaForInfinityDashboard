@@ -724,7 +724,9 @@ export const takePendingSlotTarget = (): PendingSlotTarget | null => {
 export const peekPendingSlotTarget = (): PendingSlotTarget | null =>
   slotTargetStore.state;
 
-/** Trellis persistence key for a page (mirrors TrellisWorkspace). */
+/** Legacy per-browser Trellis key (pre-shared era). Only read once for
+ * migration and then removed — the backend `trellis` field is the shared
+ * arrangement now. */
 export const trellisStorageKey = (pageId: string): string =>
   `nfi-trellis-${pageId}`;
 
@@ -773,9 +775,10 @@ export function applyPresetToEmptyPage(
   const doc = createDocument(nodeToSpec(node), { version: 3 });
 
   try {
-    // A stale persisted doc (e.g. from a reset snapshots) overrides
-    // `defaultLayout` on mount — drop it so the picked slots actually
-    // appear. Trellis re-persists the new layout itself afterwards.
+    // A stale pre-shared localStorage doc overrides `defaultLayout` on
+    // mount — drop it so the picked slots actually appear. The applied
+    // layout reports back through `onDocumentChange` into the shared
+    // backend `trellis` field afterwards.
     localStorage.removeItem(trellisStorageKey(pageId));
   } catch {
     // Private mode / denied storage — mounting still shows the slots for
@@ -795,9 +798,10 @@ export function applyPresetToEmptyPage(
  * - empty stage (no workspace, or mounted with zero widget views) → a
  *   slot-only document: set live when mounted, else staged as the pending
  *   layout for TrellisWorkspace to mount with.
- * Floating + hidden + navigation state carry over untouched. Trellis
- * persists the document to the page's `storageKey` itself, so no store
- * round-trip is needed.
+ * Floating + hidden + navigation state carry over untouched. The rebuilt
+ * document reports back through Trellis `onDocumentChange` into the
+ * workspace store, which persists the shared backend `trellis` field — that
+ * is what makes the preset stick for anonymous visitors.
  */
 export function applyPreset(
   ws: WorkspaceHandle | null,
@@ -866,13 +870,20 @@ export function applyPreset(
  * Empty pane body: dashed slot with an Add-widget affordance. The button
  * arms the slot target and opens the widget picker; the bridge lands the
  * picked widget INTO this panel and closes the placeholder. Read-only
- * surfaces get the label without the button.
+ * surfaces get the label without the button. The corner × retires the
+ * placeholder on its own (Trellis drops the emptied group automatically),
+ * so stray empties — including a slot left behind by a pick — are always
+ * dismissible without opening the presets dialog.
  */
 export function SlotView() {
   const view = useView<{ slot: string }>();
   const locked = useStore(capabilitiesStore, (s) => !s.authenticated);
 
   useViewTitle("Empty pane");
+
+  const closeSlot = () => {
+    void view.close({ force: true });
+  };
 
   // Same component as every other workspace empty state — only the title
   // differs. The Add action arms this slot (view + panel) as the pick
@@ -889,6 +900,7 @@ export function SlotView() {
               getTrellisCanvasOpener()?.(anchor, target);
             }
       }
+      onClose={locked ? undefined : closeSlot}
     />
   );
 }

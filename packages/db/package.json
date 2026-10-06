@@ -14,19 +14,19 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@effect/platform": "^0.97.0",
-    "@effect/sql": "^0.52.0",
+    "@effect/platform": "^0.97.2",
+    "@effect/sql": "^0.52.1",
     "@effect/sql-sqlite-bun": "^0.53.0",
     "@effect/sql-sqlite-node": "^0.53.0",
     "@nfi/api-contract": "workspace:*",
-    "effect": "^3.17.14"
+    "effect": "^3.22.2"
   },
   "devDependencies": {
     "@repo/eslint-config": "workspace:*",
     "@repo/typescript-config": "workspace:*",
-    "@types/node": "26.4.1",
-    "eslint": "10.9.1",
+    "@types/node": "26.6.4",
+    "eslint": "10.12.0",
     "typescript": "7.0.2",
-    "vitest": "^3.0.0"
+    "vitest": "^5.0.3"
   }
 }

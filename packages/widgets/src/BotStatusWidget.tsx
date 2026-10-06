@@ -80,6 +80,10 @@ export function BotStatusWidget({
               tone={data.state === "running" ? "positive" : "neutral"}
             />
             <Stat label="Strategy" value={data.strategy ?? "—"} />
+            <Stat
+              label="Strategy version"
+              value={data.strategyVersion ?? "—"}
+            />
             <Stat label="Exchange" value={data.exchange ?? "—"} />
             <Stat
               label="Mode"
@@ -88,6 +92,7 @@ export function BotStatusWidget({
                 data.stakeCurrency ? `stake ${data.stakeCurrency}` : undefined
               }
             />
+            <Stat label="Version" value={data.version ?? "—"} />
           </div>
         ) : (
           <EmptyState
@@ -105,7 +110,7 @@ export const BotStatusWidgetDef = defineWidget({
   hasSettings: true,
   title: "Bot Status",
   description:
-    "Freqtrade state, strategy, exchange and run mode for one instance.",
+    "Freqtrade state, strategy, strategy version, exchange, run mode and bot version for one instance.",
   configSchema: BotStatusConfigSchema,
   defaultConfig: BOT_STATUS_DEFAULTS,
   component: BotStatusWidget,

@@ -114,6 +114,34 @@ describe("Workspace schema", () => {
     ).toThrow();
   });
 
+  it("round-trips the shared Trellis arrangement and survives its absence", () => {
+    const trellisDoc = {
+      schema: 1,
+      version: 4,
+      root: null,
+      floating: [],
+      hidden: [],
+      views: {},
+      navigation: null,
+    };
+
+    const shared = decodeWorkspace({
+      ...structuredClone(VALID_WORKSPACE),
+      trellis: trellisDoc,
+    });
+
+    expect(shared.trellis).toEqual(trellisDoc);
+
+    const encoded = Schema.encodeSync(Workspace)(shared);
+    const revived = decodeWorkspace(JSON.parse(JSON.stringify(encoded)));
+    expect(revived).toEqual(shared);
+
+    // Older documents without the field decode with an absent arrangement —
+    // renderers fall back to compiling the NFI layout tree.
+    const plain = decodeWorkspace(structuredClone(VALID_WORKSPACE));
+    expect(plain.trellis).toBeUndefined();
+  });
+
   it("rejects unsupported schema versions explicitly", () => {
     const future = { ...structuredClone(VALID_WORKSPACE), schemaVersion: 999 };
     expect(() => decodePersistedWorkspace(future)).toThrow(/schema version/i);

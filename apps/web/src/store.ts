@@ -33,7 +33,9 @@ export interface PrefsState {
   /**
    * Render widgets below their declared minimum readable size: resize
    * handles stop enforcing the floors and the "needs more room" wall is
-   * replaced by the raw widget at any size.
+   * replaced by the raw widget at any size. ON by default — the guard
+   * walled shared/anonymous dashboards more than it helped, so widgets
+   * render at any size unless someone explicitly re-enables the floors.
    */
   readonly disableWidgetMinSize: boolean;
   /**
@@ -49,7 +51,7 @@ const defaultPrefs = (): PrefsState => ({
   livePaused: false,
   colorTheme: "g100",
   accentColor: "blue",
-  disableWidgetMinSize: false,
+  disableWidgetMinSize: true,
   highContrast: false,
 });
 
@@ -82,7 +84,8 @@ const loadPrefs = (): PrefsState => {
           livePaused: prefs.livePaused === true,
           colorTheme: prefs.colorTheme ?? fallback.colorTheme,
           accentColor: prefs.accentColor ?? fallback.accentColor,
-          disableWidgetMinSize: prefs.disableWidgetMinSize === true,
+          disableWidgetMinSize:
+            prefs.disableWidgetMinSize ?? fallback.disableWidgetMinSize,
           highContrast: prefs.highContrast === true,
         };
       }
@@ -104,6 +107,23 @@ const loadPrefs = (): PrefsState => {
 };
 
 export const prefsStore = new Store<PrefsState>(loadPrefs());
+
+/**
+ * True when this browser already stored explicit shell preferences. Fresh
+ * visitors (no prefs file — incognito, new device) seed from the server's
+ * shared appearance defaults instead, so they match root by default; anyone
+ * who changed a setting keeps their own file untouched.
+ */
+export function hasStoredPrefs(): boolean {
+  try {
+    return (
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem(PREFS_STORAGE_KEY) !== null
+    );
+  } catch {
+    return false;
+  }
+}
 
 prefsStore.subscribe((state) => {
   try {

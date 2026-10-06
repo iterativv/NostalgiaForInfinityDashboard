@@ -17,7 +17,7 @@
  * position instead of a pinned pair.
  */
 
-import { NumberInput } from "@carbon/react";
+import { Button, NumberInput } from "@carbon/react";
 import { Schema } from "effect";
 import { RSI } from "lightweight-charts-indicators";
 import type { Capability } from "@nfi/api-contract";
@@ -59,6 +59,7 @@ import {
 import {
   averageEntryPrice as computeAverageEntry,
   buildTradeMarkers,
+  earliestEntrySecond,
   timeframeSeconds,
 } from "./shared/tradeOverlay";
 import { parseTradeTime } from "./shared/tradeSort";
@@ -77,6 +78,8 @@ import {
   useOpenPositionsSource,
   type SourcedOpenPosition,
 } from "./shared/sources";
+import { useCandlePending } from "./shared/candlePending";
+import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 
 export const POSITION_CANDLE_CAPABILITIES: ReadonlyArray<Capability> = [
   "instances.candles",
@@ -118,9 +121,9 @@ export const PositionCandleConfigSchema = Schema.Struct({
   showBollinger: booleanWithDefault(false),
   showVwap: booleanWithDefault(true),
   showVolume: booleanWithDefault(true),
-  /** Violet entry dots + amber exit arrows from the pair's sub-orders. */
+  /** Violet entry dots + amber exit arrows — always on (legacy flag). */
   showTrades: booleanWithDefault(true),
-  /** Blue dashed avg-entry line with green/red PnL fill. */
+  /** Blue dashed avg-entry line with green/red PnL fill — always on (legacy). */
   showAvgEntry: booleanWithDefault(true),
   subplot: Schema.optionalWith(PositionCandleSubplot, {
     default: (): PositionCandleSubplot => "rsi",
@@ -353,11 +356,6 @@ export function PositionCandleWidget({
     enabled: tradesAccess.allowed,
   });
 
-  const state = queryState(
-    market.allowed ? (candlesQ.error ?? openSrc.error) : null,
-    market.allowed && (candlesQ.isLoading || openSrc.isLoading),
-  );
-
   const marketError = market.allowed
     ? null
     : `Not authorized — needs ${market.missing.join(", ")}`;
@@ -368,6 +366,36 @@ export function PositionCandleWidget({
     applyWidgetSettings(panelId, "position-candle", cfg, p);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
+
+  // Timeframe/pair switches refetch in the background while a cached EMPTY
+  // result for the new key would otherwise flash "no analyzed data" with no
+  // loader. Hold the loading state through a short grace so long analyses
+  // read as loading, and only then fall through to the honest empty state.
+  const candlesPending = useCandlePending(
+    `${candleInstanceId}|${effectivePair}|${cfg.timeframe}|${limit}`,
+    candles.length >= 2,
+    candlesQ.isLoading,
+  );
+
+  const state = queryState(
+    market.allowed ? (candlesQ.error ?? openSrc.error) : null,
+    market.allowed &&
+      (candlesQ.isLoading || openSrc.isLoading || candlesPending),
+  );
+
+  // Strategy timeframe of the candle owner (fleet: the followed pair's
+  // largest-stake owner). Names the empty-state recovery button; never
+  // gates rendering by itself.
+  const strategyTf = useStrategyTimeframe(
+    candleInstanceId === ALL_INSTANCES ? undefined : candleInstanceId,
+  );
+
+  const strategyFallback =
+    strategyTf !== undefined &&
+    strategyTf !== cfg.timeframe &&
+    TIMEFRAME_ITEMS.some((t) => t.id === strategyTf)
+      ? strategyTf
+      : undefined;
 
   // Pair self-heal (same as candle-chart): adopt the settled variant when
   // the followed pair is not on the whitelist.
@@ -412,9 +440,11 @@ export function PositionCandleWidget({
   );
 
   const avgEntry = useDerived(
-    [pairOpen, cfg.showAvgEntry, tradesAccess.allowed] as const,
-    ([open, show, allowed]): number | null => {
-      if (!allowed || !show || open.length === 0) return null;
+    [pairOpen, tradesAccess.allowed] as const,
+    ([open, allowed]): number | null => {
+      // Position charts always show the avg-entry line (no toggle) — the
+      // line plus its PnL shading is the widget's core purpose.
+      if (!allowed || open.length === 0) return null;
 
       return computeAverageEntry(
         open.map((p) => ({
@@ -422,6 +452,34 @@ export function PositionCandleWidget({
           stakeAmount: p.stakeAmount,
         })),
       );
+    },
+    { inputs: shallow },
+  );
+
+  // Short direction drives the PnL fill side: price below entry is profit
+  // for shorts (green below), above is profit for longs. All-short follows
+  // invert; mixed/empty defaults to long shading.
+  const followedIsShort = useDerived(
+    [pairOpen] as const,
+    ([open]): boolean =>
+      open.length > 0 && open.every((p) => p.isShort === true),
+    { inputs: shallow },
+  );
+
+  // Entry-anchored fill start (snapped to the candle bucket, like the
+  // markers): shading covers entry → newest, never pre-entry history.
+  const entrySince = useDerived(
+    [pairOpen, cfg.timeframe] as const,
+    ([open, timeframe]): number | null => {
+      const at = earliestEntrySecond(open);
+
+      if (at === null) return null;
+
+      const tfSec = timeframeSeconds(timeframe);
+
+      if (tfSec === null) return at;
+
+      return Math.floor(at / tfSec) * tfSec;
     },
     { inputs: shallow },
   );
@@ -443,10 +501,10 @@ export function PositionCandleWidget({
   );
 
   const tradeMarkers = useDerived(
-    [pairOrders, candleSecs, cfg.timeframe, cfg.showTrades, tradesAccess.allowed] as const,
-    ([orders, secs, timeframe, show, allowed]): TvTradeMarker[] => {
-      if (!allowed || !show || orders.length === 0 || secs.length === 0)
-        return [];
+    [pairOrders, candleSecs, cfg.timeframe, tradesAccess.allowed] as const,
+    ([orders, secs, timeframe, allowed]): TvTradeMarker[] => {
+      // Position charts always show trade markers (no toggle).
+      if (!allowed || orders.length === 0 || secs.length === 0) return [];
       const tfSec = timeframeSeconds(timeframe);
 
       if (tfSec === null) return [];
@@ -653,18 +711,6 @@ export function PositionCandleWidget({
                 toggled={cfg.showVolume}
                 onToggle={(v) => patch({ showVolume: v })}
               />
-              <SettingsToggle
-                id={`posc-trades-${panelId}`}
-                label="Trade markers"
-                toggled={cfg.showTrades}
-                onToggle={(v) => patch({ showTrades: v })}
-              />
-              <SettingsToggle
-                id={`posc-avgent-${panelId}`}
-                label="Avg entry + PnL"
-                toggled={cfg.showAvgEntry}
-                onToggle={(v) => patch({ showAvgEntry: v })}
-              />
             </div>
             <SettingsSelect
               id={`posc-sub-${panelId}`}
@@ -716,31 +762,13 @@ export function PositionCandleWidget({
               overflow: "hidden",
             }}
           >
-            <PositionPairChips
-              options={chipOptions}
-              activeKey={pinned.length > 0 ? pinned : null}
-              autoActive={pinned.length === 0}
-              onAuto={() => patch({ pair: "" })}
-              onPick={(key) => patch({ pair: key })}
-            />
             <div className="nfi-candle-toolbar">
-              {availablePairs.length > 0 ? (
-                <span title={`${candles.length} candles loaded`}>
-                  <PairCombobox
-                    id={`posc-pair-${panelId}`}
-                    value={effectivePair}
-                    pairs={availablePairs}
-                    onChange={(pair) => patch({ pair })}
-                  />
-                </span>
-              ) : (
-                <span
-                  className="nfi-candle-pair"
-                  title={`${candles.length} candles loaded`}
-                >
-                  {effectivePair}
-                </span>
-              )}
+              <span
+                className="nfi-candle-pair"
+                title={`${candles.length} candles loaded`}
+              >
+                {effectivePair}
+              </span>
               <div className="nfi-tf-group" role="group" aria-label="Timeframe">
                 {TIMEFRAME_ITEMS.map((tf) => (
                   <button
@@ -753,11 +781,24 @@ export function PositionCandleWidget({
                     }
                     onClick={() => patch({ timeframe: tf.id })}
                     aria-pressed={cfg.timeframe === tf.id}
+                    title={
+                      tf.id === strategyTf
+                        ? "Strategy timeframe — always has live candles"
+                        : `Show ${tf.id} candles`
+                    }
                   >
                     {tf.text}
+                    {tf.id === strategyTf ? " ●" : ""}
                   </button>
                 ))}
               </div>
+              <PositionPairChips
+                options={chipOptions}
+                activeKey={pinned.length > 0 ? pinned : null}
+                autoActive={pinned.length === 0}
+                onAuto={() => patch({ pair: "" })}
+                onPick={(key) => patch({ pair: key })}
+              />
               {indicatorsAccess.allowed ? (
                 <div
                   className="nfi-tf-group"
@@ -819,41 +860,6 @@ export function PositionCandleWidget({
                       {t.text}
                     </button>
                   ))}
-                </div>
-              ) : null}
-              {tradesAccess.allowed ? (
-                <div
-                  className="nfi-tf-group"
-                  role="group"
-                  aria-label="Position history"
-                  title="Toggle trade markers and avg-entry line"
-                >
-                  <button
-                    type="button"
-                    className={
-                      cfg.showTrades
-                        ? "nfi-tf-btn nfi-tf-active"
-                        : "nfi-tf-btn"
-                    }
-                    onClick={() => patch({ showTrades: !cfg.showTrades })}
-                    aria-pressed={cfg.showTrades}
-                    title="Toggle trade markers (entries/exits)"
-                  >
-                    Trades
-                  </button>
-                  <button
-                    type="button"
-                    className={
-                      cfg.showAvgEntry
-                        ? "nfi-tf-btn nfi-tf-active"
-                        : "nfi-tf-btn"
-                    }
-                    onClick={() => patch({ showAvgEntry: !cfg.showAvgEntry })}
-                    aria-pressed={cfg.showAvgEntry}
-                    title="Toggle avg-entry line with PnL shading"
-                  >
-                    Avg
-                  </button>
                 </div>
               ) : null}
               <span className="nfi-candle-quote">
@@ -922,6 +928,9 @@ export function PositionCandleWidget({
               subplot={subplot}
               tradeMarkers={tradeMarkers}
               avgEntryPrice={avgEntry}
+              avgEntryIsShort={followedIsShort}
+              avgEntrySince={entrySince}
+              followMarkers
             />
           </div>
         ) : (
@@ -934,9 +943,27 @@ export function PositionCandleWidget({
             hint={
               effectivePair.length === 0
                 ? "Flat is a position too — the chart follows your next open trade automatically. Pick an instance in ⚙ settings."
-                : `Freqtrade has no analyzed data for ${effectivePair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed.`
+                : strategyFallback !== undefined
+                  ? `Your bot analyzes ${strategyFallback} — ${cfg.timeframe} isn't analyzed for ${effectivePair}, so there's no live chart for it.`
+                  : `Freqtrade has no analyzed data for ${effectivePair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed.`
             }
-          />
+          >
+            {effectivePair.length > 0 && strategyFallback !== undefined ? (
+              <Button
+                size="sm"
+                kind="tertiary"
+                onClick={() => {
+                  const next = TIMEFRAME_ITEMS.find(
+                    (t) => t.id === strategyFallback,
+                  );
+
+                  if (next) patch({ timeframe: next.id });
+                }}
+              >
+                Show {strategyFallback} instead
+              </Button>
+            ) : null}
+          </EmptyState>
         )}
       </WidgetFrame>
     </>

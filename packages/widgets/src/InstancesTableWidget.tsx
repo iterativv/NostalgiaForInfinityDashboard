@@ -106,11 +106,23 @@ function InstanceStateCell({ instance }: { instance: FreqtradeInstance }) {
   );
 }
 
-/** Strategy name — shares the `instances.status` key with the state cell. */
+/** Strategy name + version — shares the `instances.status` key with the state cell. */
 function InstanceStrategyCell({ instance }: { instance: FreqtradeInstance }) {
   const status = useCapability("instances.status", { id: instance.id });
 
-  return status.data?.strategy ?? "—";
+  const strategy = status.data?.strategy;
+  const strategyVersion = status.data?.strategyVersion;
+
+  if (!strategy && !strategyVersion) return "—";
+
+  return (
+    <span title={strategyVersion ? `${strategy ?? ""} ${strategyVersion}`.trim() : strategy}>
+      {strategy ?? strategyVersion}
+      {strategy && strategyVersion ? (
+        <span style={{ opacity: 0.55 }}> {strategyVersion}</span>
+      ) : null}
+    </span>
+  );
 }
 
 /** Open-trade count — `instances.open-positions` per rendered cell. */

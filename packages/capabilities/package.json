@@ -14,17 +14,18 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@effect/platform": "^0.97.0",
+    "@effect/platform": "^0.97.2",
     "@nfi/api-contract": "workspace:*",
     "@nfi/db": "workspace:*",
     "@nfi/freqtrade-client": "workspace:*",
-    "effect": "^3.17.14"
+    "effect": "^3.22.2"
   },
   "devDependencies": {
     "@repo/eslint-config": "workspace:*",
     "@repo/typescript-config": "workspace:*",
-    "eslint": "10.9.1",
+    "@types/node": "26.6.4",
+    "eslint": "10.12.0",
     "typescript": "7.0.2",
-    "vitest": "^3.0.0"
+    "vitest": "^5.0.3"
   }
 }

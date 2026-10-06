@@ -3,6 +3,7 @@
 
 import { Schema } from "effect";
 import { Store } from "@tanstack/store";
+import type { LayoutDocument } from "@danfessler/trellis-react";
 import {
   decodePersistedWorkspace,
   migrateWorkspace,
@@ -545,6 +546,106 @@ function commit(next: Workspace, prev: Workspace): boolean {
   return true;
 }
 
+/**
+ * Record a Trellis arrangement change (divider drag, split/dock, preset
+ * apply, tab move, view open/close) against a page.
+ *
+ * Trellis owns its layout after mount — the NFI `layout` tree only seeds the
+ * first render. Without capturing the Trellis document here, arranging the
+ * dashboard and hitting "Save layout for anonymous" persists panels/configs
+ * but NOT the arrangement, so incognito keeps seeing the old layout and the
+ * save looks broken. The Trellis document (opaque JSON from `getDocument()`)
+ * is stored on the workspace as `trellis`, making the backend the single
+ * source of truth every visitor renders.
+ *
+ * Like `commit`, preview edits stage (no autosave, no Home localStorage)
+ * until the banner's Save; normal edits persist Home locally instantly and
+ * mirror to the backend debounced. Deep-equal docs are no-ops so the
+ * Trellis `onDocumentChange` echo after a `setDocument` never churns the
+ * version. Returns false when nothing changed or the page is unknown.
+ */
+export function updateTrellisDocument(
+  pageId: string,
+  doc: LayoutDocument,
+): boolean {
+
+  const current =
+    workspaceStore.state.activePageId === pageId
+      ? workspaceStore.state.workspace
+      : pageCache.get(pageId);
+
+  if (!current) return false;
+
+  let same: boolean;
+
+  try {
+    same =
+      JSON.stringify(current.trellis ?? null) === JSON.stringify(doc);
+  } catch {
+    same = false;
+  }
+
+  if (same) return false;
+
+  let cloned: unknown;
+
+  try {
+    cloned = structuredClone(doc);
+  } catch {
+    return false;
+  }
+
+  const next: Workspace = {
+    ...current,
+    // Workspace["trellis"] is opaque (Schema.Unknown) by design: trellis
+    // re-validates the document at mount and corrupt docs reset silently.
+    trellis: cloned,
+    version: current.version + 1,
+  };
+
+  snapshotPreviewBase(current);
+  const previewing = isViewAsActive();
+  pageCache.set(next.id, next);
+
+  if (workspaceStore.state.activePageId === pageId) {
+    if (isHomePageId(next.id)) {
+      if (!previewing) saveHomePageLocal(next);
+      workspaceStore.setState((state) => ({
+        ...state,
+        workspace: next,
+        pages: state.pages.map((p) =>
+          p.id === next.id ? { ...p, name: next.name } : p,
+        ),
+        status: "saved",
+        detail: null,
+        lastSavedAt: new Date().toISOString(),
+      }));
+
+      if (
+        !previewing &&
+        capabilitiesStore.state.granted.includes("workspace.save")
+      ) {
+        schedulePersist();
+      }
+
+      return true;
+    }
+
+    workspaceStore.setState((state) => ({
+      ...state,
+      workspace: next,
+    }));
+
+    if (!previewing) schedulePersist();
+
+    return true;
+  }
+
+  // Inactive page (should not happen for Trellis, which only mounts the
+  // active page): cache holds it; the next save of that page carries it.
+  return true;
+}
+
 /** No preset pages ship — every page is editable. */
 export function isActivePagePreset(): boolean {
   return false;
@@ -690,6 +791,7 @@ function toSummaries(
     name: home.name,
     preset: false,
     home: true,
+    icon: normalizePageIcon(home.icon),
   };
 
   // Preset pages in catalog order, then custom pages alphabetically — both
@@ -706,7 +808,8 @@ function toSummaries(
         name: w.name,
         preset: true,
         home: false,
-        icon: getPresetPage(w.id)?.icon ?? normalizePageIcon(w.icon),
+        // A stored icon override wins; otherwise the preset's built-in icon.
+        icon: normalizePageIcon(w.icon) ?? getPresetPage(w.id)?.icon,
       });
     } else {
       customs.push({
@@ -1095,8 +1198,7 @@ export async function deletePage(pageId: string): Promise<boolean> {
 }
 
 /** Rename a custom or Home page. */
-export function renameCustomPage(pageId: string, name: string): boolean {
-  const trimmed = name.trim();
+export function renameCustomPage(pageId: string, name: string): boolean {  const trimmed = name.trim();
 
   if (trimmed.length === 0) return false;
   const cached = pageCache.get(pageId);
@@ -1163,6 +1265,77 @@ export function renameCustomPage(pageId: string, name: string): boolean {
         payload: { workspace: next },
       }),
     ).catch(() => undefined);
+  }
+
+  return true;
+}
+
+/**
+ * Change any page's pages-bar icon (Home, preset or custom). `undefined`
+ * clears the override: custom pages render without an icon, Home renders
+ * its house glyph, presets fall back to their built-in icons. Persists like
+ * a rename (active page via autosave, inactive directly, Home locally +
+ * shared).
+ */
+export function setPageIcon(pageId: string, icon: PageIconKey | undefined): boolean {
+  const cached = pageCache.get(pageId);
+
+  if (!cached) return false;
+  snapshotPreviewBase(cached);
+
+  const next: Workspace = {
+    ...cached,
+    icon,
+    version: cached.version + 1,
+  };
+
+  pageCache.set(pageId, next);
+  const isHome = isHomePageId(pageId);
+  const previewing = isViewAsActive();
+
+  if (isHome && !previewing) saveHomePageLocal(next);
+
+  // Preset fallback for the summary when the override is cleared.
+  const fallbackIcon = isPresetPageId(pageId)
+    ? getPresetPage(pageId)?.icon
+    : undefined;
+
+  workspaceStore.setState((state) => ({
+    ...state,
+    workspace: state.activePageId === pageId ? next : state.workspace,
+    pages: state.pages.map((p) =>
+      p.id === pageId ? { ...p, icon: icon ?? fallbackIcon } : p,
+    ),
+    ...(isHome && state.activePageId === pageId
+      ? {
+          status: "saved" as const,
+          detail: null,
+          lastSavedAt: new Date().toISOString(),
+        }
+      : null),
+  }));
+
+  if (previewing) return true;
+
+  if (workspaceStore.state.activePageId === pageId) {
+    if (
+      !isHome ||
+      capabilitiesStore.state.granted.includes("workspace.save")
+    ) {
+      schedulePersist();
+    }
+  } else {
+    if (
+      !isHome ||
+      capabilitiesStore.state.granted.includes("workspace.save")
+    ) {
+      void runApi((client) =>
+        client.Workspace.save({
+          path: { id: next.id },
+          payload: { workspace: next },
+        }),
+      ).catch(() => undefined);
+    }
   }
 
   return true;

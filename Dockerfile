@@ -38,6 +38,9 @@ COPY packages/typescript-config/package.json packages/typescript-config/
 COPY packages/ui/package.json packages/ui/
 COPY packages/widget-sdk/package.json packages/widget-sdk/
 COPY packages/widgets/package.json packages/widgets/
+# Vendored SheetJS tarball pinned by the lockfile as a file: dependency —
+# `pnpm install --frozen-lockfile` reads it during the manifest-only stage.
+COPY packages/widgets/vendor/ packages/widgets/vendor/
 RUN pnpm install --frozen-lockfile
 
 # Sources (node_modules etc. are excluded by .dockerignore, keeping the

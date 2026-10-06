@@ -186,6 +186,7 @@ const summary = (id: string, name: string, reachable = true) => ({
   version: reachable ? "2025.6" : undefined,
   state: reachable ? "running" : undefined,
   strategy: "SampleStrategy",
+  strategyVersion: reachable ? "v18.0.119" : undefined,
   dryRun: true,
   openCount: reachable ? 2 : undefined,
   maxOpenTrades: 5,
@@ -234,6 +235,7 @@ export const FIXTURES = {
   "bot.status": {
     state: "running",
     strategy: "SampleStrategy",
+    strategyVersion: "v18.0.119",
     exchange: "binance",
     stakeCurrency: "USDT",
     dryRun: true,
@@ -242,6 +244,7 @@ export const FIXTURES = {
   "instances.status": {
     state: "running",
     strategy: "SampleStrategy",
+    strategyVersion: "v18.0.119",
     exchange: "binance",
     stakeCurrency: "USDT",
     dryRun: true,
@@ -591,6 +594,7 @@ export const FIXTURES = {
     maxOpenTrades: 5,
     dryRun: true,
     tradingMode: "futures",
+    timeframe: "5m",
   },
   "macro.fed-rate": {
     targetLower: 4.0,
