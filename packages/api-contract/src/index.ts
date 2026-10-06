@@ -434,6 +434,13 @@ export const CandlesResponse = Schema.Struct({
   pair: Schema.String,
   timeframe: Schema.String,
   candles: Schema.Array(Candle),
+  /**
+   * Where the candles came from: `analyzed` is freqtrade's `pair_candles`
+   * (only the strategy timeframe has data); `exchange` is the public
+   * exchange market-data fallback the backend serves for timeframes the
+   * bot never analyzed. Absent on old snapshots — read as `analyzed`.
+   */
+  source: Schema.optional(Schema.Literal("analyzed", "exchange")),
 });
 
 export type CandlesResponse = typeof CandlesResponse.Type;

@@ -29,11 +29,12 @@ import {
   EmptyState,
   shallow,
   useDerived,
+  useLocalStore,
   useStoreEffect,
   WidgetFrame,
 } from "@nfi/ui";
 import { useCapability } from "./live/live";
-import { applyWidgetSettings } from "./shared/panelConfig";
+import { useWidgetConfigSink } from "./shared/sessionConfig";
 import {
   InstanceIdField,
   booleanWithDefault,
@@ -68,6 +69,7 @@ import {
   timeframeSeconds,
   type PositionMarkerEvent,
 } from "./shared/tradeOverlay";
+import { fitWindowToEntry } from "./shared/positionFit";
 import { parseTradeTime } from "./shared/tradeSort";
 import {
   buildIndicatorOverlays,
@@ -332,7 +334,15 @@ export function PositionCandlePublicWidget({
   config,
   panelId,
 }: WidgetProps<PositionCandlePublicConfig>) {
-  const cfg = config;
+  // Session-aware binding — this widget renders for anonymous visitors on
+  // shared pages, where the panel sink refuses writes; patches then live
+  // in a per-browser session layer instead of being silent no-ops.
+  const { config: cfg, patch } = useWidgetConfigSink(
+    panelId,
+    "position-candle-public",
+    config,
+  );
+
   const limit = clampInt(cfg.limit, 200, 20, 1000);
 
   const marketAccess = useWidgetAccess([
@@ -392,9 +402,6 @@ export function PositionCandlePublicWidget({
     : `Not authorized — needs ${marketAccess.missing.join(", ")}`;
 
   const showSettings = useWidgetSettingsOpen(panelId);
-
-  const patch = (p: Partial<PositionCandlePublicConfig>) =>
-    applyWidgetSettings(panelId, "position-candle-public", cfg, p);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
 
@@ -481,7 +488,7 @@ export function PositionCandlePublicWidget({
     ([open, timeframe]): number | null => {
       const at = earliestEntrySecond(open);
 
-      if (at === null) return null;
+      if (at === null) return at;
 
       const tfSec = timeframeSeconds(timeframe);
 
@@ -491,6 +498,55 @@ export function PositionCandlePublicWidget({
     },
     { inputs: shallow },
   );
+
+  // Window auto-fit (same policy as the sensitive twin): zoom out until
+  // the followed position's entry → now fits in the window, at most once
+  // per (pair, entry) so manual picks are never fought over.
+  const fitKeyStore = useLocalStore<string | null>(null);
+
+  useStoreEffect(() => {
+    const entrySec = earliestEntrySecond(pairOpen);
+
+    if (entrySec === null || effectivePair.length === 0) return;
+
+    const fit = fitWindowToEntry(entrySec, cfg.timeframe, limit);
+
+    if (fit === null) return;
+
+    const fitKey = `${effectivePair}@${entrySec}`;
+
+    if (fitKeyStore.state === fitKey) return;
+    fitKeyStore.setState(() => fitKey);
+    patch({ timeframe: fit.timeframe, limit: fit.limit });
+  }, [pairOpen, cfg.timeframe, limit, effectivePair]);
+
+  // Data-shortfall refit (same policy as the sensitive twin): when the
+  // bot's rolling analyzed window starts AFTER the entry, one coarser
+  // step lands on the exchange-backed timeframe that reaches it.
+  const refitKeyStore = useLocalStore<string | null>(null);
+
+  useStoreEffect(() => {
+    const entrySec = earliestEntrySecond(pairOpen);
+
+    if (entrySec === null || effectivePair.length === 0) return;
+
+    const firstCandle = candles[0];
+
+    if (!firstCandle || Math.floor(firstCandle.time / 1000) <= entrySec)
+      return;
+
+    const refitKey = `${effectivePair}@${entrySec}`;
+
+    if (refitKeyStore.state === refitKey) return;
+
+    const fit = fitWindowToEntry(entrySec, cfg.timeframe, limit, {
+      mode: "coarser-only",
+    });
+
+    if (fit === null) return;
+    refitKeyStore.setState(() => refitKey);
+    patch({ timeframe: fit.timeframe, limit: fit.limit });
+  }, [pairOpen, candles, cfg.timeframe, limit, effectivePair]);
 
   const positionMarkers = useDerived(
     [
@@ -611,6 +667,9 @@ export function PositionCandlePublicWidget({
   const lastRsi = cfg.subplot === "rsi" ? lastPlotValue(rsiPlots) : null;
   const narrow = useNarrowMode(420);
   const availablePairs = pairsQ.data?.pairs ?? EMPTY_PAIRS;
+
+  // Exchange-sourced candles (backend fallback for unanalyzed timeframes).
+  const isMarketData = candlesQ.data?.source === "exchange";
 
   const chipOptions: PositionChipOption[] = buckets.map((b) => ({
     key: b.pair,
@@ -820,6 +879,14 @@ export function PositionCandlePublicWidget({
               >
                 {effectivePair}
               </span>
+              {isMarketData ? (
+                <span
+                  className="nfi-candle-range"
+                  title={`Exchange market data — ${cfg.timeframe} isn't analyzed by this bot, so candles come straight from the exchange`}
+                >
+                  market
+                </span>
+              ) : null}
               <div className="nfi-tf-group" role="group" aria-label="Timeframe">
                 {TIMEFRAME_ITEMS.map((tf) => (
                   <button

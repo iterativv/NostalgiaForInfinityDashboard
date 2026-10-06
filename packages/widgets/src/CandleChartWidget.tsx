@@ -34,7 +34,7 @@ import {
   WidgetFrame,
 } from "@nfi/ui";
 import { useCapability } from "./live/live";
-import { applyWidgetSettings } from "./shared/panelConfig";
+import { useWidgetConfigSink } from "./shared/sessionConfig";
 import { useCandlePending } from "./shared/candlePending";
 import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 import {
@@ -266,7 +266,15 @@ export function CandleChartWidget({
   config,
   panelId,
 }: WidgetProps<CandleChartConfig>) {
-  const cfg = config;
+  // Session-aware binding: patches persist for signed-in visitors and
+  // fall back to a per-browser session layer when the panel sink refuses
+  // writes (anonymous shared dashboards) — toolbar buttons always work.
+  const { config: cfg, patch } = useWidgetConfigSink(
+    panelId,
+    "candle-chart",
+    config,
+  );
+
   const limit = clampInt(cfg.limit, 200, 20, 1000);
   const market = useWidgetAccess([CANDLE_MARKET_CAPABILITY]);
   const indicatorsAccess = useWidgetAccess([CANDLE_INDICATORS_CAPABILITY]);
@@ -315,9 +323,6 @@ export function CandleChartWidget({
   );
 
   const showSettings = useWidgetSettingsOpen(panelId);
-
-  const patch = (p: Partial<CandleChartConfig>) =>
-    applyWidgetSettings(panelId, "candle-chart", cfg, p);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
 
@@ -641,6 +646,11 @@ export function CandleChartWidget({
   const availablePairs = pairsQ.data?.pairs ?? [];
   const strategyPlots = plotQ.data;
 
+  // Exchange-sourced candles (the backend's fallback for timeframes the
+  // bot never analyzed) — labelled so bot analysis vs raw market data is
+  // never confused.
+  const isMarketData = candlesQ.data?.source === "exchange";
+
   const strategyHints = strategyPlots
     ? [
         ...strategyPlots.mainPlot,
@@ -858,6 +868,14 @@ export function CandleChartWidget({
                   {cfg.pair}
                 </span>
               )}
+              {isMarketData ? (
+                <span
+                  className="nfi-candle-range"
+                  title={`Exchange market data — ${cfg.timeframe} isn't analyzed by this bot, so candles come straight from the exchange`}
+                >
+                  market
+                </span>
+              ) : null}
               <div className="nfi-tf-group" role="group" aria-label="Timeframe">
                 {TIMEFRAME_ITEMS.map((tf) => (
                   <button

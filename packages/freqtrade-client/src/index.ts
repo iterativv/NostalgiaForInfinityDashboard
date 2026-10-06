@@ -154,6 +154,23 @@ export interface FreqtradeClientService {
     timeframe?: string,
     limit?: number,
   ) => Effect.Effect<CandlesResponse, FreqtradeError>;
+  /**
+   * Public exchange market candles for a timeframe the bot never analyzed.
+   *
+   * Freqtrade's `pair_candles` (above) only ever serves the strategy's
+   * analyzed timeframe — every other timeframe comes back empty on a
+   * running bot, so `getCandles` alone can never power a timeframe
+   * switcher. This reads the exchange's public klines endpoint directly
+   * (no API keys): same OHLCV, any timeframe, tagged `source: "exchange"`
+   * so the UI can distinguish bot analysis from raw market data.
+   * Unsupported exchanges fail with a clear reason — callers keep the
+   * analyzed result then.
+   */
+  readonly getMarketCandles: (
+    pair: string,
+    timeframe: string,
+    limit?: number,
+  ) => Effect.Effect<CandlesResponse, FreqtradeError>;
   readonly getAvailablePairs: (
     timeframe?: string,
     stakeCurrency?: string,
@@ -1255,6 +1272,166 @@ const breakerFor = (baseUrl: string): BreakerState => {
   return state;
 };
 
+// --- Public exchange market data (klines fallback) ----------------------------
+
+/** Exchange identity of one freqtrade instance (`show_config` derived). */
+interface ExchangeIdentity {
+  readonly exchange: string;
+  readonly tradingMode: string | undefined;
+}
+
+/**
+ * Exchange identities per freqtrade base URL, TTL-cached. Services are
+ * rebuilt per request/tick, so the cache must be module-level like the
+ * breakers; the TTL keeps one `show_config` probe serving many candle
+ * polls and lets market data survive short bot outages.
+ */
+const IDENTITY_TTL_MS = 10 * 60_000;
+
+const identityCache = new Map<string, { identity: ExchangeIdentity; at: number }>();
+
+/**
+ * Binance public klines hosts. Futures/margin settle on fapi; everything
+ * else (spot) on the plain REST host. Both are unauthenticated endpoints.
+ */
+const binanceKlinesHost = (tradingMode: string | undefined): string =>
+  tradingMode === "futures" || tradingMode === "margin"
+    ? "https://fapi.binance.com/fapi/v1"
+    : "https://api.binance.com/api/v3";
+
+/**
+ * freqtrade pair → exchange symbol: `BTC/USDT` and its settled futures
+ * form `BTC/USDT:USDT` both map to `BTCUSDT` (the settle suffix carries
+ * no extra letters on binance-style symbols).
+ */
+const exchangeSymbolOf = (pair: string): string =>
+  pair.split(":")[0]!.replace("/", "").toUpperCase();
+
+/**
+ * One raw kline row as binance sends it:
+ * `[openTime, "open", "high", "low", "close", "volume", …]` — numbers are
+ * strings except the leading open time.
+ */
+type RawKlineRow = ReadonlyArray<unknown>;
+
+/** Kline open times are epoch-millis numbers (strings/null fail). */
+const isKlineTime = (value: unknown): value is number =>
+  Number.isFinite(value);
+
+/** One decoded kline row: `[openTime, open, high, low, close, volume, …]`. */
+const klineRowToCandle = (row: RawKlineRow): Candle | null => {
+  if (row.length < 6) return null;
+
+  const time = row[0];
+  const open = row[1];
+  const high = row[2];
+  const low = row[3];
+  const close = row[4];
+  const volume = row[5];
+  const values = [open, high, low, close, volume].map(Number);
+
+  if (!isKlineTime(time) || values.some((v) => !Number.isFinite(v))) {
+    return null;
+  }
+
+  return {
+    time,
+    open: values[0]!,
+    high: values[1]!,
+    low: values[2]!,
+    close: values[3]!,
+    volume: values[4]!,
+  };
+};
+
+/** Public-exchange request budget — snappy enough for the 30s candle poll. */
+const MARKET_DATA_TIMEOUT_MS = 8_000;
+
+/**
+ * Fetch public klines for one pair/timeframe straight from the exchange
+ * (no freqtrade auth, no breaker — a dead bot or a dead exchange are
+ * separate outages and must not fail each other fast).
+ */
+const fetchExchangeKlines = (
+  http: HttpClient.HttpClient,
+  identity: ExchangeIdentity,
+  pair: string,
+  timeframe: string,
+  limit: number,
+): Effect.Effect<CandlesResponse, FreqtradeError> => {
+  if (identity.exchange.toLowerCase() !== "binance") {
+    return new FreqtradeError({
+      operation: "market-candles",
+      reason: `no public market-data fallback for exchange ${identity.exchange}`,
+    });
+  }
+
+  const symbol = exchangeSymbolOf(pair);
+
+  if (symbol.length === 0) {
+    return new FreqtradeError({
+      operation: "market-candles",
+      reason: `cannot map pair ${pair} to an exchange symbol`,
+    });
+  }
+
+  // Both hosts cap klines at 1000+ per call; the capability never asks for
+  // more anyway (the UI limit ceiling is 1000).
+  const capped = Math.min(Math.max(limit, 20), 1000);
+
+  return Effect.gen(function* () {
+    const request = HttpClientRequest.get(
+      `${binanceKlinesHost(identity.tradingMode)}/klines?symbol=${symbol}&interval=${encodeURIComponent(timeframe)}&limit=${capped}`,
+    );
+
+    const response = yield* http.execute(request).pipe(
+      Effect.timeoutFail({
+        duration: MARKET_DATA_TIMEOUT_MS,
+        onTimeout: () =>
+          new FreqtradeError({
+            operation: "market-candles",
+            reason: `exchange klines for ${symbol} ${timeframe} timed out`,
+          }),
+      }),
+      Effect.mapError((cause) =>
+        toFreqtradeError("market-candles", cause),
+      ),
+    );
+
+    if (response.status >= 400) {
+      return yield* new FreqtradeError({
+        operation: "market-candles",
+        reason: `exchange klines for ${symbol} ${timeframe} returned ${response.status}`,
+        status: response.status,
+      });
+    }
+
+    const body: unknown = yield* response.json.pipe(
+      Effect.mapError((cause) => toFreqtradeError("market-candles", cause)),
+    );
+
+    if (!Array.isArray(body)) {
+      return yield* new FreqtradeError({
+        operation: "market-candles",
+        reason: "exchange klines returned a non-array body",
+      });
+    }
+
+    const candles = body
+      .filter((row): row is RawKlineRow => Array.isArray(row))
+      .map(klineRowToCandle)
+      .filter((c): c is Candle => c !== null)
+      .sort((a, b) => a.time - b.time);
+
+    return {
+      pair,
+      timeframe,
+      candles,
+      source: "exchange",
+    } satisfies CandlesResponse;
+  });
+};
+
 export const makeFreqtradeService = (
   resolved: ResolvedFreqtradeConfig,
   http: HttpClient.HttpClient,
@@ -1409,6 +1586,42 @@ export const makeFreqtradeService = (
           }),
         ),
       );
+
+    /**
+     * Exchange identity for the market-data fallback (`getMarketCandles`),
+     * TTL-cached module-level so the per-tick service rebuilds share one
+     * `show_config` probe per bot. A stale entry still serves market data
+     * while the bot itself is briefly unreachable.
+     */
+    const exchangeIdentity = (): Effect.Effect<ExchangeIdentity, FreqtradeError> => {
+      const cached = identityCache.get(baseUrl);
+
+      if (cached && Date.now() - cached.at < IDENTITY_TTL_MS) {
+        return Effect.succeed(cached.identity);
+      }
+
+      return getJson("/api/v1/show_config", "show_config", ConfigPayload).pipe(
+        Effect.flatMap((raw) => {
+          const exchange = raw.exchange?.trim().toLowerCase();
+
+          if (!exchange) {
+            return new FreqtradeError({
+              operation: "market-candles",
+              reason: "bot config does not name an exchange",
+            });
+          }
+
+          const identity: ExchangeIdentity = {
+            exchange,
+            tradingMode: raw.trading_mode,
+          };
+
+          identityCache.set(baseUrl, { identity, at: Date.now() });
+
+          return Effect.succeed(identity);
+        }),
+      );
+    };
 
     /**
      * Freqtrade's `GET /api/v1/trades` is OLDEST-anchored: `offset` skips the
@@ -1737,7 +1950,18 @@ export const makeFreqtradeService = (
         ).pipe(
           Effect.map(
             (candles) =>
-              ({ pair, timeframe, candles }) satisfies CandlesResponse,
+              ({
+                pair,
+                timeframe,
+                candles,
+                source: "analyzed",
+              }) satisfies CandlesResponse,
+          ),
+        ),
+      getMarketCandles: (pair, timeframe, limit = 200) =>
+        exchangeIdentity().pipe(
+          Effect.flatMap((identity) =>
+            fetchExchangeKlines(http, identity, pair, timeframe, limit),
           ),
         ),
       getAvailablePairs: (timeframe, stakeCurrency) => {

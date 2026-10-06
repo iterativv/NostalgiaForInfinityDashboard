@@ -26,11 +26,12 @@ import {
   EmptyState,
   shallow,
   useDerived,
+  useLocalStore,
   useStoreEffect,
   WidgetFrame,
 } from "@nfi/ui";
 import { useCapability } from "./live/live";
-import { applyWidgetSettings } from "./shared/panelConfig";
+import { useWidgetConfigSink } from "./shared/sessionConfig";
 import {
   InstanceIdField,
   booleanWithDefault,
@@ -62,6 +63,7 @@ import {
   earliestEntrySecond,
   timeframeSeconds,
 } from "./shared/tradeOverlay";
+import { fitWindowToEntry } from "./shared/positionFit";
 import { parseTradeTime } from "./shared/tradeSort";
 import {
   buildIndicatorOverlays,
@@ -286,7 +288,14 @@ export function PositionCandleWidget({
   config,
   panelId,
 }: WidgetProps<PositionCandleConfig>) {
-  const cfg = config;
+  // Session-aware binding — patches persist, or fall back to a per-browser
+  // session layer when the panel sink refuses writes (anonymous visitors).
+  const { config: cfg, patch } = useWidgetConfigSink(
+    panelId,
+    "position-candle",
+    config,
+  );
+
   const limit = clampInt(cfg.limit, 200, 20, 1000);
   const fleet = cfg.instanceId === ALL_INSTANCES;
 
@@ -361,9 +370,6 @@ export function PositionCandleWidget({
     : `Not authorized — needs ${market.missing.join(", ")}`;
 
   const showSettings = useWidgetSettingsOpen(panelId);
-
-  const patch = (p: Partial<PositionCandleConfig>) =>
-    applyWidgetSettings(panelId, "position-candle", cfg, p);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
 
@@ -473,7 +479,7 @@ export function PositionCandleWidget({
     ([open, timeframe]): number | null => {
       const at = earliestEntrySecond(open);
 
-      if (at === null) return null;
+      if (at === null) return at;
 
       const tfSec = timeframeSeconds(timeframe);
 
@@ -483,6 +489,59 @@ export function PositionCandleWidget({
     },
     { inputs: shallow },
   );
+
+  // Window auto-fit: the chart must show the followed position's entry →
+  // now, which the default 200 × 5m window cannot for positions older
+  // than ~17h. Zoom out (timeframe and/or limit) until the entry fits.
+  // Applied at most once per (pair, entry) so a user's manual timeframe
+  // pick is never fought over; aging windows refit when a NEW entry opens.
+  const fitKeyStore = useLocalStore<string | null>(null);
+
+  useStoreEffect(() => {
+    const entrySec = earliestEntrySecond(pairOpen);
+
+    if (entrySec === null || effectivePair.length === 0) return;
+
+    const fit = fitWindowToEntry(entrySec, cfg.timeframe, limit);
+
+    if (fit === null) return;
+
+    const fitKey = `${effectivePair}@${entrySec}`;
+
+    if (fitKeyStore.state === fitKey) return;
+    fitKeyStore.setState(() => fitKey);
+    patch({ timeframe: fit.timeframe, limit: fit.limit });
+  }, [pairOpen, cfg.timeframe, limit, effectivePair]);
+
+  // Data-shortfall refit: freqtrade only keeps a rolling analyzed window
+  // (a few hundred candles), so an old entry can sit BEFORE the loaded
+  // data even at max limit. One coarser step lands on the exchange-backed
+  // timeframe, whose history reaches years back. Also once per (pair,
+  // entry) — the user keeps whatever they switch to manually afterwards.
+  const refitKeyStore = useLocalStore<string | null>(null);
+
+  useStoreEffect(() => {
+    const entrySec = earliestEntrySecond(pairOpen);
+
+    if (entrySec === null || effectivePair.length === 0) return;
+
+    const firstCandle = candles[0];
+
+    if (!firstCandle || Math.floor(firstCandle.time / 1000) <= entrySec)
+      return;
+
+    const refitKey = `${effectivePair}@${entrySec}`;
+
+    if (refitKeyStore.state === refitKey) return;
+
+    const fit = fitWindowToEntry(entrySec, cfg.timeframe, limit, {
+      mode: "coarser-only",
+    });
+
+    if (fit === null) return;
+    refitKeyStore.setState(() => refitKey);
+    patch({ timeframe: fit.timeframe, limit: fit.limit });
+  }, [pairOpen, candles, cfg.timeframe, limit, effectivePair]);
 
   const candleSecs = useDerived(
     bars,
@@ -569,6 +628,9 @@ export function PositionCandleWidget({
 
   const narrow = useNarrowMode(420);
   const availablePairs = pairsQ.data?.pairs ?? EMPTY_PAIRS;
+
+  // Exchange-sourced candles (backend fallback for unanalyzed timeframes).
+  const isMarketData = candlesQ.data?.source === "exchange";
 
   const chipOptions: PositionChipOption[] = buckets.map((b) => ({
     key: b.pair,
@@ -769,6 +831,14 @@ export function PositionCandleWidget({
               >
                 {effectivePair}
               </span>
+              {isMarketData ? (
+                <span
+                  className="nfi-candle-range"
+                  title={`Exchange market data — ${cfg.timeframe} isn't analyzed by this bot, so candles come straight from the exchange`}
+                >
+                  market
+                </span>
+              ) : null}
               <div className="nfi-tf-group" role="group" aria-label="Timeframe">
                 {TIMEFRAME_ITEMS.map((tf) => (
                   <button

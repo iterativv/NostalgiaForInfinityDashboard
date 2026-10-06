@@ -41,7 +41,7 @@ import {
   WidgetFrame,
 } from "@nfi/ui";
 import { useCapability } from "./live/live";
-import { applyWidgetSettings } from "./shared/panelConfig";
+import { useWidgetConfigSink } from "./shared/sessionConfig";
 import { useCandlePending } from "./shared/candlePending";
 import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 import {
@@ -230,7 +230,14 @@ export function PublicCandleChartWidget({
   config,
   panelId,
 }: WidgetProps<PublicCandleChartConfig>) {
-  const cfg = config;
+  // Session-aware binding — anonymous visitors get a per-browser session
+  // layer when the panel sink refuses writes (see sessionConfig).
+  const { config: cfg, patch } = useWidgetConfigSink(
+    panelId,
+    "candle-chart-public",
+    config,
+  );
+
   const limit = clampInt(cfg.limit, 200, 20, 1000);
 
   // Market data gates the chart itself; position history is a separate
@@ -278,9 +285,6 @@ export function PublicCandleChartWidget({
   );
 
   const showSettings = useWidgetSettingsOpen(panelId);
-
-  const patch = (p: Partial<PublicCandleChartConfig>) =>
-    applyWidgetSettings(panelId, "candle-chart-public", cfg, p);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
 
@@ -764,6 +768,14 @@ export function PublicCandleChartWidget({
                   {cfg.pair}
                 </span>
               )}
+              {candlesQ.data?.source === "exchange" ? (
+                <span
+                  className="nfi-candle-range"
+                  title={`Exchange market data — ${cfg.timeframe} isn't analyzed by this bot, so candles come straight from the exchange`}
+                >
+                  market
+                </span>
+              ) : null}
               <div className="nfi-tf-group" role="group" aria-label="Timeframe">
                 {TIMEFRAME_ITEMS.map((tf) => (
                   <button

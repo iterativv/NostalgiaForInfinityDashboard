@@ -36,6 +36,7 @@ function stubService(
     getTagPerformance: () => Effect.die("unused"),
     getConfig: () => Effect.die("unused"),
     getCandles: () => Effect.die("unused"),
+    getMarketCandles: () => Effect.die("unused"),
     getAvailablePairs: () => Effect.fail(gated),
     getWhitelist: () => Effect.succeed({ pairs: [] }),
     getPlotConfig: () => Effect.die("unused"),

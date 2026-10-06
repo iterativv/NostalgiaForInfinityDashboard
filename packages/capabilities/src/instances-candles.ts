@@ -35,12 +35,26 @@ export const InstancesCandlesCapability = defineCapability({
       }
 
       const service = yield* ctx.resolveInstance(options.id);
+      const timeframe = options.timeframe?.trim() || "15m";
+      const limit = parseLimitParam(options.limit, 200, 1000);
 
-      return yield* service.getCandles(
-        pair,
-        options.timeframe?.trim() || "15m",
-        parseLimitParam(options.limit, 200, 1000),
-      );
+      const analyzed = yield* service.getCandles(pair, timeframe, limit);
+
+      // Freqtrade only analyzes the strategy timeframe — every other
+      // timeframe (and off-whitelist pairs) comes back empty from
+      // `pair_candles`, which made the charts' timeframe switcher look
+      // dead. Fall back to public exchange klines so any timeframe still
+      // renders; a failed fallback keeps the honest analyzed result (the
+      // empty state with its strategy-timeframe recovery button).
+      if (analyzed.candles.length >= 2) return analyzed;
+
+      const market = yield* service
+        .getMarketCandles(pair, timeframe, limit)
+        .pipe(Effect.catchAll(() => Effect.succeed(null)));
+
+      if (market !== null && market.candles.length >= 2) return market;
+
+      return analyzed;
     }).pipe(
       Effect.mapError((cause) => asBackendError("instance candles", cause)),
     ),
