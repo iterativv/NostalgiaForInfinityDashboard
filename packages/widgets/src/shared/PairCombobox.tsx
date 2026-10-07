@@ -12,6 +12,7 @@ import {
   useStore,
   useStoreEffect,
 } from "@nfi/ui";
+import { pnlClass } from "./format";
 
 /**
  * PairCombobox — searchable pair picker for whitelists of any size.
@@ -40,6 +41,7 @@ export function PairCombobox({
   pairs,
   onChange,
   label,
+  pnlByPair,
 }: {
   /** Used by the manual-entry fallback input. */
   id: string;
@@ -49,6 +51,11 @@ export function PairCombobox({
   onChange: (pair: string) => void;
   /** Optional field label (settings-form usage; the toolbar omits it). */
   label?: string;
+  /**
+   * Optional per-pair relative PnL (%) rendered beside the pair name in
+   * the list — realized for closed history, open for live positions.
+   */
+  pnlByPair?: ReadonlyMap<string, number>;
 }) {
   // One store for the popup's UI state: open flag, search text, and the
   // trigger rect the popup anchors to.
@@ -226,20 +233,33 @@ export function PairCombobox({
                 aria-label="Search pair"
               />
               <div className="nfi-pair-combo-list">
-                {shown.map((pair) => (
-                  <button
-                    key={pair}
-                    type="button"
-                    role="option"
-                    aria-selected={pair === value}
-                    className="nfi-pair-combo-option"
-                    data-current={pair === value}
-                    onClick={() => pick(pair)}
-                  >
-                    <span>{pair}</span>
-                    {pair === value ? <span aria-hidden="true">✓</span> : null}
-                  </button>
-                ))}
+                {shown.map((pair) => {
+                  const pnl = pnlByPair?.get(pair);
+
+                  return (
+                    <button
+                      key={pair}
+                      type="button"
+                      role="option"
+                      aria-selected={pair === value}
+                      className="nfi-pair-combo-option"
+                      data-current={pair === value}
+                      onClick={() => pick(pair)}
+                    >
+                      <span>{pair}</span>
+                      {pnl !== undefined && Number.isFinite(pnl) ? (
+                        <span
+                          className={`nfi-pair-combo-pnl ${pnlClass(pnl)}`}
+                          style={{ marginLeft: "auto" }}
+                        >
+                          {pnl >= 0 ? "+" : ""}
+                          {pnl.toFixed(2)}%
+                        </span>
+                      ) : null}
+                      {pair === value ? <span aria-hidden="true">✓</span> : null}
+                    </button>
+                  );
+                })}
                 {filtered.length > MAX_SHOWN ? (
                   <span className="nfi-pair-combo-more">
                     +{filtered.length - MAX_SHOWN} more — keep typing to narrow

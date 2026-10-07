@@ -336,6 +336,8 @@ describe("buildHistoryPnlSpans", () => {
           openDate: at(2),
           closeDate: at(9),
           isShort: true,
+          closeProfitPct: -4.2,
+          profitPct: -1,
         },
       ],
       TF,
@@ -343,8 +345,31 @@ describe("buildHistoryPnlSpans", () => {
     );
 
     expect(spans).toEqual([
-      { since: bucket(2), until: bucket(9), entry: 0.35, isShort: true },
+      {
+        since: bucket(2),
+        until: bucket(9),
+        entry: 0.35,
+        isShort: true,
+        profitPct: -4.2,
+      },
     ]);
+  });
+
+  it("carries the realized percentage for outcome coloring", () => {
+    const spans = buildHistoryPnlSpans(
+      [
+        { openDate: at(1), closeDate: at(2), profitPct: 7.5 },
+        { openDate: at(3), closeDate: at(4) },
+        { openDate: at(5), closeDate: at(6), profitPct: Number.NaN },
+      ],
+      TF,
+      () => 1,
+    );
+
+    expect(spans[0]?.profitPct).toBe(7.5);
+    expect(spans[1]?.profitPct).toBeUndefined();
+    // NaN is missing data, not an outcome.
+    expect(spans[2]?.profitPct).toBeUndefined();
   });
 
   it("skips trades without dates, inverted ranges or resolvable entries", () => {

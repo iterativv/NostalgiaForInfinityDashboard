@@ -580,33 +580,41 @@ export function PositionCandlePublicWidget({
   );
 
   // One sequence of every position the pair ever had (open + closed),
-  // newest first — the position pager's list.
+  // OLDEST first — so the pager's `i/x` reads x/x on the newest position
+  // and ‹ walks back into history.
   const pairPositions = useDerived(
     [pairOpen, pairClosed] as const,
     ([open, closed]) =>
       [...open, ...closed].sort(
         (a, b) =>
-          parseTradeTime(b.openDate) - parseTradeTime(a.openDate) ||
-          b.tradeId - a.tradeId,
+          parseTradeTime(a.openDate) - parseTradeTime(b.openDate) ||
+          a.tradeId - b.tradeId,
       ),
     { inputs: shallow },
   );
 
-  // Which of the pair's positions the chart anchors to. Resets when the
-  // pair changes; the newest position is the default anchor.
-  const posStore = useLocalStore<{ pair: string; index: number }>({
+  // Which of the pair's positions the chart anchors to, counted from the
+  // END (0 = newest) so a freshly opened trade keeps the pager pinned on
+  // x/x. Resets when the pair changes; the newest position is the default
+  // anchor.
+  const posStore = useLocalStore<{ pair: string; fromEnd: number }>({
     pair: "",
-    index: 0,
+    fromEnd: 0,
   });
 
   if (posStore.state.pair !== effectivePair) {
-    posStore.setState(() => ({ pair: effectivePair, index: 0 }));
+    posStore.setState(() => ({ pair: effectivePair, fromEnd: 0 }));
   }
 
-  const posIndex = Math.min(
-    Math.max(posStore.state.index, 0),
-    Math.max(0, pairPositions.length - 1),
+  const posCount = pairPositions.length;
+
+  const fromEnd = Math.min(
+    Math.max(posStore.state.fromEnd, 0),
+    Math.max(0, posCount - 1),
   );
+
+  const posIndex = posCount === 0 ? 0 : posCount - 1 - fromEnd;
+  const pagerIndex = posCount - fromEnd;
 
   const focused = pairPositions[posIndex];
 
@@ -622,6 +630,39 @@ export function PositionCandlePublicWidget({
         open ?? EMPTY_RELATIVE_OPEN,
         closed ?? EMPTY_RELATIVE_CLOSED,
       ),
+    { inputs: shallow },
+  );
+
+  // Per-pair relative PnL for the pair select: each pair's latest closed
+  // position's realized percentage (pairs with only live positions fall
+  // back to their newest open percentage) — the selector doubles as a
+  // mini scoreboard. Payloads are newest-first, so the first sight of a
+  // pair is its latest position.
+  const pnlByPair = useDerived(
+    [openRelQ.data, closedRelQ.data] as const,
+    ([open, closed]): ReadonlyMap<string, number> => {
+      const map = new Map<string, number>();
+
+      for (const p of closed?.positions ?? []) {
+        if (map.has(p.pair)) continue;
+
+        const pct = [p.closeProfitPct, p.profitPct].find(
+          (v) => v !== undefined && Number.isFinite(v),
+        );
+
+        if (pct !== undefined) map.set(p.pair, pct);
+      }
+
+      for (const p of open?.positions ?? []) {
+        if (map.has(p.pair)) continue;
+
+        if (p.profitPct !== undefined && Number.isFinite(p.profitPct)) {
+          map.set(p.pair, p.profitPct);
+        }
+      }
+
+      return map;
+    },
     { inputs: shallow },
   );
 
@@ -667,6 +708,25 @@ export function PositionCandlePublicWidget({
       const tfSec = timeframeSeconds(timeframe);
 
       return tfSec === null ? sec : Math.floor(sec / tfSec) * tfSec;
+    },
+    { inputs: shallow },
+  );
+
+  // Closed focus: the area paints by the realized outcome (green winner /
+  // red loser) instead of the live split around the entry.
+  const focusedProfitPct = useDerived(
+    [focused, focusedOpen] as const,
+    ([f, isOpen]): number | null => {
+      if (!f || isOpen) return null;
+
+      const pct =
+        "closeProfitPct" in f
+          ? [f.closeProfitPct, f.profitPct]
+          : [f.profitPct];
+
+      const resolved = pct.find((v) => v !== undefined && Number.isFinite(v));
+
+      return resolved ?? null;
     },
     { inputs: shallow },
   );
@@ -1020,6 +1080,7 @@ export function PositionCandlePublicWidget({
           label="Pair (empty = follow open positions)"
           value={cfg.pair}
           pairs={availablePairs}
+          pnlByPair={pnlByPair}
           onChange={(pair) => patch({ pair })}
         />
         <SettingsSelect
@@ -1128,6 +1189,7 @@ export function PositionCandlePublicWidget({
                   id={`poscp-pair-jump-${panelId}`}
                   value={effectivePair}
                   pairs={tradedPairsRel}
+                  pnlByPair={pnlByPair}
                   onChange={(pair) => patch({ pair })}
                 />
               ) : (
@@ -1179,10 +1241,13 @@ export function PositionCandlePublicWidget({
               ) : null}
               {positionsAccess.allowed ? (
                 <PositionPager
-                  index={posIndex}
-                  count={pairPositions.length}
+                  index={pagerIndex}
+                  count={posCount}
                   onMove={(index) =>
-                    posStore.setState((s) => ({ ...s, index }))
+                    posStore.setState((s) => ({
+                      ...s,
+                      fromEnd: Math.max(0, posCount - index),
+                    }))
                   }
                 />
               ) : null}
@@ -1378,6 +1443,7 @@ export function PositionCandlePublicWidget({
               tradeMarkers={positionMarkers}
               avgEntryPrice={entryBaseline}
               avgEntryIsShort={focusedIsShort}
+              avgEntryProfitPct={focusedProfitPct}
               avgEntrySince={focusedEntryBucket}
               avgEntryUntil={entryUntil}
               avgEntryLineVisible={focusedOpen}

@@ -464,33 +464,41 @@ export function PositionCandleWidget({
   );
 
   // One sequence of every position the pair ever had (open + closed),
-  // newest first — the position pager's list.
+  // OLDEST first — so the pager's `i/x` reads x/x on the newest position
+  // and ‹ walks back into history.
   const pairPositions = useDerived(
     [pairOpen, pairClosed] as const,
     ([open, closed]) =>
       [...open, ...closed].sort(
         (a, b) =>
-          parseTradeTime(b.openDate) - parseTradeTime(a.openDate) ||
-          b.tradeId - a.tradeId,
+          parseTradeTime(a.openDate) - parseTradeTime(b.openDate) ||
+          a.tradeId - b.tradeId,
       ),
     { inputs: shallow },
   );
 
-  // Which of the pair's positions the chart anchors to. Resets when the
-  // pair changes; the newest position is the default anchor.
-  const posStore = useLocalStore<{ pair: string; index: number }>({
+  // Which of the pair's positions the chart anchors to, counted from the
+  // END (0 = newest) so a freshly opened trade keeps the pager pinned on
+  // x/x. Resets when the pair changes; the newest position is the default
+  // anchor.
+  const posStore = useLocalStore<{ pair: string; fromEnd: number }>({
     pair: "",
-    index: 0,
+    fromEnd: 0,
   });
 
   if (posStore.state.pair !== effectivePair) {
-    posStore.setState(() => ({ pair: effectivePair, index: 0 }));
+    posStore.setState(() => ({ pair: effectivePair, fromEnd: 0 }));
   }
 
-  const posIndex = Math.min(
-    Math.max(posStore.state.index, 0),
-    Math.max(0, pairPositions.length - 1),
+  const posCount = pairPositions.length;
+
+  const fromEnd = Math.min(
+    Math.max(posStore.state.fromEnd, 0),
+    Math.max(0, posCount - 1),
   );
+
+  const posIndex = posCount === 0 ? 0 : posCount - 1 - fromEnd;
+  const pagerIndex = posCount - fromEnd;
 
   const focused = pairPositions[posIndex];
 
@@ -722,6 +730,25 @@ export function PositionCandleWidget({
       const tfSec = timeframeSeconds(timeframe);
 
       return tfSec === null ? sec : Math.floor(sec / tfSec) * tfSec;
+    },
+    { inputs: shallow },
+  );
+
+  // Closed focus: the area paints by the realized outcome (green winner /
+  // red loser) instead of the live split around the entry.
+  const focusedProfitPct = useDerived(
+    [focused, focusedOpen] as const,
+    ([f, isOpen]): number | null => {
+      if (!f || isOpen) return null;
+
+      const pct =
+        "closeProfitPct" in f
+          ? [f.closeProfitPct, f.profitPct]
+          : [f.profitPct];
+
+      const resolved = pct.find((v) => v !== undefined && Number.isFinite(v));
+
+      return resolved ?? null;
     },
     { inputs: shallow },
   );
@@ -1170,10 +1197,13 @@ export function PositionCandleWidget({
               />
               {tradesAccess.allowed ? (
                 <PositionPager
-                  index={posIndex}
-                  count={pairPositions.length}
+                  index={pagerIndex}
+                  count={posCount}
                   onMove={(index) =>
-                    posStore.setState((s) => ({ ...s, index }))
+                    posStore.setState((s) => ({
+                      ...s,
+                      fromEnd: Math.max(0, posCount - index),
+                    }))
                   }
                 />
               ) : null}
@@ -1306,6 +1336,7 @@ export function PositionCandleWidget({
               tradeMarkers={tradeMarkers}
               avgEntryPrice={avgEntry}
               avgEntryIsShort={focusedIsShort}
+              avgEntryProfitPct={focusedProfitPct}
               avgEntrySince={focusedEntryBucket}
               avgEntryUntil={entryUntil}
               avgEntryLineVisible={focusedOpen}

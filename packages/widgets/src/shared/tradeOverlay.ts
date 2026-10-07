@@ -345,6 +345,12 @@ export interface HistoryPnlSpan {
   readonly entry: number;
   /** Shorts invert the profit/loss sides (profit below the entry). */
   readonly isShort: boolean;
+  /**
+   * Signed realized percentage — when present, the area's hue follows the
+   * trade's OUTCOME (green wash for winners, red for losers) instead of
+   * the geometric above/below-entry split.
+   */
+  readonly profitPct?: number;
 }
 
 /**
@@ -362,6 +368,8 @@ export function buildHistoryPnlSpans<
     readonly openDate: string;
     readonly closeDate?: string;
     readonly isShort?: boolean;
+    readonly closeProfitPct?: number;
+    readonly profitPct?: number;
   },
 >(
   closed: ReadonlyArray<T>,
@@ -395,12 +403,22 @@ export function buildHistoryPnlSpans<
 
     if (entry === null || !Number.isFinite(entry) || entry <= 0) continue;
 
-    spans.push({
+    const profitPct = [
+      position.closeProfitPct,
+      position.profitPct,
+    ].find((v) => v !== undefined && Number.isFinite(v));
+
+    const baseSpan = {
       since,
       until: snap(closedAt),
       entry,
       isShort: position.isShort === true,
-    });
+    };
+
+    const span: HistoryPnlSpan =
+      profitPct === undefined ? baseSpan : { ...baseSpan, profitPct };
+
+    spans.push(span);
   }
 
   return spans;
