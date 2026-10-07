@@ -265,6 +265,13 @@ interface PnlFills {
 const EMPTY_PNL_SPANS: ReadonlyArray<HistoryPnlSpan> = [];
 
 /**
+ * Spans narrower than this many candles fall back to the squared
+ * exit-level rectangle: the path-hugging fill degenerates into a sliver a
+ * bar or two wide, and the square reads better than a hairline.
+ */
+export const PNL_SQUARE_FALLBACK_CANDLES = 3;
+
+/**
  * PnL area fills. An explicit outcome (a realized percentage) paints the
  * whole span ONE hue — green for a winner, red for a loser — so a past
  * trade reads by its result, not by where price wiggled relative to the
@@ -1186,17 +1193,20 @@ export function CandleChart({
             })),
         );
 
-        // Squared highlight: a CONSTANT line at the trade's exit level over
-        // the baseline — the area is a rectangle (entry level → exit level,
-        // entry bucket → exit bucket), never a trapezoid that follows the
-        // price path.
         const exitValue = inSpan[inSpan.length - 1]?.close;
 
         if (exitValue === undefined) continue;
 
+        // One-sided highlight: the fill hugs the close path against the
+        // entry baseline — only the side price actually sits on shades,
+        // never a full-height block. Spans a bar or two wide would render
+        // as a sliver, so they fall back to the squared rectangle
+        // (constant line at the exit level, entry → exit).
+        const squared = inSpan.length < PNL_SQUARE_FALLBACK_CANDLES;
+
         const data = inSpan.map((d) => ({
           time: d.time,
-          value: exitValue,
+          value: squared ? exitValue : d.close,
         }));
 
         try {
@@ -1317,18 +1327,23 @@ export function CandleChart({
             })),
         );
 
-        // A closed follow highlights as a SQUARED rectangle: constant line
-        // at the trade's exit level over the entry baseline (entry level →
-        // exit level, entry bucket → exit bucket). An open follow keeps
-        // the live area that tracks price against the entry.
+        // A closed follow highlights between its entry and exit like the
+        // past spans: one-sided along the close path, falling back to the
+        // squared exit-level rectangle when the span is only a bar or two
+        // wide. An open follow keeps the live area that tracks price
+        // against the entry.
         const exitValue =
           until !== null ? inWindow[inWindow.length - 1]?.close : undefined;
+
+        const squared =
+          exitValue !== undefined &&
+          inWindow.length < PNL_SQUARE_FALLBACK_CANDLES;
 
         pnl.setData(
           orderedByTime(
             inWindow.map((d) => ({
               time: d.time,
-              value: exitValue ?? d.close,
+              value: squared ? exitValue! : d.close,
             })),
           ),
         );

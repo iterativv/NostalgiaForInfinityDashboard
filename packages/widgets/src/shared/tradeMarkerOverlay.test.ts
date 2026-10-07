@@ -4,9 +4,11 @@
 import { describe, expect, it } from "vitest";
 import type { CandlestickData, UTCTimestamp } from "lightweight-charts";
 import {
+  MAX_LEADER_LEN,
   PILL_HEIGHT,
   fitLabelText,
   layoutTradeMarkers,
+  localExtremesOf,
   positionTradeMarkers,
   type MarkerLayoutItem,
 } from "./tradeMarkerOverlay";
@@ -250,9 +252,63 @@ describe("layoutTradeMarkers", () => {
     const rect = placement?.pills[0]?.rect;
 
     expect(rect).toBeDefined();
-    // The band collapses to the 1px sliver above the skyline — the pill
-    // rides the pane top, the best an overcrowded pane allows.
-    expect(rect!.y).toBe(1);
+    // The band collapses to the sliver above the skyline — the pill rides
+    // the pane top, the best an overcrowded pane allows.
+    expect(rect!.y).toBeLessThanOrEqual(1);
+  });
+
+  it("hugs the LOCAL skyline so the leader stays short", () => {
+    // Bar mid-pane; the pane-wide skyline sits high up (a tall candle
+    // elsewhere) while the bar's own neighborhood tops out just above it.
+    const [exit] = layoutTradeMarkers(
+      [item({ x: 100, y: 150, side: -1, skyY: 120 })],
+      PANE_W,
+      PANE_H,
+      measure,
+      { skyY: 30 },
+    );
+
+    const rect = exit?.pills[0]?.rect;
+
+    expect(rect).toBeDefined();
+    // Clear of the local wick, but hugging it — nowhere near the pane-wide
+    // margin the old global-band placement parked pills at.
+    expect(rect!.y + PILL_HEIGHT).toBeLessThanOrEqual(120 - 5);
+    expect(rect!.y + PILL_HEIGHT).toBeGreaterThan(90);
+  });
+
+  it("caps the leader length even under a far skyline", () => {
+    const [exit] = layoutTradeMarkers(
+      [item({ x: 100, y: 290, side: -1, skyY: 60 })],
+      PANE_W,
+      PANE_H,
+      measure,
+      { skyY: 60 },
+    );
+
+    const rect = exit?.pills[0]?.rect;
+
+    expect(rect).toBeDefined();
+    // The pill's bar-facing edge never travels farther than
+    // MAX_LEADER_LEN above the anchor, however far the margin reaches.
+    expect(rect!.y + PILL_HEIGHT).toBeGreaterThanOrEqual(290 - MAX_LEADER_LEN);
+  });
+
+  it("places entry pills just below the local floor", () => {
+    const [entry] = layoutTradeMarkers(
+      [item({ x: 100, y: 150, side: 1, floorY: 170 })],
+      PANE_W,
+      PANE_H,
+      measure,
+      { floorY: 260 },
+    );
+
+    const rect = entry?.pills[0]?.rect;
+
+    expect(rect).toBeDefined();
+    // Top edge just under the neighborhood floor, not the pane-wide one.
+    expect(rect!.y).toBeGreaterThanOrEqual(170 + 5);
+    expect(rect!.y).toBeLessThanOrEqual(190);
   });
 
   it("counts labels that fit nowhere into hidden with a +N pill", () => {
@@ -306,6 +362,39 @@ describe("layoutTradeMarkers", () => {
   it("returns no placements for empty input or degenerate panes", () => {
     expect(layoutTradeMarkers([], PANE_W, PANE_H, measure)).toEqual([]);
     expect(layoutTradeMarkers([item({})], 0, 0, measure)).toEqual([]);
+  });
+});
+
+describe("localExtremesOf", () => {
+  const coords = [
+    { x: 10, high: 50, low: 60 },
+    { x: 20, high: 40, low: 70 },
+    { x: 30, high: 30, low: 80 },
+    { x: 40, high: 45, low: 65 },
+    { x: 200, high: 5, low: 95 },
+  ];
+
+  it("returns the window's highest wick and lowest wick", () => {
+    expect(localExtremesOf(coords, 25, 10)).toEqual({
+      skyY: 30,
+      floorY: 80,
+    });
+  });
+
+  it("ignores candles outside the window", () => {
+    expect(localExtremesOf(coords, 30, 5)).toEqual({ skyY: 30, floorY: 80 });
+    expect(localExtremesOf(coords, 200, 10)).toEqual({ skyY: 5, floorY: 95 });
+  });
+
+  it("yields no bounds for an empty window", () => {
+    expect(localExtremesOf([], 25, 90)).toEqual({
+      skyY: undefined,
+      floorY: undefined,
+    });
+    expect(localExtremesOf(coords, 500, 10)).toEqual({
+      skyY: undefined,
+      floorY: undefined,
+    });
   });
 });
 

@@ -9,11 +9,13 @@
  * other). This primitive redraws the same trade events with a readable
  * visual language instead:
  *
- * - a thin 1px leader arrow rises off the bar (amber above = exit, violet
+ * - a thin 1.5px leader arrow rises off the bar (amber above = exit, violet
  *   below = entry), its head pointing at the fill candle;
- * - the label pill sits at the FAR end of the arrow, in the margin around
- *   the price action: exits stack above the highest visible candle wick,
- *   entries below the lowest — pills never paint over candles;
+ * - the label pill sits at the FAR end of the arrow, hugging the marker's
+ *   LOCAL candle margin — the highest/lowest wick within
+ *   `LOCAL_BOUNDS_WINDOW_PX` of the bar — so the leader stays short
+ *   instead of running to the pane-wide sky/floor; a hard `MAX_LEADER_LEN`
+ *   caps how far a pill may travel from its bar at all;
  * - multiple trades on one candle stack their pills (one per label) along
  *   the arrow instead of concatenating into an unreadable blob;
  * - a collision pass pushes any pill that would overlap an earlier one
@@ -114,17 +116,24 @@ const HEAD_LEN = 6;
 /** Minimum leader length between the arrowhead and the first pill. */
 const MIN_SHAFT = 22;
 
+/**
+ * Hard cap on the leader: a pill may never sit farther than this from its
+ * bar, even when the candle-free margin reaches further. A shorter arrow
+ * that may graze a distant tall wick beats a line spanning half the pane.
+ */
+export const MAX_LEADER_LEN = 96;
+
 /** Leader stroke width — a touch heavier than hairline so it reads. */
 const LEADER_WIDTH = 1.5;
 
 /** Vertical step between stacked pills, and the pill's own padding. */
 const PILL_GAP = 3;
 
-const PILL_PAD_X = 5;
+const PILL_PAD_X = 6;
 
-const PILL_PAD_Y = 3;
+const PILL_PAD_Y = 4;
 
-const PILL_LINE_HEIGHT = 12;
+const PILL_LINE_HEIGHT = 14;
 
 /** Pills never exceed most of the pane width (text ellipsizes instead). */
 const PILL_MAX_WIDTH_FRACTION = 0.6;
@@ -140,6 +149,15 @@ const EDGE_PAD = 2;
  * lowest visible low (entries), never on top of candles.
  */
 const PILL_CANDLE_GAP = 5;
+
+/**
+ * Half-width of the candle neighborhood a marker's pills are placed
+ * against: the renderer hands each marker the highest/lowest wick within
+ * this many pixels of its bar (roughly its pill's x-extent), so pills hug
+ * the LOCAL margin and the leader arrow stays short instead of running
+ * all the way to the pane-wide sky/floor.
+ */
+export const LOCAL_BOUNDS_WINDOW_PX = 90;
 
 /**
  * Top reserve for the chart's floating legend row (`.nfi-candle-legend`
@@ -158,7 +176,8 @@ const MAX_NUDGES = 6;
 
 const MAX_PLACEMENT_TRIES = 80;
 
-export const PILL_FONT = '10px "IBM Plex Mono", ui-monospace, monospace';
+export const PILL_FONT =
+  '600 12px "IBM Plex Mono", ui-monospace, monospace';
 
 export const PILL_HEIGHT = PILL_LINE_HEIGHT + 2 * PILL_PAD_Y;
 
@@ -183,6 +202,15 @@ export interface MarkerLayoutItem {
   readonly y: number;
   readonly side: MarkerSide;
   readonly labels: ReadonlyArray<LabelMeasure>;
+  /**
+   * LOCAL candle extremes within `LOCAL_BOUNDS_WINDOW_PX` of the bar —
+   * the neighborhood skyline (exits) / floor (entries). When present,
+   * pills hug this edge so the leader arrow stays short; the pane-wide
+   * `LayoutBounds` remain the hard band. Absent (or without pane bounds)
+   * the layout falls back to the band edge / legacy offset behavior.
+   */
+  readonly skyY?: number;
+  readonly floorY?: number;
 }
 
 export interface PlacedPill {
@@ -330,18 +358,47 @@ export function layoutTradeMarkers(
       maxPy = minPy;
     }
 
-    // The first pill sits closest to the candles: at the band's candle
-    // edge when bounds are known, else just beyond the arrowhead (legacy).
+    // When the sky/floor-tightened band has room, the first pill starts
+    // from the marker's LOCAL candle edge (the neighborhood skyline for
+    // exits, floor for entries) — a SHORT leader from the bar — instead of
+    // the pane-wide margin, and never farther than MAX_LEADER_LEN from the
+    // anchor. Only the pane extremes bound the start: clamping into the
+    // tightened band would drag the pill back out to the pane-wide sky/
+    // floor, the long-leader look this placement replaces. Collision
+    // stacking below still walks the tightened band. When the band
+    // collapsed (skyline pinned to the pane edge) the pill rides that edge
+    // — the best an overcrowded pane allows. Without any bounds the pill
+    // stacks just beyond the arrowhead (legacy).
     const anchorOffset = GAP_FROM_BAR + HEAD_LEN + PILL_HEIGHT + 4;
+    const bandCollapsed = minPy === maxPy;
+    const startMinPy = bandCollapsed ? minPy : paneMinPy;
+    const startMaxPy = bandCollapsed ? maxPy : paneMaxPy;
+    let nearPy: number;
 
-    const nearPy =
-      item.side === -1
-        ? bounds.skyY !== undefined
-          ? maxPy
-          : Math.max(minPy, Math.min(maxPy, item.y - anchorOffset))
-        : bounds.floorY !== undefined
-          ? minPy
-          : Math.max(minPy, Math.min(maxPy, item.y + GAP_FROM_BAR + HEAD_LEN + 4));
+    if (item.side === -1 && (item.skyY !== undefined || bounds.skyY !== undefined)) {
+      const edge = Math.min(item.y, item.skyY ?? bounds.skyY!);
+      const bottom = Math.max(edge - PILL_CANDLE_GAP, item.y - MAX_LEADER_LEN);
+
+      nearPy = Math.min(
+        Math.max(startMinPy, bottom - PILL_HEIGHT),
+        startMaxPy,
+      );
+    } else if (
+      item.side === 1 &&
+      (item.floorY !== undefined || bounds.floorY !== undefined)
+    ) {
+      const edge = Math.max(item.y, item.floorY ?? bounds.floorY!);
+      const top = Math.min(edge + PILL_CANDLE_GAP, item.y + MAX_LEADER_LEN);
+
+      nearPy = Math.min(Math.max(startMinPy, top), startMaxPy);
+    } else if (item.side === -1) {
+      nearPy = Math.max(minPy, Math.min(maxPy, item.y - anchorOffset));
+    } else {
+      nearPy = Math.max(
+        minPy,
+        Math.min(maxPy, item.y + GAP_FROM_BAR + HEAD_LEN + 4),
+      );
+    }
 
     const place = (label: LabelMeasure): boolean => {
       const fitted = fitLabelText(label.text, measure, maxTextWidth);
@@ -419,6 +476,57 @@ export function layoutTradeMarkers(
   return placements;
 }
 
+/** One candle's pane coordinates (x plus wick extremes), ascending by x. */
+export interface CandleX {
+  readonly x: number;
+  readonly high: number;
+  readonly low: number;
+}
+
+/** Local wick bounds around a marker (undefined at the pane edge). */
+export interface LocalExtremes {
+  readonly skyY: number | undefined;
+  readonly floorY: number | undefined;
+}
+
+/**
+ * Highest/lowest wick within `windowPx` of `x`, over candle coordinates
+ * sorted ascending by x (time → x is monotonic, so one binary search
+ * bounds the walk). Feeds each marker's LOCAL pill band — pills hug the
+ * bar's neighborhood instead of the pane-wide margins, keeping leader
+ * arrows short. Empty window (marker at the pane edge) yields undefined
+ * bounds and the layout falls back to the pane-wide band.
+ */
+export function localExtremesOf(
+  coords: ReadonlyArray<CandleX>,
+  x: number,
+  windowPx: number,
+): LocalExtremes {
+  let lo = 0;
+  let hi = coords.length;
+  const min = x - windowPx;
+
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+
+    if (coords[mid]!.x < min) lo = mid + 1;
+    else hi = mid;
+  }
+
+  let skyY: number | undefined;
+  let floorY: number | undefined;
+
+  for (let i = lo; i < coords.length && coords[i]!.x <= x + windowPx; i++) {
+    if (skyY === undefined || coords[i]!.high < skyY) skyY = coords[i]!.high;
+
+    if (floorY === undefined || coords[i]!.low > floorY) {
+      floorY = coords[i]!.low;
+    }
+  }
+
+  return { skyY, floorY };
+}
+
 // --- Canvas painting --------------------------------------------------------
 
 const hexToRgba = (hex: string, alpha: number): string => {
@@ -430,7 +538,7 @@ const hexToRgba = (hex: string, alpha: number): string => {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 };
 
-const PILL_BACKGROUND = "rgba(22, 22, 26, 0.85)";
+const PILL_BACKGROUND = "rgba(22, 22, 26, 0.92)";
 
 const roundRectPath = (
   ctx: CanvasRenderingContext2D,
@@ -477,9 +585,10 @@ class TradeMarkerPaneRenderer {
       const items: MarkerLayoutItem[] = [];
       const colors: string[] = [];
 
-      // Candle-avoidance bounds: the highest visible wick (exits label
-      // above it) and the lowest (entries label below it), so pills live
-      // in the margin around the price action instead of on the candles.
+      // Candle coordinates for this frame, ascending by x (time → x is
+      // monotonic): one pass feeds both the pane-wide skyline/floor and
+      // the per-marker local neighborhoods.
+      const coords: CandleX[] = [];
       let skyY = height;
       let floorY = 0;
 
@@ -496,9 +605,12 @@ class TradeMarkerPaneRenderer {
         const yHigh = series.priceToCoordinate(candle.high);
         const yLow = series.priceToCoordinate(candle.low);
 
-        if (yHigh !== null && yHigh < skyY) skyY = yHigh;
+        if (yHigh === null || yLow === null) continue;
 
-        if (yLow !== null && yLow > floorY) floorY = yLow;
+        if (yHigh < skyY) skyY = yHigh;
+
+        if (yLow > floorY) floorY = yLow;
+        coords.push({ x, high: yHigh, low: yLow });
       }
 
       for (const marker of markers) {
@@ -513,12 +625,15 @@ class TradeMarkerPaneRenderer {
         if (y === null || y < -PILL_HEIGHT || y > height + PILL_HEIGHT) continue;
 
         const side: MarkerSide = marker.kind === "exit" ? -1 : 1;
+        const local = localExtremesOf(coords, x, LOCAL_BOUNDS_WINDOW_PX);
 
         items.push({
           x,
           y,
           side,
           labels: marker.labels.map((text) => ({ text, width: measure(text) })),
+          skyY: local.skyY,
+          floorY: local.floorY,
         });
         colors.push(colorOf(marker.kind));
       }
@@ -571,7 +686,7 @@ class TradeMarkerPaneRenderer {
             rect.y + 0.5,
             rect.w - 1,
             rect.h - 1,
-            3,
+            4,
           );
           ctx.fillStyle = PILL_BACKGROUND;
           ctx.fill();

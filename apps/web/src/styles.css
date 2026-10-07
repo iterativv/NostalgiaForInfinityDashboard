@@ -3269,6 +3269,24 @@ button.nfi-auto-empty:focus-visible {
   background: transparent;
 }
 
+/* Position pager's history-load spinner: Carbon's InlineLoading tamed to
+   the toolbar's button height so the group never grows mid-step. */
+.nfi-pager-busy {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.1875rem 0 0.3125rem;
+}
+
+.nfi-pager-busy .cds--inline-loading {
+  min-height: unset;
+}
+
+.nfi-pager-busy .cds--loading--small,
+.nfi-pager-busy .cds--loading--small svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
 .nfi-tf-active {
   color: var(--cds-text-primary);
   background: var(--cds-layer-selected);

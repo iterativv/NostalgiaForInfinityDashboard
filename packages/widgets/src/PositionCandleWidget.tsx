@@ -23,7 +23,11 @@
  * (violet entry dots labeled with the order tag, amber exit arrows), and
  * the focused position's entry level shades its profit/loss area green/red
  * — the same trade overlay as `candle-chart`. The pager (‹ i/x ›) steps
- * through every position of the pair, open and closed, newest first.
+ * through every position of the pair, open and closed, newest first;
+ * stepping never touches the timeframe (the window fit is a per-pair
+ * decision) — it recenters the view on the focused entry and, when that
+ * entry predates the loaded candles, pages history back until it is
+ * covered (the pager's spinner).
  */
 
 import { Button, NumberInput } from "@carbon/react";
@@ -191,6 +195,9 @@ interface PairBucket {
 const EMPTY_SOURCED_OPEN: ReadonlyArray<SourcedOpenPosition> = [];
 
 const EMPTY_PAIRS: ReadonlyArray<string> = [];
+
+/** Backward history pages the pager may pull per focus anchor. */
+const PAGER_BACKFILL_MAX_PAGES = 8;
 
 function bucketByPair(
   positions: ReadonlyArray<SourcedOpenPosition>,
@@ -412,31 +419,44 @@ export function PositionCandleWidget({
   // reloads) stays: only a watched close advances. Data-undefined frames
   // (instance switch, disabled feed) reset the transition tracking so a
   // loading feed can never wipe the pin.
-  const pinWasLive = useLocalStore(false);
+  //
+  // The tracker remembers WHICH pair was observed live, not just that some
+  // pair was: without the identity, moving the pin from an open pair to a
+  // history-only one reads as "the watched pair exited" and the fresh pin
+  // snapped straight back to auto — the first pair change did nothing and
+  // only the second pick stuck.
+  const pinWasLive = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
     if (!tradesAccess.allowed || openSrc.data === undefined) {
-      pinWasLive.setState(() => false);
+      pinWasLive.setState(() => null);
 
       return;
     }
 
     if (pinned.length === 0) {
-      pinWasLive.setState(() => false);
+      pinWasLive.setState(() => null);
 
       return;
     }
 
     if (pinnedBucket !== null) {
-      pinWasLive.setState(() => true);
+      pinWasLive.setState(() => pinned);
 
       return;
     }
 
-    if (pinWasLive.state) {
-      pinWasLive.setState(() => false);
+    if (pinWasLive.state === pinned) {
+      // The pair we were watching just exited — hand control to auto.
+      pinWasLive.setState(() => null);
       patch({ pair: "" });
+
+      return;
     }
+
+    // The pin moved to a pair with no open position (a deliberate pick of
+    // history): forget the stale observation, keep the pin.
+    pinWasLive.setState(() => null);
   }, [tradesAccess.allowed, openSrc.data, pinned, pinnedBucket]);
 
   // The followed pair's open and closed positions (closed window is the
@@ -635,6 +655,12 @@ export function PositionCandleWidget({
 
     if (pinned.length > 0 && tradedSet.has(pinned)) return;
 
+    // A pin is a deliberate pick — never rewrite it while the traded set
+    // is still loading: an empty set would evict any off-whitelist pin and
+    // the first pair change would snap straight back. Once loaded, traded
+    // pins are exempt above; only genuinely stray pins still heal.
+    if (pinned.length > 0 && tradedQ.data === undefined) return;
+
     if (whitelist.includes(effectivePair)) return;
     const base = effectivePair.split("/")[0] ?? effectivePair;
     const settled = whitelist.find((p) => p === `${effectivePair}:USDT`);
@@ -714,6 +740,64 @@ export function PositionCandleWidget({
     { inputs: shallow },
   );
 
+  // Pager coverage: whether the focused position's entry bucket sits
+  // inside the loaded candle window. Paging keeps the timeframe frozen
+  // (the window fit no longer zooms out per focus), so a step back can
+  // anchor on a bar older than the loaded data — the driver below pages
+  // history back until the entry is covered, and the flag rides
+  // `focusNonce` so the view jumps to it exactly when the data lands.
+  const focusedCovered = useDerived(
+    [focusedEntryBucket, allCandles] as const,
+    ([entry, src]): boolean =>
+      entry === null ||
+      src.length === 0 ||
+      (src[0] !== undefined && src[0].time / 1000 <= entry),
+    { inputs: shallow },
+  );
+
+  // Pull history back to the focused position: each step — and each landed
+  // backward page — re-runs this and fetches one more page while the entry
+  // bucket is older than the loaded window (or the exchange runs dry).
+  // `loadOlder` no-ops while a page is already in flight. A per-anchor page
+  // budget bounds the loop: a very old entry on a fine timeframe must not
+  // stream the exchange into the chart forever — manual zoom-out stays the
+  // escape hatch past the budget.
+  const backfillStore = useLocalStore<{ key: string; pages: number }>({
+    key: "",
+    pages: 0,
+  });
+
+  useStoreEffect(() => {
+    if (!market.allowed || focusedEntryBucket === null) return;
+
+    const oldestMs = allCandles[0]?.time;
+
+    if (oldestMs === undefined || oldestMs / 1000 <= focusedEntryBucket) return;
+
+    const anchorKey = `${effectivePair}|${focusedEntryBucket}`;
+
+    if (backfillStore.state.key !== anchorKey) {
+      backfillStore.setState(() => ({ key: anchorKey, pages: 0 }));
+    }
+
+    if (history.loading || history.exhausted) return;
+
+    if (backfillStore.state.pages >= PAGER_BACKFILL_MAX_PAGES) return;
+
+    backfillStore.setState((s) => ({
+      key: anchorKey,
+      pages: (s.key === anchorKey ? s.pages : 0) + 1,
+    }));
+
+    history.loadOlder(oldestMs);
+  }, [
+    focusedEntryBucket,
+    allCandles,
+    history.loading,
+    history.exhausted,
+    market.allowed,
+  ]);
+
   // Fill END: a focused CLOSED position stops the PnL shading at its exit
   // bucket — the trade's story ends there, and the dashed entry level goes
   // with it (no live entry left to track).
@@ -778,29 +862,31 @@ export function PositionCandleWidget({
     { inputs: shallow },
   );
 
-  // Window-fit source: the OLDEST instant the chart must cover — the
-  // focused position's entry and every shaded past trade — so the
-  // highlighted history is actually inside the loaded data instead of
-  // sitting unseen before the window's start.
-  const fitSourceSec = useDerived(
-    [focused, historySpans] as const,
-    ([f, spans]): number | null => {
-      let oldest: number | null = f ? earliestEntrySecond([f]) : null;
+  // Window-fit source: the OLDEST entry second across the pair's WHOLE
+  // position history (open + closed), so the fitted window covers every
+  // shaded trade. Derived from the pair's positions rather than the
+  // focused one on purpose: stepping with the pager changes which
+  // position is anchored, not the pair's span — the timeframe/limit must
+  // stay put while paging (the pager pulls history back instead). Only a
+  // pair switch or a genuinely older trade changes this anchor.
+  const fitSourceSec = useDerived(pairPositions, (positions): number | null => {
+    let oldest: number | null = null;
 
-      for (const span of spans) {
-        if (oldest === null || span.since < oldest) oldest = span.since;
-      }
+    for (const position of positions) {
+      const at = earliestEntrySecond([position]);
 
-      return oldest;
-    },
-    { inputs: shallow },
-  );
+      if (at !== null && (oldest === null || at < oldest)) oldest = at;
+    }
 
-  // Window auto-fit: the chart must show the focused position's entry →
-  // now, which the default 200 × 5m window cannot for positions older
-  // than ~17h. Zoom out (timeframe and/or limit) until the entry fits.
-  // Applied at most once per source instant so a user's manual timeframe
-  // pick is never fought over; aging windows refit when a NEW entry opens.
+    return oldest;
+  });
+
+  // Window auto-fit: the chart must cover the pair's oldest entry (see
+  // `fitSourceSec`), which the default 200 × 5m window cannot for pairs
+  // traded before ~17h ago. Zoom out (timeframe and/or limit) until the
+  // entry fits. Applied at most once per source instant so a user's manual
+  // timeframe pick is never fought over — and never while merely paging,
+  // which leaves this anchor untouched.
   const fitKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
@@ -1217,6 +1303,7 @@ export function PositionCandleWidget({
                 <PositionPager
                   index={pagerIndex}
                   count={posCount}
+                  busy={history.loading}
                   onMove={(index) =>
                     posStore.setState((s) => ({
                       ...s,
@@ -1361,7 +1448,7 @@ export function PositionCandleWidget({
               historyPnlSpans={historySpans}
               followMarkers
               focusBarTime={focusedEntryBucket}
-              focusNonce={`${effectivePair}|${fromEnd}|${cfg.timeframe}`}
+              focusNonce={`${effectivePair}|${fromEnd}|${cfg.timeframe}|${focusedCovered ? 1 : 0}`}
               onRequestOlder={() => history.loadOlder(allCandles[0]?.time ?? 0)}
             />
           </div>
