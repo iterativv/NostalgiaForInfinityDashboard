@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
+// SPDX-License-Identifier: SSPL-1.0
+
 /**
  * Position pager — prev/next stepping through every position of the
  * followed pair, with an `i/x` readout where x is the newest position

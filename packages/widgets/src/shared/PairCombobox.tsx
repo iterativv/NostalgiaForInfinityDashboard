@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
+// SPDX-License-Identifier: SSPL-1.0
+
 import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { TextInput } from "@carbon/react";

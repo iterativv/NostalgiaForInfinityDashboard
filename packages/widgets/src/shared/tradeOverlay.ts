@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
+// SPDX-License-Identifier: SSPL-1.0
+
 /**
  * Trade overlay helpers for the candle chart — pure functions, no chart
  * imports (kept import-free so they stay unit-testable without a canvas).

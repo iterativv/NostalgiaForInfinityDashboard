@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
+// SPDX-License-Identifier: SSPL-1.0
+
 /**
  * CandleChart — OHLCV candlesticks rendered with TradingView's
  * `lightweight-charts` (canvas, crosshair, pan/zoom included).
