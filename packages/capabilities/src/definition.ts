@@ -14,6 +14,7 @@ import type {
   SettingsRepoService,
   SnapshotRepoService,
   StoredInstance,
+  TradesRepoService,
   UserRepoService,
   WorkspaceRepoService,
 } from "@nfi/db";
@@ -155,6 +156,12 @@ export interface CapabilityContext {
   readonly workspaces: WorkspaceRepoService;
   readonly instances: InstanceRepoService;
   readonly snapshots: SnapshotRepoService;
+  /**
+   * Freqtrade trades mirror (closed history, open positions, pair lists,
+   * locks) — the SQL layer every table capability filters through, so
+   * searches and aggregates always cover the full dataset.
+   */
+  readonly trades: TradesRepoService;
   /** User + anonymous-grant storage (users.* capabilities). */
   readonly users: UserRepoService;
   /** App settings (page defaults, sensitivity criteria). */

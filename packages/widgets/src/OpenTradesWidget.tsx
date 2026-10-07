@@ -30,16 +30,16 @@ import {
   useOpenPositionsSource,
   type SourcedOpenPosition,
 } from "./shared/sources";
-import { parseTradeTime, sortOpenPositions, type OpenSortKey, type SortDir } from "./shared/tradeSort";
+import {
+  parseTradeTime,
+  sortOpenPositions,
+  type OpenSortKey,
+  type SortDir,
+} from "./shared/tradeSort";
 
 import { SettingsSelect } from "./shared/SettingsSelect";
 import { SettingsToggle } from "./shared/SettingsToggle";
-import {
-  expandPositionRows,
-  TRADE_ORDER_EXPORT_COLUMNS,
-  withOrderRows,
-  type ExportColumn,
-} from "./shared/export";
+import {} from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import { useTimeFormat } from "./shared/timeFormat";
@@ -98,39 +98,8 @@ const OPEN_TRADES_SORT_DIR: Record<OpenSortKey, SortDir> = {
 const EMPTY_POSITIONS: ReadonlyArray<SourcedOpenPosition> = [];
 
 /** Position-side CSV/XLSX columns (all fields, not just the visible set). */
-const POSITION_EXPORT_COLUMNS: ReadonlyArray<
-  ExportColumn<SourcedOpenPosition>
-> = [
-  { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
-  { header: COL.tradeId, value: (p) => p.tradeId },
-  { header: COL.pair, value: (p) => p.pair },
-  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
-  { header: COL.stake, value: (p) => p.stakeAmount },
-  { header: COL.openRate, value: (p) => p.openRate },
-  { header: COL.currentRate, value: (p) => p.currentRate },
-  { header: COL.profit, value: (p) => p.profitAbs },
-  { header: COL.profitPct, value: (p) => p.profitPct },
-  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
-  { header: COL.strategy, value: (p) => p.strategy ?? "" },
-  { header: COL.openDate, value: (p) => p.openDate },
-];
-
-/**
- * Grouped CSV/XLSX columns: position columns + sub-order columns.
- * One position row (order cells empty, merged in XLSX) followed by one
- * row per sub-order (position cells empty, merged in XLSX).
- */
-const EXPORT_COLUMNS = withOrderRows({
-  positionColumns: POSITION_EXPORT_COLUMNS,
-  orderColumns: TRADE_ORDER_EXPORT_COLUMNS,
-});
-
 /** Column set depends on the row-number toggle, fleet mode + colors. */
-function buildColumns([
-  cfg,
-  showBotColumn,
-  colors,
-]: readonly [
+function buildColumns([cfg, showBotColumn, colors]: readonly [
   OpenTradesConfig,
   boolean,
   InstanceColors,
@@ -236,9 +205,6 @@ export function OpenTradesWidget({
     { inputs: shallowStore, output: shallowStore },
   );
 
-  /** Grouped export rows: position row + sub-order rows per position. */
-  const exportRows = expandPositionRows(positions, (p) => p.orders);
-
   const showBotColumn = cfg.instanceId === ALL_INSTANCES;
 
   // Column set derived through a store: rebuilt only when the widget config,
@@ -318,8 +284,15 @@ export function OpenTradesWidget({
                   }}
                   exportMenu={{
                     filenameBase: `open-trades-${cfg.instanceId}`,
-                    columns: EXPORT_COLUMNS,
-                    rows: exportRows,
+                    dataset: "open-trades",
+                    params: {
+                      instanceId:
+                        cfg.instanceId === ALL_INSTANCES
+                          ? undefined
+                          : cfg.instanceId,
+                      search: debouncedSearch,
+                    },
+                    disabled: positions.length === 0,
                   }}
                 />
                 <div className="nfi-table-scroll">

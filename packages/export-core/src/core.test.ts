@@ -15,7 +15,7 @@ import {
   TRADE_ORDER_EXPORT_COLUMNS,
   withOrderRows,
   type ExportColumn,
-} from "./export";
+} from "./core.js";
 
 interface Row {
   readonly pair: string;
@@ -268,7 +268,7 @@ describe("position + sub-order grouped export", () => {
     ]);
   });
 
-  it("exports grouped rows as JSON with nulls on the empty side", () => {
+  it("exports grouped rows as JSON with orders nested under their position", () => {
     const columns = withOrderRows({
       positionColumns: POSITION_COLUMNS,
       orderColumns: ORDER_COLUMNS,
@@ -279,24 +279,49 @@ describe("position + sub-order grouped export", () => {
         {
           tradeId: 7,
           pair: "BTC/USDT",
-          orders: [{ orderId: "a", price: 1 }],
+          orders: [
+            { orderId: "a", price: 1 },
+            { orderId: "b", price: 2 },
+          ],
         },
+        { tradeId: 8, pair: "ETH/USDT" },
       ],
       (p) => p.orders,
     );
 
+    // One record per position, order columns nested per order — never the
+    // flat null-riddled row list (order rows would lose their Trade ID).
     expect(JSON.parse(rowsToJson(columns, rows))).toEqual([
-      { "Trade ID": 7, Pair: "BTC/USDT", "Order ID": null, Price: null },
-      { "Trade ID": null, Pair: null, "Order ID": "a", Price: 1 },
+      {
+        "Trade ID": 7,
+        Pair: "BTC/USDT",
+        Orders: [
+          { "Order ID": "a", Price: 1 },
+          { "Order ID": "b", Price: 2 },
+        ],
+      },
+      {
+        "Trade ID": 8,
+        Pair: "ETH/USDT",
+        Orders: [],
+      },
+    ]);
+  });
+
+  it("keeps flat JSON records for plain column sets", () => {
+    const json = rowsToJson(COLUMNS, [{ pair: "BTC/USDT", pnl: 1.5 }]);
+
+    expect(JSON.parse(json)).toEqual([
+      { Pair: "BTC/USDT", PnL: 1.5, Tag: null },
     ]);
   });
 
   it("shares one order-column set per order kind", () => {
-    expect(
-      TRADE_ORDER_EXPORT_COLUMNS.map((c) => c.header),
-    ).toContain("Order ID");
-    expect(
-      RELATIVE_ORDER_EXPORT_COLUMNS.map((c) => c.header),
-    ).toContain("Order tag");
+    expect(TRADE_ORDER_EXPORT_COLUMNS.map((c) => c.header)).toContain(
+      "Order ID",
+    );
+    expect(RELATIVE_ORDER_EXPORT_COLUMNS.map((c) => c.header)).toContain(
+      "Order tag",
+    );
   });
 });

@@ -9,6 +9,7 @@ import {
 import { defineCapability, parseLimitParam } from "./definition.js";
 import { asBackendError, toBackendError } from "./errors.js";
 import { fleetInstances, perInstance } from "./fleet.js";
+import { bucketTotals } from "./instances-profit-daily.js";
 
 const ProfitDailyAllOptions = Schema.Struct({
   /** `daily` (default), `weekly` or `monthly` buckets. */
@@ -111,7 +112,7 @@ export const InstancesProfitDailyAllCapability = defineCapability({
           trades: acc.trades,
         }));
 
-      return { bucket, buckets };
+      return { bucket, buckets, totals: bucketTotals(buckets) };
     }).pipe(
       Effect.mapError((cause) => asBackendError("fleet profit-daily", cause)),
     ),

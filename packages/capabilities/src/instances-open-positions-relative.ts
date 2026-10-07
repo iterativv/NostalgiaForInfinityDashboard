@@ -5,12 +5,12 @@ import { Effect, Schema } from "effect";
 import { RelativeOpenPositionsResponse } from "@nfi/api-contract";
 import { defineCapability, IdOptions } from "./definition.js";
 import { asBackendError } from "./errors.js";
-import { applySearch } from "./search.js";
+import { normalizeSearch } from "./search.js";
 import { toRelativeOpenPositions } from "./relative.js";
 
 const OpenPositionsRelativeOptions = Schema.Struct({
   ...IdOptions.fields,
-  /** Free-text filter applied server-side (non-sensitive fields only). */
+  /** Free-text filter — SQL WHERE restricted to non-sensitive fields. */
   search: Schema.optional(Schema.String),
 });
 
@@ -19,9 +19,13 @@ const OpenPositionsRelativeOptions = Schema.Struct({
  *
  * Allocation weights are computed against a server-side total that is never
  * exposed; stake amounts, prices and absolute profits are stripped. The
- * optional `search` filters the same non-sensitive fields the absolute
- * capability filters (pair, strategy, enter/exit tags) — before the
+ * optional `search` is a SQL WHERE over the mirror restricted to
+ * non-sensitive fields (pair, strategy, enter/exit tags) — before the
  * relative transform, so no amount-bearing row influences the weights.
+ *
+ * `stats` carries the footer metrics (deployed share, mean percent, largest
+ * share) computed server-side: the sums come from the SQL open summary, the
+ * denominator stays the never-exposed wallet total.
  */
 export const InstancesOpenPositionsRelativeCapability = defineCapability({
   name: "instances.open-positions.relative",
@@ -35,18 +39,32 @@ export const InstancesOpenPositionsRelativeCapability = defineCapability({
   run: (options, ctx) =>
     Effect.gen(function* () {
       const service = yield* ctx.resolveInstance(options.id);
-      const positions = yield* service.getOpenPositions();
       const balance = yield* service.getBalance();
 
-      const filtered = {
-        positions: applySearch(
-          positions.positions,
-          (p) => [p.pair, p.strategy, p.enterTag, p.exitReason],
-          options.search,
-        ),
-      };
+      const filtered = yield* ctx.trades.listOpen({
+        instanceId: options.id,
+        search: normalizeSearch(options.search),
+        searchNonSensitiveOnly: true,
+        sort: null,
+        dir: "desc",
+        filter: null,
+        limit: 10_000,
+      });
 
-      return toRelativeOpenPositions(filtered, balance.totalStake);
+      const { summary } = yield* ctx.trades.openSummary({
+        instanceId: options.id,
+      });
+
+      const total = balance.totalStake;
+
+      return {
+        ...toRelativeOpenPositions({ positions: filtered.positions }, total),
+        stats: {
+          deployedWeight: total > 0 ? summary.deployed / total : 0,
+          avgProfitPct: summary.avgProfitPct,
+          largestWeight: total > 0 ? summary.largestStake / total : 0,
+        },
+      };
     }).pipe(
       Effect.mapError((cause) =>
         asBackendError("instance open-positions.relative", cause),

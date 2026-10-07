@@ -92,14 +92,29 @@ export function useHeldRows<T>(
     resetKey,
   });
 
-  // Dataset switch: drop the holdover so the new instance/search starts
-  // from a clean first load (its rows differ, not just grow) — and keep it
-  // dropped until fresh data lands, even if the old reference lingers.
+  // Dataset switch (instance or search edit): the new dataset's first load
+  // must NOT blank the table. Dropping the holdover here would collapse the
+  // widget to zero rows → the frame flips to its loading pane → the whole
+  // body (toolbar included) unmounts and the search input's keyboard focus
+  // dies mid-typing — the "filter can't be changed" bug. So the previous
+  // dataset's rows stay on screen (stale by one dataset, only for the fetch
+  // window) until the new dataset's rows land and adopt below. A failed
+  // first load drops the holdover so the error state stays honest.
   const reset = heldStore.state.resetKey !== resetKey;
   const dataChanged = heldStore.state.data !== source.data;
 
   if (reset) {
-    heldStore.setState(() => ({ rows: [], data: source.data, resetKey }));
+    // Adopt the new dataset's rows when already cached (e.g. clearing the
+    // search lands on the still-cached unfiltered key); otherwise hold the
+    // previous dataset's rows while the first load streams in, and only a
+    // failed load drops them so the error state stays honest.
+    heldStore.setState(() => ({
+      rows:
+        source.data ??
+        (source.error === null ? heldStore.state.rows : []),
+      data: source.data,
+      resetKey,
+    }));
   } else if (dataChanged && source.data !== undefined) {
     // Local capture keeps the guard's narrowing for the callback below.
     const rows = source.data;

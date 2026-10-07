@@ -182,20 +182,33 @@ export function DailyProfitWidget({
     theme: "g100",
   };
 
-  const total = buckets.reduce((sum, bucket) => sum + bucket.profitAbs, 0);
-  const trades = buckets.reduce((sum, bucket) => sum + bucket.trades, 0);
+  // Window totals arrive server-side (the backend folds the buckets); the
+  // reduces only cover snapshots from before the field existed.
+  const totals = view.data?.totals;
 
-  const best = buckets.reduce<number | undefined>(
-    (acc, bucket) =>
-      acc === undefined || bucket.profitAbs > acc ? bucket.profitAbs : acc,
-    undefined,
-  );
+  const total = totals
+    ? totals.profitAbs
+    : buckets.reduce((sum, bucket) => sum + bucket.profitAbs, 0);
 
-  const worst = buckets.reduce<number | undefined>(
-    (acc, bucket) =>
-      acc === undefined || bucket.profitAbs < acc ? bucket.profitAbs : acc,
-    undefined,
-  );
+  const trades = totals
+    ? totals.trades
+    : buckets.reduce((sum, bucket) => sum + bucket.trades, 0);
+
+  const best = totals
+    ? totals.bestProfitAbs
+    : buckets.reduce<number | undefined>(
+        (acc, bucket) =>
+          acc === undefined || bucket.profitAbs > acc ? bucket.profitAbs : acc,
+        undefined,
+      );
+
+  const worst = totals
+    ? totals.worstProfitAbs
+    : buckets.reduce<number | undefined>(
+        (acc, bucket) =>
+          acc === undefined || bucket.profitAbs < acc ? bucket.profitAbs : acc,
+        undefined,
+      );
 
   return (
     <>

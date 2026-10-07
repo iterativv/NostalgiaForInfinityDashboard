@@ -319,6 +319,11 @@ export const FIXTURES = {
         })),
       };
     }),
+    stats: {
+      deployedWeight: 0.84,
+      avgProfitPct: 0.62,
+      largestWeight: 0.25,
+    },
   },
   "instances.positions-all": {
     positions: [0, 1, 2, 3].map((i) => ({
@@ -373,6 +378,14 @@ export const FIXTURES = {
     tradesCount: 6,
     totalTrades: 96,
     offset: 0,
+    stats: {
+      withPnl: 96,
+      wins: 61,
+      winRatePct: 63.5,
+      avgProfitPct: 1.58,
+      bestPct: 9.4,
+      worstPct: -5.2,
+    },
   },
   "instances.trade-count": { current: 2, max: 5 },
   "instances.pairs": {
@@ -546,6 +559,85 @@ export const FIXTURES = {
     ],
     aggregatedTrades: 96,
     totalTrades: 96,
+    totals: {
+      trades: 96,
+      wins: 61,
+      losses: 35,
+      winrate: 0.6354,
+      profitAbs: 172.3,
+      profitPctAvg: 1.58,
+    },
+    best: { tag: "signal1", value: 88.2 },
+    worst: { tag: "signal4", value: -12.3 },
+  },
+  "instances.performance-stats": {
+    trades: 96,
+    wins: 61,
+    losses: 35,
+    grossWin: 220.4,
+    grossLoss: 48.1,
+    net: 172.3,
+    winrate: 63.5,
+    profitFactor: 4.58,
+    expectancy: 1.79,
+    avgWin: 3.61,
+    avgLoss: 1.37,
+    best: 12.4,
+    worst: -4.8,
+  },
+  "instances.drawdown": {
+    points: Array.from({ length: 60 }, (_, i) => ({
+      recordedAt: iso(600 - i * 10),
+      drawdown: Number(
+        (-Math.abs(Math.sin(i / 7)) * 12 - (i % 11 === 0 ? 6 : 0)).toFixed(2),
+      ),
+    })),
+    maxDrawdown: -21.4,
+    currentDrawdown: -3.2,
+    peakValue: 812.6,
+  },
+  "instances.cumulative-profit": {
+    series: [
+      {
+        points: Array.from({ length: 40 }, (_, i) => ({
+          at: iso(1200 - i * 25),
+          profit: Number(((i % 5) - 2 + 0.4).toFixed(2)),
+          cumulative: Number((3.1 * (40 - i)).toFixed(2)),
+        })),
+        totalProfit: 124.5,
+        trades: 96,
+      },
+    ],
+  },
+  "instances.traded-pairs": {
+    pairs: PAIRS.map((pair, i) => ({
+      pair,
+      trades: 24 - i * 3,
+      openTrades: i === 0 ? 1 : 0,
+      closedTrades: 23 - i * 3,
+      lastAt: iso(90 + i * 140),
+    })),
+    length: PAIRS.length,
+  },
+  "instances.exposure": {
+    summary: {
+      positions: 6,
+      deployed: 1452.3,
+      unrealized: 18.4,
+      maxLeverage: 3,
+      longs: 4,
+      shorts: 2,
+      largestStake: 402.7,
+      pairs: 6,
+      avgProfitPct: 1.02,
+    },
+    rows: PAIRS.map((pair, i) => ({
+      pair,
+      positions: 1,
+      stake: Number((402.7 - i * 51.2).toFixed(2)),
+      unrealized: Number((8.4 - i * 2.9).toFixed(2)),
+      share: Number(((402.7 - i * 51.2) / 1452.3).toFixed(4)),
+    })),
   },
   "instances.tag-performance.relative": {
     groupBy: "enter",
@@ -585,6 +677,14 @@ export const FIXTURES = {
     ],
     aggregatedTrades: 96,
     totalTrades: 96,
+    stats: {
+      trades: 96,
+      wins: 61,
+      losses: 35,
+      winrate: 0.6354,
+      profitPctAvg: 1.58,
+      bestEdge: { tag: "long_term_hold_signal_alpha", value: 3.4 },
+    },
   },
   "instances.config": {
     strategy: "SampleStrategy",

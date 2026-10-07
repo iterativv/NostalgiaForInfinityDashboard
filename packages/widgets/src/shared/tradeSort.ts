@@ -18,13 +18,24 @@ export type OpenSortKey =
 export type ClosedSortKey =
   "closeDate" | "openDate" | "pair" | "stake" | "profit" | "profitPct";
 
-/** Parse freqtrade `"YYYY-MM-DD HH:mm:ss"` (space-separated) to epoch ms. */
+/**
+ * Parse a freqtrade trade date to epoch millis. Freqtrade's REST dates are
+ * NAIVE UTC strings (`"YYYY-MM-DD HH:mm:ss"`, no zone — see `toUtcIso` in
+ * the client, which annotates them at the boundary); this parser pins `Z`
+ * onto any naive string that still slips through (other producers, stale
+ * caches) so ages and epoch comparisons never shift by the machine's UTC
+ * offset. Explicit zones are honored as-is; garbage yields 0.
+ */
 export const parseTradeTime = (value: string | undefined): number => {
   if (!value) return 0;
 
-  const t = new Date(
-    value.includes("T") ? value : value.replace(" ", "T"),
-  ).getTime();
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+
+  const zoned = /[zZ]|[+-]\d{2}:?\d{2}$/.test(normalized)
+    ? normalized
+    : `${normalized}Z`;
+
+  const t = new Date(zoned).getTime();
 
   return Number.isNaN(t) ? 0 : t;
 };

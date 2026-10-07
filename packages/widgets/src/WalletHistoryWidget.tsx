@@ -84,10 +84,18 @@ export function WalletHistoryWidget({
   const cfg = config;
   const limit = clampInt(cfg.limit, 500, 50, 500);
 
-  const fleet = useCapability("instances.balance-history", {
-    limit: String(limit),
-    bucket: cfg.bucket,
-  });
+  // Instance selection and the per-instance point window are SQL clauses
+  // (WHERE + LIMIT) — the client renders whatever the database returned.
+  const fleet = useCapability(
+    "instances.balance-history",
+    cfg.instanceId === "all"
+      ? { limit: String(limit), bucket: cfg.bucket }
+      : {
+          limit: String(limit),
+          bucket: cfg.bucket,
+          id: cfg.instanceId,
+        },
+  );
 
   const state = queryState(fleet.error, fleet.isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
@@ -98,12 +106,7 @@ export function WalletHistoryWidget({
 
   const stakeCurrency = fleet.data?.stakeCurrency;
 
-  const rows = (fleet.data?.instances ?? []).filter(
-    (row) =>
-      cfg.instanceId === "all" ||
-      row.instanceId === cfg.instanceId ||
-      row.instanceName === cfg.instanceId,
-  );
+  const rows = fleet.data?.instances ?? [];
 
   const series: ChartPoint[] = [];
   // Per-instance colors: solid for the curve, dimmed for the start line.
@@ -112,7 +115,7 @@ export function WalletHistoryWidget({
   for (const row of rows) {
     if (row.points.length === 0) continue;
     const name = row.instanceName || row.instanceId;
-    const window = row.points.slice(-limit);
+    const window = row.points;
     const color = colorOf(row.instanceId);
 
     if (color) {

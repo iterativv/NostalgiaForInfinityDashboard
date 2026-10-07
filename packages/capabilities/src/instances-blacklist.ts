@@ -5,15 +5,18 @@ import { Effect, Schema } from "effect";
 import { BlacklistResponse } from "@nfi/api-contract";
 import { defineCapability } from "./definition.js";
 import { asBackendError } from "./errors.js";
-import { applySearch } from "./search.js";
+import { normalizeSearch } from "./search.js";
 
 const BlacklistOptions = Schema.Struct({
   id: Schema.String.pipe(Schema.minLength(1)),
-  /** Free-text filter applied server-side over the full entry list. */
+  /** Free-text filter — a SQL LIKE over pair and reason. */
   search: Schema.optional(Schema.String),
 });
 
-/** `instances.blacklist` — blacklisted pairs with reasons for one instance. */
+/**
+ * `instances.blacklist` — blacklisted pairs with reasons for one instance,
+ * read from the mirror (SQL LIKE search, unfiltered SQL COUNT length).
+ */
 export const InstancesBlacklistCapability = defineCapability({
   name: "instances.blacklist",
   optionsSchema: BlacklistOptions,
@@ -23,17 +26,10 @@ export const InstancesBlacklistCapability = defineCapability({
   pollMs: 60_000,
   exposes: ["market-data"],
   run: (options, ctx) =>
-    Effect.flatMap(ctx.resolveInstance(options.id), (service) =>
-      service.getBlacklist(),
-    ).pipe(
-      Effect.map((body) => ({
-        pairs: applySearch(
-          body.pairs,
-          (entry) => [entry.pair, entry.reason],
-          options.search,
-        ),
-        length: body.length,
-      })),
-      Effect.mapError((cause) => asBackendError("instance blacklist", cause)),
-    ),
+    ctx.trades.listBlacklist({
+      instanceId: options.id,
+      search: normalizeSearch(options.search),
+    }).pipe(
+    Effect.mapError((cause) => asBackendError("instance blacklist", cause)),
+  ),
 });

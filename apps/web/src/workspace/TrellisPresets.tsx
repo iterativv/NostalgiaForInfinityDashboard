@@ -17,8 +17,8 @@
  *
  * Every preset carries a card-stack preview: the dialog renders the exact
  * cell arrangement the preset produces for the live view count — filled
- * cells as mini cards (offset ghost layers + tab counts for stacks),
- * empty cells dashed — so what you click is what the grid becomes.
+ * cells as mini cards (offset ghost layers mark tab stacks), empty cells
+ * dashed — so what you click is what the grid becomes.
  */
 
 import type { CSSProperties } from "react";
@@ -31,7 +31,6 @@ import {
   layout,
   useView,
   useViewTitle,
-  type LayoutDocument,
   type LayoutSpec,
   type ViewInfo,
   type WorkspaceHandle,
@@ -40,6 +39,15 @@ import { useLocalStore, useStoreEffect } from "@nfi/ui";
 import { requestConfirm } from "@nfi/widgets";
 import { capabilitiesStore } from "../auth/capabilities";
 import { EmptyPane } from "./EmptyPane";
+import {
+  setPendingSlotTarget,
+  stagePendingSlotLayout,
+  type PendingSlotTarget,
+} from "./pendingSlot";
+import {
+  clearWorkspaceTetrisSpans,
+  setWorkspaceStacked,
+} from "./store";
 
 /** One view as the presets see it (subset of Trellis `ViewInfo`). */
 export interface PresetView {
@@ -149,10 +157,17 @@ export interface GridPreset {
   readonly id: string;
   readonly name: string;
   readonly hint: string;
-  /** Popover grouping ("Split", "Grids", "Focus", "Stack"). */
+  /** Popover grouping ("Split", "Tetris", "Grids", "Focus", "Stack"). */
   readonly section: string;
   /** Minimum stage groups before the preset makes sense (else disabled). */
   readonly minGroups: number;
+  /**
+   * Tetris wall mode: the preset ALSO flips the page's `Workspace.stacked`
+   * flag, so the shape renders as a scrolling wall of different-width
+   * blocks (block widths follow the shape's weights) instead of tiling the
+   * fixed stage. Any non-tetris preset turns the mode back off.
+   */
+  readonly tetris?: boolean;
   readonly arrange: (groups: ViewGroup[]) => PresetNode;
 }
 
@@ -194,6 +209,59 @@ function gridPreset(
       return {
         kind: "column",
         children: rowChunks.map(rowOf),
+      };
+    },
+  };
+}
+
+/**
+ * Tetris wall shape: a repeating pattern of row spans on the 6-column grid
+ * (each row's spans sum to 6 — e.g. `[3, 3]` pairs, `[4, 2]` bricks),
+ * cycled until every group is placed. No empty slots — the pattern consumes
+ * everything; a ragged tail row keeps its pattern's widths (the wall's
+ * first-fit packer backfills the pocket with a later block). Groups stay
+ * one per cell — tab stacks never split across blocks.
+ */
+function tetrisPreset(
+  id: string,
+  name: string,
+  hint: string,
+  pattern: ReadonlyArray<ReadonlyArray<number>>,
+): GridPreset {
+  return {
+    id,
+    name,
+    hint,
+    section: "Tetris",
+    minGroups: 1,
+    tetris: true,
+    arrange: (groups) => {
+      const rows: Array<{ spans: number[]; cells: ViewGroup[] }> = [];
+      let index = 0;
+
+      for (let row = 0; index < groups.length; row++) {
+        const spans = pattern[row % pattern.length]!;
+        const cells = groups.slice(index, index + spans.length);
+
+        // SAFETY: `slice` on the readonly pattern row already copies into a
+        // fresh array; the assertion only re-declares that copy as mutable
+        // for the row record's `number[]` field.
+        rows.push({
+          spans: spans.slice(0, cells.length) as number[],
+          cells,
+        });
+        index += cells.length;
+      }
+
+      if (rows.length === 0) return emptyCell();
+
+      return {
+        kind: "column",
+        children: rows.map((row) => ({
+          kind: "row",
+          weights: row.spans,
+          children: row.cells.map((g) => cellOf([g])),
+        })),
       };
     },
   };
@@ -241,6 +309,47 @@ export const GRID_PRESETS: ReadonlyArray<GridPreset> = [
       children: distributeSlots(groups, 3).map((cell) => cellOf(cell)),
     }),
   },
+  // Mode-only apply (see applyPreset): tetris-wall keeps the page's own
+  // arrangement — block widths follow whatever shape the page already has —
+  // and just flips the Tetris wall render on; any tiled preset toggling it
+  // off restores the exact previous layout. Its pairs preview is a
+  // representative wall, not an applied shape.
+  tetrisPreset(
+    "tetris-wall",
+    "Tetris wall",
+    "Re-pack this page as-is: blocks keep their widths, gaps fill",
+    [[3, 3]],
+  ),
+  tetrisPreset(
+    "tetris-pairs",
+    "Tetris pairs",
+    "Even blocks, two across per shelf",
+    [[3, 3]],
+  ),
+  tetrisPreset(
+    "tetris-triples",
+    "Tetris triples",
+    "Even blocks, three across per shelf",
+    [[2, 2, 2]],
+  ),
+  tetrisPreset(
+    "tetris-hero",
+    "Tetris hero",
+    "First block full-width, pairs beneath",
+    [[6], [3, 3]],
+  ),
+  tetrisPreset(
+    "tetris-brick",
+    "Tetris brick",
+    "Offset 4 + 2 shelves, running bond",
+    [[4, 2], [2, 4]],
+  ),
+  tetrisPreset(
+    "tetris-mosaic",
+    "Tetris mosaic",
+    "Mixed 4+2, triples and pairs — maximum variety",
+    [[4, 2], [2, 2, 2], [3, 3]],
+  ),
   gridPreset("grid-2x2", "Grid 2 × 2", "Four slots in two columns", "Grids", 2, 2),
   gridPreset("triple", "Triple", "Three slots across", "Grids", 3, 1),
   gridPreset("triple-deck", "Triple deck", "Two columns across three rows", "Grids", 2, 3),
@@ -686,72 +795,24 @@ export function nodeToSpec(node: PresetNode): LayoutSpec {
 }
 
 /**
- * Pending slot target for the widget picker: set when an empty pane's Add
- * button opens the picker, consumed by the Trellis bridge when the picked
- * widget's panel opens (placed INTO the slot's panel, slot placeholder
- * closed by its VIEW id), cleared when the picker closes without a pick.
- * Read-only in the bridge — only the pick/cancel paths clear it, so a
- * pending target can never hijack an unrelated later add.
- *
- * Both ids are kept: `panelId` is the `into` placement target, `viewId` is
- * the exact placeholder view to retire. Matching by panel alone left the
- * empty pane as a second tab when the lookup missed — closing by view id
- * cannot miss.
+ * Pending-slot channels (slot target + empty-page layout) live in
+ * `./pendingSlot` — re-exported here so picker/bridge importers stay put.
  */
-export interface PendingSlotTarget {
-  readonly viewId: string;
-  readonly panelId: string;
-}
-
-const slotTargetStore = new Store<PendingSlotTarget | null>(null);
-
-export const setPendingSlotTarget = (target: PendingSlotTarget): void => {
-  slotTargetStore.setState(() => target);
-};
-
-export const clearPendingSlotTarget = (): void => {
-  slotTargetStore.setState(() => null);
-};
-
-export const takePendingSlotTarget = (): PendingSlotTarget | null => {
-  const target = slotTargetStore.state;
-  slotTargetStore.setState(() => null);
-
-  return target;
-};
-
-/** Read-only peek for the bridge (consumption clears via `take`). */
-export const peekPendingSlotTarget = (): PendingSlotTarget | null =>
-  slotTargetStore.state;
+export {
+  clearPendingSlotLayout,
+  clearPendingSlotTarget,
+  peekPendingSlotTarget,
+  setPendingSlotTarget,
+  takePendingSlotTarget,
+  usePendingSlotLayout,
+  type PendingSlotTarget,
+} from "./pendingSlot";
 
 /** Legacy per-browser Trellis key (pre-shared era). Only read once for
  * migration and then removed — the backend `trellis` field is the shared
  * arrangement now. */
 export const trellisStorageKey = (pageId: string): string =>
   `nfi-trellis-${pageId}`;
-
-/**
- * A preset picked on an EMPTY page (no workspace mounted to `setDocument`
- * into). TrellisWorkspace consumes it on its next render by mounting with
- * it as `defaultLayout`, after dropping any stale persisted doc that would
- * otherwise win. Scoped per page; cleared on first widget open and on
- * layout reset, so it can never resurrect where it wasn't picked.
- */
-export interface PendingSlotLayout {
-  readonly pageId: string;
-  readonly doc: LayoutDocument;
-}
-
-const pendingLayoutStore = new Store<PendingSlotLayout | null>(null);
-
-export const clearPendingSlotLayout = (): void => {
-  pendingLayoutStore.setState(() => null);
-};
-
-/** Reactive read for TrellisWorkspace (mounts the pending grid). */
-export function usePendingSlotLayout(): PendingSlotLayout | null {
-  return useStore(pendingLayoutStore, (s) => s);
-}
 
 /** Zero-cell trees (stack on an empty page) become one fillable slot. */
 export function ensureNonEmptyPreset(node: PresetNode): PresetNode {
@@ -785,7 +846,7 @@ export function applyPresetToEmptyPage(
     // this session via `defaultLayout`.
   }
 
-  pendingLayoutStore.setState(() => ({ pageId, doc }));
+  stagePendingSlotLayout({ pageId, doc });
 
   return true;
 }
@@ -811,6 +872,25 @@ export function applyPreset(
   const preset = GRID_PRESETS.find((p) => p.id === presetId);
 
   if (!preset) return false;
+
+  // Tetris wall is a RENDER MODE, not a shape: it re-packs whatever the
+  // page's existing arrangement is into a scrolling wall of natural-height
+  // blocks (the render override in TrellisWorkspace), so applying it leaves
+  // the Trellis document untouched — toggling back (any tiled preset)
+  // restores the exact previous layout.
+  if (presetId === "tetris-wall") {
+    setWorkspaceStacked(pageId, true);
+
+    return true;
+  }
+
+  // Shape presets flip the wall mode to match their kind: tetris shapes
+  // render as the scrolling wall, tiled shapes restore the fixed stage (a
+  // no-op persist-wise when the flag was never set). A shape rebuild also
+  // drops manual wall widths — a dragged block must not fight the fresh
+  // arrangement ("Tetris wall" above keeps them: it re-packs as-is).
+  setWorkspaceStacked(pageId, preset.tetris === true);
+  clearWorkspaceTetrisSpans(pageId);
 
   const groups = ws ? groupStageViews(ws.views({ type: "widget" })) : [];
 
@@ -940,7 +1020,6 @@ function MiniCard({ tabs }: { tabs: number }) {
       {tabs > 1 ? <span className="nfi-pv-ghost" aria-hidden /> : null}
       <span className="nfi-pv-tabbar" aria-hidden />
       <span className="nfi-pv-body" aria-hidden />
-      {tabs > 1 ? <span className="nfi-pv-count">{tabs}</span> : null}
     </span>
   );
 }

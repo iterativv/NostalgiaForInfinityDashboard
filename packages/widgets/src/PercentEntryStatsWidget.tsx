@@ -34,7 +34,6 @@ import { SettingsSelect } from "./shared/SettingsSelect";
 import { useTimeFormat } from "./shared/timeFormat";
 import { parseTradeTime } from "./shared/tradeSort";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
-import { type ExportColumn } from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -162,11 +161,7 @@ function buildTagPositionColumns(
             row.original.closeProfitPct ?? row.original.profitPct,
           )}
         >
-          {fmtSigned(
-            row.original.closeProfitPct ?? row.original.profitPct,
-            2,
-          )}
-          %
+          {fmtSigned(row.original.closeProfitPct ?? row.original.profitPct, 2)}%
         </span>
       ),
       enableSorting: false,
@@ -216,7 +211,9 @@ export function groupPositionsByTag(
     const source = groupByExit ? p.exitReason : p.enterTag;
     const trimmed = source?.trim();
 
-    const key = trimmed !== undefined && trimmed.length > 0 ? trimmed : "unknown";
+    const key =
+      trimmed !== undefined && trimmed.length > 0 ? trimmed : "unknown";
+
     const list = map.get(key) ?? [];
     list.push(p);
     map.set(key, list);
@@ -257,7 +254,12 @@ export function PercentEntryStatsWidget({
   // silently disagree with the tag rows.
   const { data, error, isLoading } = useCapability(
     "instances.tag-performance.relative",
-    { id: cfg.instanceId, limit: "200", groupBy: groupByExit ? "exit" : "enter" },
+    {
+      id: cfg.instanceId,
+      limit: "200",
+      groupBy: groupByExit ? "exit" : "enter",
+      bestEdgeMinTrades: "3",
+    },
   );
 
   // Related-trades detail for expansions: same newest-200 window the tags
@@ -290,16 +292,24 @@ export function PercentEntryStatsWidget({
   );
 
   const aggregated = data?.aggregatedTrades ?? 0;
-  const wins = rows.reduce((sum, r) => sum + r.wins, 0);
-  const trades = rows.reduce((sum, r) => sum + r.trades, 0);
 
-  const bestRow = rows.reduce<null | (typeof rows)[number]>((best, r) => {
-    if (r.trades < 3) return best;
+  // Footer metrics come from the server's full-set SQL aggregate (the
+  // grouped rows are LIMITed, so summing them client-side would drop every
+  // tag past the window); the reduces only cover pre-field snapshots.
+  const stats = data?.stats;
 
-    if (!best) return r;
+  const wins = stats?.wins ?? rows.reduce((sum, r) => sum + r.wins, 0);
+  const trades = stats?.trades ?? rows.reduce((sum, r) => sum + r.trades, 0);
 
-    return r.profitPctAvg > best.profitPctAvg ? r : best;
-  }, null);
+  const bestRow = stats?.bestEdge
+    ? { tag: stats.bestEdge.tag, profitPctAvg: stats.bestEdge.value }
+    : rows.reduce<null | (typeof rows)[number]>((best, r) => {
+        if (r.trades < 3) return best;
+
+        if (!best) return r;
+
+        return r.profitPctAvg > best.profitPctAvg ? r : best;
+      }, null);
 
   // Columns depend on the aggregated total (Share %) and the grouped
   // side (first header); ordering itself is fixed (most trades first,
@@ -324,19 +334,6 @@ export function PercentEntryStatsWidget({
     ([byExit]) => buildTagPositionColumns(byExit),
     { inputs: shallow },
   );
-
-  const exportColumns: ReadonlyArray<ExportColumn<RelativeTagPerformanceRow>> =
-    [
-      {
-        header: groupByExit ? COL.exitReason : COL.enterTag,
-        value: (r) => r.tag,
-      },
-      { header: COL.trades, value: (r) => r.trades },
-      { header: COL.wins, value: (r) => r.wins },
-      { header: COL.losses, value: (r) => r.losses },
-      { header: COL.winRate, value: (r) => r.winrate },
-      { header: COL.avgPct, value: (r) => r.profitPctAvg },
-    ];
 
   return (
     <>
@@ -408,8 +405,12 @@ export function PercentEntryStatsWidget({
                   label="Entry stats table actions"
                   exportMenu={{
                     filenameBase: `entry-stats-pct-${cfg.instanceId}`,
-                    columns: exportColumns,
-                    rows,
+                    dataset: "tag-performance-relative",
+                    params: {
+                      instanceId: cfg.instanceId,
+                      groupBy: groupByExit ? "exit" : "enter",
+                    },
+                    disabled: rows.length === 0,
                   }}
                 />
                 <div className="nfi-table-scroll">
@@ -418,44 +419,45 @@ export function PercentEntryStatsWidget({
                     data={rows}
                     getRowId={(r) => r.tag}
                     renderExpandedRow={(row) => {
-                    if (!positionsAccess.allowed) {
+                      if (!positionsAccess.allowed) {
+                        return (
+                          <p className="nfi-suborders-empty">
+                            Position detail needs
+                            `instances.closed-positions.relative`.
+                          </p>
+                        );
+                      }
+
+                      const related =
+                        positionsByTag.get(row.original.tag) ?? [];
+
+                      if (related.length === 0) {
+                        return (
+                          <p className="nfi-suborders-empty">
+                            No positions in this window carry this tag.
+                          </p>
+                        );
+                      }
+
                       return (
-                        <p className="nfi-suborders-empty">
-                          Position detail needs
-                          `instances.closed-positions.relative`.
-                        </p>
-                      );
-                    }
-
-                    const related = positionsByTag.get(row.original.tag) ?? [];
-
-                    if (related.length === 0) {
-                      return (
-                        <p className="nfi-suborders-empty">
-                          No positions in this window carry this tag.
-                        </p>
-                      );
-                    }
-
-                    return (
-                      <div className="nfi-suborders">
-                        <p className="nfi-suborders-caption">
-                          {related.length}{" "}
-                          {related.length === 1 ? "trade" : "trades"} ·{" "}
-                          {row.original.tag}
-                        </p>
-                        <div className="nfi-table-scroll">
-                          <NfiDataTable
-                            columns={tagPositionColumns}
-                            data={related}
-                            getRowId={(p) => `${cfg.instanceId}-${p.tradeId}`}
-                          />
+                        <div className="nfi-suborders">
+                          <p className="nfi-suborders-caption">
+                            {related.length}{" "}
+                            {related.length === 1 ? "trade" : "trades"} ·{" "}
+                            {row.original.tag}
+                          </p>
+                          <div className="nfi-table-scroll">
+                            <NfiDataTable
+                              columns={tagPositionColumns}
+                              data={related}
+                              getRowId={(p) => `${cfg.instanceId}-${p.tradeId}`}
+                            />
+                          </div>
                         </div>
-                      </div>
-                    );
-                  }}
-                />
-              </div>
+                      );
+                    }}
+                  />
+                </div>
               </NfiTableContainer>
             </div>
           ) : (

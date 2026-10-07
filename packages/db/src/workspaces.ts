@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 import { SqlClient, SqlError } from "@effect/sql";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Either, Layer, Schema } from "effect";
 import type { ParseError } from "effect/ParseResult";
 import { randomUUID } from "node:crypto";
-import { Workspace, WorkspaceSummary } from "@nfi/api-contract";
+import { TetrisSpans, Workspace, WorkspaceSummary } from "@nfi/api-contract";
 
 /**
  * Durable workspace storage.
@@ -177,6 +177,8 @@ const WorkspaceRow = Schema.Struct({
   icon: Schema.NullOr(Schema.String),
   origin: Schema.NullOr(Schema.String),
   trellisJson: Schema.NullOr(Schema.String),
+  tetrisSpansJson: Schema.NullOr(Schema.String),
+  stacked: Schema.Number,
   updatedAt: Schema.String,
 });
 
@@ -230,6 +232,24 @@ const assembleWorkspace = (
       ),
     );
 
+    // Manual Tetris wall widths (panelId → span): NULL/corrupt/invalid JSON
+    // = absent (the wall falls back to tiled fractions). Like the opaque
+    // trellis document above, a bad column must not fail the whole
+    // workspace load — it only affects wall block widths. The contract
+    // schema is the I/O boundary here: entries survive only when it decodes.
+    let tetrisSpans: Workspace["tetrisSpans"] = undefined;
+
+    if (row.tetrisSpansJson !== null && row.tetrisSpansJson !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(row.tetrisSpansJson);
+        const decoded = Schema.decodeUnknownEither(TetrisSpans)(parsed);
+
+        if (Either.isRight(decoded)) tetrisSpans = decoded.right;
+      } catch {
+        tetrisSpans = undefined;
+      }
+    }
+
     // Strict boundary: corrupt persisted state fails explicitly, never renders garbage.
     return yield* Schema.decodeUnknown(Workspace)({
       id: row.id,
@@ -243,6 +263,9 @@ const assembleWorkspace = (
       icon: row.icon ?? undefined,
       origin: row.origin === "user" ? "user" : undefined,
       trellis,
+      tetrisSpans,
+      // 0/1 column ↔ optional boolean (0 = absent).
+      stacked: row.stacked === 1 || undefined,
     });
   });
 
@@ -321,9 +344,14 @@ export const WorkspaceRepoLive: Layer.Layer<
             ? null
             : JSON.stringify(workspace.trellis);
 
+        const tetrisSpansJson =
+          workspace.tetrisSpans === undefined
+            ? null
+            : JSON.stringify(workspace.tetrisSpans);
+
         yield* sql`
-          INSERT INTO workspaces (id, name, schema_version, version, layout_json, active_panel_id, icon, origin, trellis_json, created_at, updated_at)
-          VALUES (${workspace.id}, ${workspace.name}, ${workspace.schemaVersion}, ${workspace.version}, ${layoutJson}, ${workspace.activePanelId}, ${workspace.icon ?? null}, ${workspace.origin ?? null}, ${trellisJson}, ${now}, ${now})
+          INSERT INTO workspaces (id, name, schema_version, version, layout_json, active_panel_id, icon, origin, trellis_json, tetris_spans_json, stacked, created_at, updated_at)
+          VALUES (${workspace.id}, ${workspace.name}, ${workspace.schemaVersion}, ${workspace.version}, ${layoutJson}, ${workspace.activePanelId}, ${workspace.icon ?? null}, ${workspace.origin ?? null}, ${trellisJson}, ${tetrisSpansJson}, ${workspace.stacked === true ? 1 : 0}, ${now}, ${now})
           ON CONFLICT (id) DO UPDATE SET
             name = excluded.name,
             schema_version = excluded.schema_version,
@@ -333,6 +361,8 @@ export const WorkspaceRepoLive: Layer.Layer<
             icon = excluded.icon,
             origin = excluded.origin,
             trellis_json = excluded.trellis_json,
+            tetris_spans_json = excluded.tetris_spans_json,
+            stacked = excluded.stacked,
             updated_at = excluded.updated_at
         `;
       });
@@ -363,6 +393,8 @@ export const WorkspaceRepoLive: Layer.Layer<
               icon,
               origin,
               trellis_json AS trellisJson,
+              tetris_spans_json AS tetrisSpansJson,
+              stacked,
               updated_at AS updatedAt
             FROM workspaces
             WHERE id = ${id}

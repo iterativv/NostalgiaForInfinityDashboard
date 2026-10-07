@@ -20,6 +20,7 @@ import type {
   RelativeProfitHistoryResponse,
   RelativeTagPerformanceResponse,
   RelativeTradesResponse,
+  TagGroupBy,
   TagPerformanceResponse,
   TradeOrder,
 } from "@nfi/api-contract";
@@ -303,18 +304,48 @@ export const toRelativeClosedPositions = (
   offset: num(absolute.offset),
 });
 
+/** Mutable local shape; assignable to the readonly response type. */
+interface MutableTagPerformanceBase {
+  groupBy: TagGroupBy;
+  rows: RelativeTagPerformanceResponse["rows"];
+  aggregatedTrades: number;
+  totalTrades?: number;
+  stats?: NonNullable<RelativeTagPerformanceResponse["stats"]>;
+}
+
 export const toRelativeTagPerformance = (
-  absolute: TagPerformanceResponse,
-): RelativeTagPerformanceResponse => ({
-  groupBy: absolute.groupBy,
-  rows: absolute.rows.map((r) => ({
-    tag: r.tag,
-    trades: r.trades,
-    wins: r.wins,
-    losses: r.losses,
-    winrate: r.winrate,
-    profitPctAvg: r.profitPctAvg,
-  })),
-  aggregatedTrades: absolute.aggregatedTrades,
-  totalTrades: num(absolute.totalTrades),
-});
+  absolute: Omit<TagPerformanceResponse, "totals" | "best" | "worst"> & {
+    /** Percentages-only stats (pre-stripped by the caller). */
+    readonly stats?: {
+      readonly trades: number;
+      readonly wins: number;
+      readonly losses: number;
+      readonly winrate: number;
+      readonly profitPctAvg: number;
+      readonly bestEdge?: { readonly tag: string; readonly value: number };
+    };
+  },
+): RelativeTagPerformanceResponse => {
+  const base: MutableTagPerformanceBase = {
+    groupBy: absolute.groupBy,
+    rows: absolute.rows.map((r) => ({
+      tag: r.tag,
+      trades: r.trades,
+      wins: r.wins,
+      losses: r.losses,
+      winrate: r.winrate,
+      profitPctAvg: r.profitPctAvg,
+      instanceId: r.instanceId,
+      instanceName: r.instanceName,
+    })),
+    aggregatedTrades: absolute.aggregatedTrades,
+    totalTrades: num(absolute.totalTrades),
+  };
+
+  // Stats pass through as the percentages-only subset; the absolute
+  // `profitAbs` sum and the absolute `best`/`worst` extremes never enter
+  // the relative payload.
+  if (absolute.stats !== undefined) base.stats = absolute.stats;
+
+  return base;
+};

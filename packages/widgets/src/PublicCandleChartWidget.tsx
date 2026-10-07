@@ -43,6 +43,7 @@ import {
 import { useCapability } from "./live/live";
 import { useWidgetConfigSink } from "./shared/sessionConfig";
 import { useCandlePending } from "./shared/candlePending";
+import { useCandleHistory, mergeOlderCandles } from "./shared/candleHistory";
 import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 import {
   InstanceIdField,
@@ -288,6 +289,21 @@ export function PublicCandleChartWidget({
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
 
+  // Infinite scroll-back (same as the sensitive twin): older exchange pages
+  // accumulate as the user pans toward the oldest bar.
+  const history = useCandleHistory({
+    enabled: marketAccess.allowed && cfg.pair.trim().length > 0,
+    instanceId: cfg.instanceId,
+    pair: cfg.pair,
+    timeframe: cfg.timeframe,
+  });
+
+  const allCandles = useDerived(
+    [candles, history.older] as const,
+    ([live, older]) => (older.length > 0 ? mergeOlderCandles(older, live) : live),
+    { inputs: shallow },
+  );
+
   // Same timeframe-switch grace as the sensitive twin (see CandleChartWidget).
   const candlesPending = useCandlePending(
     `${cfg.instanceId}|${cfg.pair}|${cfg.timeframe}|${limit}`,
@@ -335,8 +351,23 @@ export function PublicCandleChartWidget({
 
   // Bars drive the indicator math and VWAP: dedupe by bar-time seconds
   // (keep the newest) so a duplicated candle from freqtrade cannot produce
-  // duplicate-time indicator points either.
-  const bars = useDerived(candles, (src): TvBar[] =>
+  // duplicate-time indicator points either. The merged series (live window
+  // + scroll-back history) keeps the overlays continuous into the past.
+  const bars = useDerived(allCandles, (src): TvBar[] =>
+    orderedByTime(
+      src.map((c) => ({
+        time: Math.floor(c.time / 1000),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      })),
+    ),
+  );
+
+  // Toolbar readouts stay scoped to the LIVE window (see sensitive twin).
+  const liveBars = useDerived(candles, (src): TvBar[] =>
     orderedByTime(
       src.map((c) => ({
         time: Math.floor(c.time / 1000),
@@ -582,7 +613,7 @@ export function PublicCandleChartWidget({
   // Window stats for the toolbar quote strip (over deduped, sorted
   // bars) — derived single pass so resize re-renders don't rescan up to
   // 1000 bars per frame.
-  const windowStats = useDerived(bars, (src) => {
+  const windowStats = useDerived(liveBars, (src) => {
     const lastBar = src[src.length - 1];
     const prevBar = src[src.length - 2];
 
@@ -971,11 +1002,14 @@ export function PublicCandleChartWidget({
               </span>
             </div>
             <CandleChart
-              candles={candles}
+              candles={allCandles}
               overlays={overlays}
               showVolume={cfg.showVolume}
               subplot={subplot}
               tradeMarkers={positionMarkers}
+              onRequestOlder={() =>
+                history.loadOlder(allCandles[0]?.time ?? 0)
+              }
             />
           </div>
         ) : (

@@ -8,6 +8,7 @@ import {
   SnapshotRepoLive,
   SettingsRepoLive,
   SqliteLive,
+  TradesRepoLive,
   WorkspaceRepoLive,
   InstanceRepoLive,
   UserRepoLive,
@@ -51,6 +52,8 @@ const SessionRepoWithSql = SessionRepoLive.pipe(
   Layer.provide(SqliteWithConfig),
 );
 
+const TradesRepoWithSql = TradesRepoLive.pipe(Layer.provide(SqliteWithConfig));
+
 export const DbLive = Layer.mergeAll(
   DbConfigLive,
   SqliteWithConfig,
@@ -60,6 +63,7 @@ export const DbLive = Layer.mergeAll(
   UserRepoWithSql,
   SettingsRepoWithSql,
   SessionRepoWithSql,
+  TradesRepoWithSql,
 );
 
 export const MigrateLive = Layer.effectDiscard(migrate);

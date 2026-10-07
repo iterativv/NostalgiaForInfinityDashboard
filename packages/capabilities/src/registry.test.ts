@@ -28,8 +28,8 @@ import { Effect, Match } from "effect";
 import type { AST } from "effect/SchemaAST";
 
 describe("capability registry (hard-coded, type-safe)", () => {
-  it("covers the wire vocabulary exactly (65 capabilities)", () => {
-    expect(ALL_CAPABILITY_NAMES).toHaveLength(65);
+  it("covers the wire vocabulary exactly (74 capabilities)", () => {
+    expect(ALL_CAPABILITY_NAMES).toHaveLength(74);
     expect(new Set(ALL_CAPABILITY_NAMES)).toEqual(new Set(ALL_CAPABILITIES));
 
     for (const [key, def] of Object.entries(CAPABILITY_REGISTRY)) {

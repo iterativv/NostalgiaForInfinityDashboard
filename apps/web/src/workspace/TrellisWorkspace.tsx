@@ -51,6 +51,8 @@ import {
 } from "./TrellisPresets";
 import { EmptyPane } from "./EmptyPane";
 import { TabFullScreen } from "./TabFullScreen";
+import { useTetrisWorkspace, useWorkspaceModeClass } from "./stacked";
+import { useTetrisLayout } from "./useTetrisLayout";
 import {
   activateWorkspacePanel,
   closeWorkspacePanel,
@@ -665,6 +667,38 @@ function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
   useEffect(() => {
     if (!ws) return;
     setTrellisWorkspaceHandle(ws);
+
+    // Slot hygiene: an "Empty pane" placeholder has no business living in
+    // a panel that also holds real widgets (a tab dragged into the slot's
+    // panel, a preset merge, a stale slot from an older apply). Retire
+    // such slots whenever the arrangement changes — the pending-slot pick
+    // path sweeps its own target, this catches every other route. Closing
+    // publishes a snapshot, which re-fires the sweep; it settles because a
+    // second pass finds nothing left to close.
+    const retireCoveredSlots = (): void => {
+      const snapshot = ws.getSnapshot();
+      const widgetPanels = new Set<string>();
+
+      for (const view of snapshot.views) {
+        if (
+          view.type === "widget" &&
+          view.placement !== "floating" &&
+          view.placement !== "hidden"
+        ) {
+          widgetPanels.add(view.panelId);
+        }
+      }
+
+      for (const slot of ws.views({ type: "slot" })) {
+        if (widgetPanels.has(slot.panelId)) {
+          void ws.close(slot.id, { force: true });
+        }
+      }
+    };
+
+    retireCoveredSlots();
+    const releaseSlotSweep = ws.subscribe(retireCoveredSlots);
+
     let cancelled = false;
     // Surfaces settle a frame after mount; retry briefly if not ready.
     let attempts = 0;
@@ -810,9 +844,25 @@ function TrellisBridge({ panels }: { panels: NfiWorkspace["panels"] }) {
 
     return () => {
       cancelled = true;
+      releaseSlotSweep();
       window.clearTimeout(timer);
     };
   }, [ws, panels]);
+
+  return null;
+}
+
+/** Tetris wall annotator: renders nothing; see `useTetrisLayout`. */
+function TetrisAnnotator({
+  enabled,
+  registry,
+  canResize,
+}: {
+  enabled: boolean;
+  registry: WidgetRegistry;
+  canResize: boolean;
+}) {
+  useTetrisLayout(enabled, registry, canResize);
 
   return null;
 }
@@ -843,6 +893,12 @@ export function TrellisWorkspace({
   // `isSplitLocked` mirrors `locked` from the shell today (read-only
   // surfaces); Trellis owns its dividers, so both collapse to read-only.
   const readOnly = locked || isSplitLocked;
+  // Tetris wall mode (page flag) or a narrow viewport: the workspace renders
+  // as natural-height panes — the wall packs them as different-width blocks
+  // into top-aligned shelves (pure render override — the Trellis document is
+  // untouched; see styles.css `.nfi-trellis-tetris` / `.nfi-trellis-stacked`).
+  const tetris = useTetrisWorkspace();
+  const modeClass = useWorkspaceModeClass();
 
   // A preset picked on an empty page waits here: the empty branch below
   // mounts Trellis with it as `defaultLayout` (scoped per page, cleared
@@ -934,7 +990,7 @@ export function TrellisWorkspace({
       // describes the stage). Absent everywhere else.
       defaultLayout={initialSharedDoc ? undefined : (pendingForPage?.doc ?? undefined)}
       panelMenu={false}
-      className="nfi-trellis"
+      className={modeClass}
       onDocumentChange={(doc) => {
         updateTrellisDocument(activePageId, doc);
       }}
@@ -1011,6 +1067,10 @@ export function TrellisWorkspace({
 
       <Workspace.Chrome>
         <TrellisBridge panels={workspace.panels} />
+        {/* Tetris wall: stamps grid placement onto the panels/surfaces the
+            stylesheet re-flows (no-op unless the wall mode is on) and mounts
+            the per-block resize handles on editable surfaces. */}
+        <TetrisAnnotator enabled={tetris} registry={registry} canResize={!readOnly} />
       </Workspace.Chrome>
     </Workspace>
   );

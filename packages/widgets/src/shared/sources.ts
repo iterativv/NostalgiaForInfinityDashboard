@@ -43,26 +43,42 @@ export interface SourceResult<T> {
 
 /**
  * Open positions for one instance or the whole fleet
- * (`instanceId === "all"`). `search` is applied server-side, before any
- * slicing, so matches outside the fetched window still surface.
+ * (`instanceId === "all"`). `search`, the sign `filter`, ordering and
+ * `limit` are all SQL clauses on the mirror — the database returns exactly
+ * the requested window.
  */
 export function useOpenPositionsSource(
   instanceId: string,
-  opts?: { enabled?: boolean; search?: string },
+  opts?: {
+    enabled?: boolean;
+    search?: string;
+    sort?: "profitPct";
+    dir?: "asc" | "desc";
+    filter?: "gain" | "loss";
+    limit?: number;
+  },
 ): SourceResult<ReadonlyArray<SourcedOpenPosition>> {
   const enabled = opts?.enabled ?? true;
   const search = opts?.search?.trim() || undefined;
   const fleet = instanceId === ALL_INSTANCES;
 
+  const sqlOpts = {
+    search,
+    sort: opts?.sort,
+    dir: opts?.dir,
+    limit: opts?.limit === undefined ? undefined : String(opts.limit),
+    filter: opts?.filter,
+  };
+
   const perInstanceView = useCapability(
     "instances.open-positions",
-    { id: fleet ? "default" : instanceId, search },
+    { id: fleet ? "default" : instanceId, ...sqlOpts },
     { enabled: enabled && !fleet },
   );
 
   const fleetView = useCapability(
     "instances.positions-all",
-    { search },
+    sqlOpts,
     { enabled: enabled && fleet },
   );
 

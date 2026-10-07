@@ -126,6 +126,16 @@ class FreqtradeAuthChallenge extends Schema.TaggedError<FreqtradeAuthChallenge>(
 // Client service
 // ---------------------------------------------------------------------------
 
+/**
+ * A closed-trades page annotated with how many OPEN rows the fetched
+ * freqtrade `/trades` window contained: 0 on builds whose `/trades` lists
+ * (and counts) closed trades only; the open-book size on builds that fold
+ * open trades into the list and `total_trades`.
+ */
+export interface ClosedTailPage extends ClosedPositionsResponse {
+  readonly openSeen: number;
+}
+
 export interface FreqtradeClientService {
   readonly ping: () => Effect.Effect<{ status: string }, FreqtradeError>;
   readonly getVersion: () => Effect.Effect<{ version: string }, FreqtradeError>;
@@ -143,7 +153,7 @@ export interface FreqtradeClientService {
   readonly getClosedPositions: (
     limit?: number,
     offset?: number,
-  ) => Effect.Effect<ClosedPositionsResponse, FreqtradeError>;
+  ) => Effect.Effect<ClosedTailPage, FreqtradeError>;
   readonly getTagPerformance: (
     limit?: number,
     groupBy?: TagGroupBy,
@@ -165,11 +175,17 @@ export interface FreqtradeClientService {
    * so the UI can distinguish bot analysis from raw market data.
    * Unsupported exchanges fail with a clear reason — callers keep the
    * analyzed result then.
+   *
+   * `beforeMs` pages BACKWARD: klines strictly older than that epoch-ms
+   * instant (binance `endTime`), enabling the charts' infinite scroll into
+   * past data — the exchange is the only source that reaches years back
+   * (freqtrade's analyzed dataframe is a bounded rolling window).
    */
   readonly getMarketCandles: (
     pair: string,
     timeframe: string,
     limit?: number,
+    beforeMs?: number,
   ) => Effect.Effect<CandlesResponse, FreqtradeError>;
   readonly getAvailablePairs: (
     timeframe?: string,
@@ -302,6 +318,79 @@ const stringOrElse = (fallback: () => string): Schema.Schema<string, unknown> =>
 /** String passthrough; `undefined` for missing/non-string values. */
 const optString: Schema.Schema<string | undefined, unknown> = Schema.Union(
   Schema.String,
+  toUndefined,
+);
+
+/**
+ * Trade duration input as the raw `/trades` row sees it (subset).
+ */
+export interface TradeDurationInput {
+  readonly trade_duration_s?: number | undefined;
+  readonly open_timestamp?: number | undefined;
+  readonly close_timestamp?: number | undefined;
+  readonly open_date: string;
+  readonly close_date?: string | undefined;
+}
+
+/**
+ * Trade duration in seconds, derived client-side. The REST `/trades` schema
+ * carries NO duration field (verified against freqtrade's `TradeSchema` —
+ * FreqUI derives it the same way, as `close_timestamp - open_timestamp`).
+ * Preference: an explicit `trade_duration_s` (forks/newer builds), then the
+ * epoch-ms timestamps, then the (UTC-normalized) date strings; `undefined`
+ * only when the trade has not closed.
+ */
+export const deriveTradeDurationSeconds = (
+  t: TradeDurationInput,
+): number | undefined => {
+  if (t.trade_duration_s !== undefined) return t.trade_duration_s;
+
+  if (t.close_timestamp !== undefined && t.open_timestamp !== undefined)
+    return (t.close_timestamp - t.open_timestamp) / 1000;
+
+  if (t.close_date === undefined) return undefined;
+
+  const openMs = Date.parse(t.open_date);
+  const closeMs = Date.parse(t.close_date);
+
+  return Number.isNaN(openMs) || Number.isNaN(closeMs)
+    ? undefined
+    : (closeMs - openMs) / 1000;
+};
+
+/**
+ * Freqtrade serializes every trade date as a NAIVE UTC string
+ * (`"2026-10-06 13:43:00"` — `DATETIME_PRINT_FORMAT` on UTC datetimes, no
+ * zone marker). JavaScript parses such strings as browser-LOCAL time, which
+ * shifted every age, duration and timestamp display by the machine's UTC
+ * offset. Annotate the zone at this boundary (`…T13:43:00Z`): strings that
+ * already carry `T`/`Z`/an explicit offset pass through untouched.
+ */
+export const toUtcIso = (value: string): string => {
+  if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)) return value;
+
+  const iso = value.includes("T") ? value : value.replace(" ", "T");
+
+  return /[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`;
+};
+
+/** Trade-date string, normalized to ISO UTC (see `toUtcIso`). */
+const utcDateString: Schema.Schema<string, unknown> = Schema.Unknown.pipe(
+  Schema.transform(Schema.String, {
+    decode: (value) => toUtcIso(String(value)),
+    encode: (decoded) => decoded,
+  }),
+);
+
+/** Trade-date field: normalized to ISO UTC; missing values take `fallback()`. */
+const utcDateOrElse = (
+  fallback: () => string,
+): Schema.Schema<string, unknown> =>
+  Schema.Union(utcDateString, stringOrElse(fallback));
+
+/** Trade-date field: normalized to ISO UTC; `undefined` when absent. */
+const optUtcDate: Schema.Schema<string | undefined, unknown> = Schema.Union(
+  utcDateString,
   toUndefined,
 );
 
@@ -818,12 +907,54 @@ export const deriveOrderIsEntry = (
   return side === (isShort === true ? "sell" : "buy");
 };
 
+/**
+ * Whole-stake profit percent for an open trade.
+ *
+ * Freqtrade's `/status` `profit_ratio` / `profit_pct` cover only the
+ * REMAINING position after partial exits: NFI's de-risks and grind exits
+ * realize P/L that the field never sees, so it stops matching what the
+ * strategy acts on (`calc_total_profit()`) and what Freqi/telegram report —
+ * "open rate"-style math is not accurate for grind-exit/de-risk trades.
+ * `total_profit_ratio` is that whole-stake view: realized exits plus the
+ * remaining position over the whole stake used, funding fees included —
+ * the same convention as the closed side's `close_profit`. Prefer it and
+ * fall back to the raw fields for builds that predate it.
+ */
+export const openProfitPct = (t: {
+  total_profit_ratio?: number;
+  profit_ratio?: number;
+  profit_pct?: number;
+}): number | undefined => {
+  const total = optNum(t.total_profit_ratio);
+
+  if (total !== undefined) return total * 100;
+
+  const ratio = optNum(t.profit_ratio);
+
+  if (ratio !== undefined) return ratio * 100;
+
+  return optNum(t.profit_pct);
+};
+
+/**
+ * Whole-stake absolute profit for an open trade — `total_profit_abs`
+ * includes the realized part of partial exits (`profit_abs` does not);
+ * falls back for builds that predate the field.
+ */
+export const openProfitAbs = (t: {
+  total_profit_abs?: number;
+  profit_abs?: number;
+}): number | undefined => optNum(t.total_profit_abs) ?? optNum(t.profit_abs);
+
 /** Narrow freqtrade's opaque ft_order_side to real side text at the boundary. */
 const isSideText = (value: unknown): value is string =>
   Either.isRight(Schema.decodeUnknownEither(Schema.String)(value));
 
 /** Map a decoded freqtrade order payload to a `TradeOrder`. */
-const toTradeOrder = (order: FreqtradeOrder, isShort?: boolean): TradeOrder => ({
+const toTradeOrder = (
+  order: FreqtradeOrder,
+  isShort?: boolean,
+): TradeOrder => ({
   orderId: order.order_id,
   side: String(order.ft_order_side ?? order.side ?? ""),
   type: order.order_type,
@@ -859,8 +990,10 @@ const OpenTradesPayload = arrayOrEmpty(
         current_rate: optAnyNumber,
         profit_abs: optAnyNumber,
         profit_ratio: optAnyNumber,
+        total_profit_abs: optAnyNumber,
+        total_profit_ratio: optAnyNumber,
         profit_pct: optAnyNumber,
-        open_date: stringOrElse(() => new Date().toISOString()),
+        open_date: utcDateOrElse(() => new Date().toISOString()),
         strategy: optString,
         timeframe: Schema.Union(Schema.String, stringOrEmpty),
       }),
@@ -885,10 +1018,12 @@ const OpenPositionsPayload = arrayOrEmpty(
         current_rate: optNumber,
         profit_abs: optNumber,
         profit_ratio: optAnyNumber,
+        total_profit_abs: optNumber,
+        total_profit_ratio: optNumber,
         profit_pct: optNumber,
         profit_fiat: optNumber,
         realized_profit: optNumber,
-        open_date: stringOrElse(() => new Date().toISOString()),
+        open_date: utcDateOrElse(() => new Date().toISOString()),
         strategy: optString,
         timeframe: stringWhenPresent,
         enter_tag: optString,
@@ -926,8 +1061,12 @@ const TradesListPayload = payload(
             close_profit_abs: Schema.Unknown,
             close_profit_pct: Schema.Unknown,
             realized_profit: optNumber,
-            open_date: stringOrElse(() => new Date().toISOString()),
-            close_date: optString,
+            open_date: utcDateOrElse(() => new Date().toISOString()),
+            open_timestamp: optAnyNumber,
+            close_date: optUtcDate,
+            close_timestamp: optAnyNumber,
+            // Freqtrade forks/newer builds may include an explicit duration;
+            // the REST schema never has, so `toClosedPosition` derives it.
             trade_duration_s: optNumber,
             strategy: optString,
             timeframe: stringWhenPresent,
@@ -1058,8 +1197,8 @@ const PlotConfigPayload = payload(
 const LockFields = Schema.Struct({
   id: optAnyNumber,
   pair: stringOr("UNKNOWN"),
-  lock_time: stringOrElse(() => new Date().toISOString()),
-  lock_end_time: stringOrElse(() => new Date().toISOString()),
+  lock_time: utcDateOrElse(() => new Date().toISOString()),
+  lock_end_time: utcDateOrElse(() => new Date().toISOString()),
   reason: stringOr(""),
   active: Schema.Unknown,
   side: optString,
@@ -1238,7 +1377,15 @@ export interface ResolvedFreqtradeConfig {
   readonly baseUrl: string;
   readonly username: string;
   readonly password: string;
+  /**
+   * Hard ceiling for one HTTP round trip (login, request, body read).
+   * Unset falls back to `DEFAULT_REQUEST_TIMEOUT_MS`.
+   */
+  readonly requestTimeoutMs?: number | undefined;
 }
+
+/** Default request budget when the caller leaves `requestTimeoutMs` unset. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
 /** Build a client service for an arbitrary instance config (multi-instance). */
 /** How long a service stops calling a freqtrade that is unreachable. */
@@ -1288,7 +1435,10 @@ interface ExchangeIdentity {
  */
 const IDENTITY_TTL_MS = 10 * 60_000;
 
-const identityCache = new Map<string, { identity: ExchangeIdentity; at: number }>();
+const identityCache = new Map<
+  string,
+  { identity: ExchangeIdentity; at: number }
+>();
 
 /**
  * Binance public klines hosts. Futures/margin settle on fapi; everything
@@ -1350,7 +1500,9 @@ const MARKET_DATA_TIMEOUT_MS = 8_000;
 /**
  * Fetch public klines for one pair/timeframe straight from the exchange
  * (no freqtrade auth, no breaker — a dead bot or a dead exchange are
- * separate outages and must not fail each other fast).
+ * separate outages and must not fail each other fast). `beforeMs` fetches
+ * BACKWARD: klines whose open time is strictly before that epoch-ms
+ * instant (binance `endTime`), one page of `limit` at a time.
  */
 const fetchExchangeKlines = (
   http: HttpClient.HttpClient,
@@ -1358,6 +1510,7 @@ const fetchExchangeKlines = (
   pair: string,
   timeframe: string,
   limit: number,
+  beforeMs?: number,
 ): Effect.Effect<CandlesResponse, FreqtradeError> => {
   if (identity.exchange.toLowerCase() !== "binance") {
     return new FreqtradeError({
@@ -1379,9 +1532,14 @@ const fetchExchangeKlines = (
   // more anyway (the UI limit ceiling is 1000).
   const capped = Math.min(Math.max(limit, 20), 1000);
 
+  const paging =
+    beforeMs !== undefined && Number.isFinite(beforeMs) && beforeMs > 0
+      ? `&endTime=${Math.floor(beforeMs) - 1}`
+      : "";
+
   return Effect.gen(function* () {
     const request = HttpClientRequest.get(
-      `${binanceKlinesHost(identity.tradingMode)}/klines?symbol=${symbol}&interval=${encodeURIComponent(timeframe)}&limit=${capped}`,
+      `${binanceKlinesHost(identity.tradingMode)}/klines?symbol=${symbol}&interval=${encodeURIComponent(timeframe)}&limit=${capped}${paging}`,
     );
 
     const response = yield* http.execute(request).pipe(
@@ -1393,9 +1551,7 @@ const fetchExchangeKlines = (
             reason: `exchange klines for ${symbol} ${timeframe} timed out`,
           }),
       }),
-      Effect.mapError((cause) =>
-        toFreqtradeError("market-candles", cause),
-      ),
+      Effect.mapError((cause) => toFreqtradeError("market-candles", cause)),
     );
 
     if (response.status >= 400) {
@@ -1439,6 +1595,29 @@ export const makeFreqtradeService = (
   Effect.gen(function* () {
     const baseUrl = resolved.baseUrl.replace(/\/$/, "");
     const tokenRef = yield* Ref.make<string | null>(null);
+
+    // Without a ceiling, ONE hung socket (a keep-alive connection the server
+    // silently dropped, a stalling proxy) parks the calling fiber forever —
+    // the trades sync and the live poller freeze with it and the mirrors go
+    // silently stale. A timeout fails transport-level (no `status`), so the
+    // circuit breaker treats it as an outage and backs off.
+    const requestTimeoutMs =
+      resolved.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+
+    const withRequestTimeout = <A>(
+      operation: string,
+      effect: Effect.Effect<A, FreqtradeError>,
+    ): Effect.Effect<A, FreqtradeError> =>
+      effect.pipe(
+        Effect.timeoutFail({
+          duration: requestTimeoutMs,
+          onTimeout: () =>
+            new FreqtradeError({
+              operation,
+              reason: `no response within ${Math.round(requestTimeoutMs / 1000)}s`,
+            }),
+        }),
+      );
 
     const withBreaker = <A>(
       operation: string,
@@ -1547,43 +1726,48 @@ export const makeFreqtradeService = (
       schema: Schema.Schema<A, I>,
     ): Effect.Effect<A, FreqtradeError> =>
       withBreaker(operation, () =>
-        withAuth(operation, (token) =>
-          Effect.gen(function* () {
-            const request = HttpClientRequest.get(`${baseUrl}${path}`).pipe(
-              HttpClientRequest.setHeaders({
-                Authorization: `Bearer ${token}`,
-                "content-type": "application/json",
-              }),
-            );
-
-            const response = yield* http.execute(request);
-
-            if (response.status === 401) {
-              return yield* Effect.fail(
-                new FreqtradeAuthChallenge({ operation }),
-              );
-            }
-
-            if (response.status >= 400) {
-              return yield* Effect.fail(
-                new FreqtradeError({
-                  operation,
-                  reason: `freqtrade ${path} returned ${response.status}`,
-                  status: response.status,
+        // The ceiling wraps auth too: a login that never answers must not
+        // outlive the request budget either.
+        withRequestTimeout(
+          operation,
+          withAuth(operation, (token) =>
+            Effect.gen(function* () {
+              const request = HttpClientRequest.get(`${baseUrl}${path}`).pipe(
+                HttpClientRequest.setHeaders({
+                  Authorization: `Bearer ${token}`,
+                  "content-type": "application/json",
                 }),
               );
-            }
 
-            const body = yield* response.json;
+              const response = yield* http.execute(request);
 
-            return Either.getOrElse(
-              Schema.decodeUnknownEither(schema)(body),
-              // Total payload schemas only reach the left side on foreign
-              // bodies (numbers, strings, null) — decode them as the
-              // all-fallbacks `{}` the schemas produce for `{}`.
-              () => Schema.decodeUnknownSync(schema)({}),
-            );
-          }),
+              if (response.status === 401) {
+                return yield* Effect.fail(
+                  new FreqtradeAuthChallenge({ operation }),
+                );
+              }
+
+              if (response.status >= 400) {
+                return yield* Effect.fail(
+                  new FreqtradeError({
+                    operation,
+                    reason: `freqtrade ${path} returned ${response.status}`,
+                    status: response.status,
+                  }),
+                );
+              }
+
+              const body = yield* response.json;
+
+              return Either.getOrElse(
+                Schema.decodeUnknownEither(schema)(body),
+                // Total payload schemas only reach the left side on foreign
+                // bodies (numbers, strings, null) — decode them as the
+                // all-fallbacks `{}` the schemas produce for `{}`.
+                () => Schema.decodeUnknownSync(schema)({}),
+              );
+            }),
+          ),
         ),
       );
 
@@ -1593,7 +1777,10 @@ export const makeFreqtradeService = (
      * `show_config` probe per bot. A stale entry still serves market data
      * while the bot itself is briefly unreachable.
      */
-    const exchangeIdentity = (): Effect.Effect<ExchangeIdentity, FreqtradeError> => {
+    const exchangeIdentity = (): Effect.Effect<
+      ExchangeIdentity,
+      FreqtradeError
+    > => {
       const cached = identityCache.get(baseUrl);
 
       if (cached && Date.now() - cached.at < IDENTITY_TTL_MS) {
@@ -1665,6 +1852,12 @@ export const makeFreqtradeService = (
         return total;
       });
 
+    // Closed-trade percentages are relayed, never recomputed: freqtrade's
+    // `close_profit_pct` already IS the whole-stake-used ratio (Σ realized
+    // exits / whole stake entered, leverage-scaled) — the same convention
+    // as NFI's calc_total_profit() and the Freqi/telegram display. An
+    // open-rate-based ((close-open)/open) recomputation would diverge for
+    // trades with grind exits / de-risks.
     const toClosedPosition = (t: RawTrade, index: number): ClosedPosition => ({
       tradeId: t.trade_id ?? index,
       pair: t.pair,
@@ -1682,7 +1875,7 @@ export const makeFreqtradeService = (
       realizedProfit: t.realized_profit,
       openDate: t.open_date,
       closeDate: t.close_date,
-      tradeDurationSeconds: t.trade_duration_s,
+      tradeDurationSeconds: deriveTradeDurationSeconds(t),
       strategy: t.strategy,
       timeframe: t.timeframe,
       enterTag: t.enter_tag,
@@ -1698,12 +1891,13 @@ export const makeFreqtradeService = (
     const fetchClosedTail = (
       limit = 50,
       offset = 0,
-    ): Effect.Effect<ClosedPositionsResponse, FreqtradeError> =>
+    ): Effect.Effect<ClosedTailPage, FreqtradeError> =>
       Effect.gen(function* () {
         const total = yield* closedTradesTotal();
         const { start, end } = tradesTailBounds(total, limit, offset);
         const ascending: ClosedPosition[] = [];
         let seen = 0;
+        let openSeen = 0;
 
         for (let at = start; at < end; at += TRADES_CHUNK) {
           const raw = yield* getJson(
@@ -1713,7 +1907,14 @@ export const makeFreqtradeService = (
           );
 
           for (const t of raw.trades) {
-            if (t.is_open !== false) continue;
+            if (t.is_open !== false) {
+              // Count instead of just skipping: builds whose `/trades`
+              // includes open rows fold them into `total_trades`, and the
+              // mirror's reconciliation needs to subtract exactly these.
+              openSeen += 1;
+              continue;
+            }
+
             ascending.push(toClosedPosition(t, start + seen));
             seen += 1;
           }
@@ -1725,8 +1926,9 @@ export const makeFreqtradeService = (
           positions: ascending,
           tradesCount: ascending.length,
           totalTrades: total,
+          openSeen,
           offset,
-        } satisfies ClosedPositionsResponse;
+        } satisfies ClosedTailPage;
       });
 
     /**
@@ -1824,11 +2026,8 @@ export const makeFreqtradeService = (
                   stakeAmount: t.stake_amount,
                   openRate: t.open_rate,
                   currentRate: t.current_rate,
-                  profitAbs: t.profit_abs,
-                  profitPct:
-                    t.profit_ratio !== undefined
-                      ? t.profit_ratio * 100
-                      : t.profit_pct,
+                  profitAbs: openProfitAbs(t),
+                  profitPct: openProfitPct(t),
                   openDate: t.open_date,
                   strategy: t.strategy,
                   timeframe: t.timeframe,
@@ -1852,11 +2051,8 @@ export const makeFreqtradeService = (
                   maxStakeAmount: t.max_stake_amount,
                   openRate: t.open_rate,
                   currentRate: t.current_rate,
-                  profitAbs: t.profit_abs,
-                  profitPct:
-                    t.profit_ratio !== undefined
-                      ? t.profit_ratio * 100
-                      : t.profit_pct,
+                  profitAbs: openProfitAbs(t),
+                  profitPct: openProfitPct(t),
                   profitFiat: t.profit_fiat,
                   realizedProfit: t.realized_profit,
                   openDate: t.open_date,
@@ -1958,10 +2154,17 @@ export const makeFreqtradeService = (
               }) satisfies CandlesResponse,
           ),
         ),
-      getMarketCandles: (pair, timeframe, limit = 200) =>
+      getMarketCandles: (pair, timeframe, limit = 200, beforeMs) =>
         exchangeIdentity().pipe(
           Effect.flatMap((identity) =>
-            fetchExchangeKlines(http, identity, pair, timeframe, limit),
+            fetchExchangeKlines(
+              http,
+              identity,
+              pair,
+              timeframe,
+              limit,
+              beforeMs,
+            ),
           ),
         ),
       getAvailablePairs: (timeframe, stakeCurrency) => {
@@ -2127,11 +2330,7 @@ export const makeFreqtradeService = (
           ),
         ),
       getLogs: (limit = 200) =>
-        getJson(
-          `/api/v1/logs?limit=${limit}`,
-          "logs",
-          LogsPayload,
-        ).pipe(
+        getJson(`/api/v1/logs?limit=${limit}`, "logs", LogsPayload).pipe(
           Effect.map(
             (raw) =>
               ({
@@ -2162,6 +2361,7 @@ export const FreqtradeClientLive: Layer.Layer<
         baseUrl: config.baseUrl,
         username: Redacted.value(config.username),
         password: Redacted.value(config.password),
+        requestTimeoutMs: config.requestTimeoutMs,
       },
       http,
     );

@@ -8,7 +8,14 @@
  * the widget watches every open position (one instance or the whole fleet)
  * and charts the selected one. The quick-selector chip row jumps between
  * open pairs without opening settings; `Auto` tracks the newest open
- * position as trades open and close.
+ * position as trades open and close, and a followed pair the chart watches
+ * closing hands control back to auto instead of parking on its history
+ * (pinning an already-closed pair stays a deliberate history review).
+ *
+ * The ⚙ pair picker lists EVERY pair with trade history (SQL over the
+ * mirror — including long-delisted pairs the whitelist forgot), and a
+ * pinned pair loads its FULL closed history, so a pick is a complete
+ * all-trades chart review, not just the newest window.
  *
  * Entry/exit markers and tags are always built from the pair's sub-orders
  * (violet entry dots labeled with the order tag, amber exit arrows), and
@@ -78,8 +85,10 @@ import {
 import {
   useClosedPositionsSource,
   useOpenPositionsSource,
+  type SourcedClosedPosition,
   type SourcedOpenPosition,
 } from "./shared/sources";
+import { useCandleHistory, mergeOlderCandles } from "./shared/candleHistory";
 import { useCandlePending } from "./shared/candlePending";
 import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 
@@ -91,6 +100,8 @@ export const POSITION_CANDLE_CAPABILITIES: ReadonlyArray<Capability> = [
   "instances.closed-positions",
   "instances.positions-all",
   "instances.closed-all",
+  // History pair picker: every pair the scope actually traded.
+  "instances.traded-pairs",
 ];
 
 export const PositionCandleTimeframe = Schema.Literal(
@@ -236,7 +247,9 @@ function bucketByPair(
       ownerInstanceId: g.ownerInstanceId,
       newestOpen: g.newestOpen,
     }))
-    .sort((a, b) => b.newestOpen - a.newestOpen || a.pair.localeCompare(b.pair));
+    .sort(
+      (a, b) => b.newestOpen - a.newestOpen || a.pair.localeCompare(b.pair),
+    );
 }
 
 /** Header chip for the followed position(s): `3 @ 0.3456 (+2.10%)`. */
@@ -245,14 +258,29 @@ function PositionChip({
   avgEntry,
   precision,
   compact,
+  kind = "open",
 }: {
-  positions: ReadonlyArray<{ amount: number; profitPct?: number }>;
+  positions: ReadonlyArray<{
+    amount: number;
+    profitPct?: number;
+    closeProfitPct?: number;
+  }>;
   avgEntry: number;
   precision: number;
   compact: boolean;
+
+  /** `closed` reads the realized pct (closeProfitPct first) and says so. */
+  kind?: "open" | "closed";
 }) {
   const single = positions.length === 1 ? positions[0] : undefined;
-  const pct = single?.profitPct;
+
+  const pctCandidates =
+    kind === "closed" && single !== undefined
+      ? [single.closeProfitPct, single.profitPct]
+      : [single?.profitPct];
+
+  const pct = pctCandidates.find((v) => v !== undefined && Number.isFinite(v));
+
   const hasPct = pct !== undefined && Number.isFinite(pct);
 
   if (compact && !hasPct) return null;
@@ -264,7 +292,7 @@ function PositionChip({
 
   const title =
     positions.length === 1
-      ? `Open position · avg entry ${avgEntry.toFixed(precision)}`
+      ? `${kind === "closed" ? "Closed position" : "Open position"} · avg entry ${avgEntry.toFixed(precision)}`
       : `${positions.length} open positions · avg entry ${avgEntry.toFixed(precision)}`;
 
   return (
@@ -313,6 +341,16 @@ export function PositionCandleWidget({
       : ["instances.open-positions", "instances.closed-positions"],
   );
 
+  // History picker source: every pair with trades in the mirror (SQL over
+  // the FULL history — includes long-delisted pairs the whitelist forgot).
+  const historyAccess = useWidgetAccess(["instances.traded-pairs"]);
+
+  const tradedQ = useCapability(
+    "instances.traded-pairs",
+    { id: fleet ? undefined : cfg.instanceId },
+    { enabled: historyAccess.allowed },
+  );
+
   // Quick-selector source: every open position (fleet-aware).
   const openSrc = useOpenPositionsSource(cfg.instanceId, {
     enabled: tradesAccess.allowed,
@@ -320,25 +358,137 @@ export function PositionCandleWidget({
 
   const buckets = useDerived(openSrc.data ?? EMPTY_SOURCED_OPEN, bucketByPair);
 
+  // Closed history rides along so a followed position that exits keeps its
+  // chart: newest-first window (fleet aggregate or per-instance, limit 200).
+  const closedSrc = useClosedPositionsSource(cfg.instanceId, 200, {
+    enabled: tradesAccess.allowed,
+  });
+
+  // Pinned pair → FULL history for that pair: the mirror search is pushed
+  // to SQL (the predicate covers every closed trade, not a fetched
+  // window), so a deliberate history review shows all of the pair's trade
+  // markers — capped at the server's 5000-trade page. Unpinned (auto)
+  // mode never pays for it.
   const pinned = cfg.pair.trim();
+
+  const pinnedHistorySrc = useClosedPositionsSource(cfg.instanceId, 5000, {
+    enabled: tradesAccess.allowed && pinned.length > 0,
+    search: pinned,
+  });
 
   const pinnedBucket = pinned
     ? (buckets.find((b) => b.pair === pinned) ?? null)
     : null;
 
   // Auto mode follows the newest open position; a pinned pair stays put
-  // even after it closes (history review) until the user picks another.
-  const effectivePair = pinned || buckets[0]?.pair || "";
-  const autoActive = pinned.length === 0 || pinnedBucket === null;
+  // until the user picks another — EXCEPT when the chart watches it close
+  // (below): a pair whose last open position exits hands control back to
+  // auto so the widget updates itself instead of parking on history.
+  // With a FLAT book (no open position anywhere) auto follows the newest
+  // closed position's pair — the exit — instead of blanking to "No open
+  // positions": the exit is exactly what there is to see once a trade
+  // closes, markers included.
+  const newestClosedPair = useDerived(
+    closedSrc.data,
+    (data): string => data?.[0]?.pair ?? "",
+  );
+
+  const effectivePair: string =
+    pinned || buckets[0]?.pair || newestClosedPair || "";
+
+  const autoActive = pinned.length === 0;
+
+  // Closed-position auto-advance: a pin only ever pins LIVE positions.
+  // When a followed pair's last open position exits — observed as the
+  // transition live → absent across settled open-positions frames — the
+  // pin clears and auto takes over (the next newest open position, or —
+  // flat book — the newest closed position's chart). A pin set on an
+  // already-closed pair (deliberate history review, including across
+  // reloads) stays: only a watched close advances. Data-undefined frames
+  // (instance switch, disabled feed) reset the transition tracking so a
+  // loading feed can never wipe the pin.
+  const pinWasLive = useLocalStore(false);
+
+  useStoreEffect(() => {
+    if (!tradesAccess.allowed || openSrc.data === undefined) {
+      pinWasLive.setState(() => false);
+
+      return;
+    }
+
+    if (pinned.length === 0) {
+      pinWasLive.setState(() => false);
+
+      return;
+    }
+
+    if (pinnedBucket !== null) {
+      pinWasLive.setState(() => true);
+
+      return;
+    }
+
+    if (pinWasLive.state) {
+      pinWasLive.setState(() => false);
+      patch({ pair: "" });
+    }
+  }, [tradesAccess.allowed, openSrc.data, pinned, pinnedBucket]);
+
+  // The followed pair's open and closed positions (closed window is the
+  // newest-first 200). `followed` picks what the chart overlays anchor to:
+  // open positions when any exist, else the pair's newest closed position —
+  // the exit — so a flat book keeps entry line, PnL shading and window fit
+  // pointed at the most recent trade instead of dropping its overlay.
+  const pairOpen = useDerived(
+    [openSrc.data, effectivePair] as const,
+    ([data, pair]) => (data ?? []).filter((p) => p.pair === pair),
+    { inputs: shallow },
+  );
+
+  // Pinned pair: the search-backed FULL history (exact-pair guard — the
+  // SQL needle is a substring that can also match tags/strategies). Auto
+  // mode: the newest-first 200 window, exactly as before.
+  const pairClosed = useDerived(
+    [pinnedHistorySrc.data, closedSrc.data, effectivePair, pinned] as const,
+    ([pinnedRows, windowRows, pair, pin]) => {
+      if (pin.length > 0) {
+        return (pinnedRows ?? []).filter((p) => p.pair === pair);
+      }
+
+      return (windowRows ?? []).filter((p) => p.pair === pair);
+    },
+    { inputs: shallow },
+  );
+
+  const followed = useDerived(
+    [pairOpen, pairClosed] as const,
+    ([open, closed]) => (open.length > 0 ? open : closed.slice(0, 1)),
+    { inputs: shallow },
+  );
 
   // On fleet views candles come from the followed pair's largest-stake
-  // owner (same pair, same market there); single-instance is direct.
+  // owner (same pair, same market there); single-instance is direct. When
+  // the chart follows a closed position (flat book), the candles come from
+  // that position's own bot.
+  const followedClosed = useDerived(
+    [pairClosed] as const,
+    ([closed]): SourcedClosedPosition | undefined => closed[0],
+    { inputs: shallow },
+  );
+
+  const exitFollowed = useDerived(
+    [pairOpen, followedClosed] as const,
+    ([open, closed]) => open.length === 0 && closed !== undefined,
+    { inputs: shallow },
+  );
+
   const candleInstanceId =
     fleet && !autoActive && pinnedBucket
-      ? (pinnedBucket.ownerInstanceId || cfg.instanceId)
+      ? pinnedBucket.ownerInstanceId || cfg.instanceId
       : fleet
-        ? (buckets.find((b) => b.pair === effectivePair)?.ownerInstanceId ||
-          cfg.instanceId)
+        ? buckets.find((b) => b.pair === effectivePair)?.ownerInstanceId ||
+          (exitFollowed ? followedClosed?.instanceId : undefined) ||
+          cfg.instanceId
         : cfg.instanceId;
 
   const candlesQ = useCapability(
@@ -361,10 +511,6 @@ export function PositionCandleWidget({
     { enabled: market.allowed },
   );
 
-  const closedSrc = useClosedPositionsSource(cfg.instanceId, 200, {
-    enabled: tradesAccess.allowed,
-  });
-
   const marketError = market.allowed
     ? null
     : `Not authorized — needs ${market.missing.join(", ")}`;
@@ -372,6 +518,25 @@ export function PositionCandleWidget({
   const showSettings = useWidgetSettingsOpen(panelId);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
+
+  // Infinite scroll-back: older exchange pages accumulate as the user pans
+  // toward the oldest bar. The merged series feeds the chart and the
+  // indicator math; the auto-fit/refit effects below keep reading the LIVE
+  // window's bounds so their once-per-(pair, entry) behavior is unchanged.
+  const history = useCandleHistory({
+    enabled: market.allowed && effectivePair.length > 0,
+    instanceId:
+      candleInstanceId === ALL_INSTANCES ? "default" : candleInstanceId,
+    pair: effectivePair,
+    timeframe: cfg.timeframe,
+  });
+
+  const allCandles = useDerived(
+    [candles, history.older] as const,
+    ([live, older]) =>
+      older.length > 0 ? mergeOlderCandles(older, live) : live,
+    { inputs: shallow },
+  );
 
   // Timeframe/pair switches refetch in the background while a cached EMPTY
   // result for the new key would otherwise flash "no analyzed data" with no
@@ -384,9 +549,14 @@ export function PositionCandleWidget({
   );
 
   const state = queryState(
-    market.allowed ? (candlesQ.error ?? openSrc.error) : null,
+    market.allowed
+      ? (candlesQ.error ?? openSrc.error ?? pinnedHistorySrc.error)
+      : null,
     market.allowed &&
-      (candlesQ.isLoading || openSrc.isLoading || candlesPending),
+      (candlesQ.isLoading ||
+        openSrc.isLoading ||
+        candlesPending ||
+        (pinned.length > 0 && pinnedHistorySrc.isLoading)),
   );
 
   // Strategy timeframe of the candle owner (fleet: the followed pair's
@@ -404,12 +574,28 @@ export function PositionCandleWidget({
       : undefined;
 
   // Pair self-heal (same as candle-chart): adopt the settled variant when
-  // the followed pair is not on the whitelist.
+  // the followed pair is not on the whitelist. Closed-history follows are
+  // exempt — exited pairs routinely drop off the whitelist, and rewriting
+  // the followed pair there would navigate AWAY from the exit the user is
+  // looking at (and, in auto mode, silently set a pin). A pin on any
+  // TRADED pair is a deliberate history review (the picker only offers
+  // pairs with trades), so self-heal never touches it either.
+  const tradedSet = useDerived(
+    tradedQ.data,
+    (data): ReadonlySet<string> =>
+      new Set((data?.pairs ?? []).map((r) => r.pair)),
+    { inputs: shallow },
+  );
+
   useStoreEffect(() => {
     const whitelist = pairsQ.data?.pairs;
 
     if (!whitelist || whitelist.length === 0 || effectivePair.length === 0)
       return;
+
+    if (pinned.length === 0 && pairOpen.length === 0) return;
+
+    if (pinned.length > 0 && tradedSet.has(pinned)) return;
 
     if (whitelist.includes(effectivePair)) return;
     const base = effectivePair.split("/")[0] ?? effectivePair;
@@ -418,9 +604,9 @@ export function PositionCandleWidget({
     const next = settled ?? byBase;
 
     if (next) patch({ pair: next });
-  }, [pairsQ.data, effectivePair]);
+  }, [pairsQ.data, effectivePair, pinned, pairOpen, tradedSet]);
 
-  const bars = useDerived(candles, (src): IndicatorBar[] =>
+  const bars = useDerived(allCandles, (src): IndicatorBar[] =>
     orderedByTime(
       src.map((c) => ({
         time: Math.floor(c.time / 1000),
@@ -433,27 +619,32 @@ export function PositionCandleWidget({
     ),
   );
 
-  const pairOpen = useDerived(
-    [openSrc.data, effectivePair] as const,
-    ([data, pair]) => (data ?? []).filter((p) => p.pair === pair),
-    { inputs: shallow },
-  );
-
-  const pairClosed = useDerived(
-    [closedSrc.data, effectivePair] as const,
-    ([data, pair]) => (data ?? []).filter((p) => p.pair === pair),
-    { inputs: shallow },
+  // Toolbar readouts (H/L/ΣV) stay scoped to the LIVE window — merged
+  // history would turn them into all-time stats that never match the
+  // chart's "N candles loaded" framing.
+  const liveBars = useDerived(candles, (src): IndicatorBar[] =>
+    orderedByTime(
+      src.map((c) => ({
+        time: Math.floor(c.time / 1000),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      })),
+    ),
   );
 
   const avgEntry = useDerived(
-    [pairOpen, tradesAccess.allowed] as const,
-    ([open, allowed]): number | null => {
+    [followed, tradesAccess.allowed] as const,
+    ([positions, allowed]): number | null => {
       // Position charts always show the avg-entry line (no toggle) — the
-      // line plus its PnL shading is the widget's core purpose.
-      if (!allowed || open.length === 0) return null;
+      // line plus its PnL shading is the widget's core purpose. A closed
+      // follow anchors it at the exit position's entry rate.
+      if (!allowed || positions.length === 0) return null;
 
       return computeAverageEntry(
-        open.map((p) => ({
+        positions.map((p) => ({
           openRate: p.openRate,
           stakeAmount: p.stakeAmount,
         })),
@@ -466,18 +657,18 @@ export function PositionCandleWidget({
   // for shorts (green below), above is profit for longs. All-short follows
   // invert; mixed/empty defaults to long shading.
   const followedIsShort = useDerived(
-    [pairOpen] as const,
-    ([open]): boolean =>
-      open.length > 0 && open.every((p) => p.isShort === true),
+    [followed] as const,
+    ([positions]): boolean =>
+      positions.length > 0 && positions.every((p) => p.isShort === true),
     { inputs: shallow },
   );
 
   // Entry-anchored fill start (snapped to the candle bucket, like the
   // markers): shading covers entry → newest, never pre-entry history.
   const entrySince = useDerived(
-    [pairOpen, cfg.timeframe] as const,
-    ([open, timeframe]): number | null => {
-      const at = earliestEntrySecond(open);
+    [followed, cfg.timeframe] as const,
+    ([positions, timeframe]): number | null => {
+      const at = earliestEntrySecond(positions);
 
       if (at === null) return at;
 
@@ -498,7 +689,7 @@ export function PositionCandleWidget({
   const fitKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
-    const entrySec = earliestEntrySecond(pairOpen);
+    const entrySec = earliestEntrySecond(followed);
 
     if (entrySec === null || effectivePair.length === 0) return;
 
@@ -511,7 +702,7 @@ export function PositionCandleWidget({
     if (fitKeyStore.state === fitKey) return;
     fitKeyStore.setState(() => fitKey);
     patch({ timeframe: fit.timeframe, limit: fit.limit });
-  }, [pairOpen, cfg.timeframe, limit, effectivePair]);
+  }, [followed, cfg.timeframe, limit, effectivePair]);
 
   // Data-shortfall refit: freqtrade only keeps a rolling analyzed window
   // (a few hundred candles), so an old entry can sit BEFORE the loaded
@@ -521,14 +712,13 @@ export function PositionCandleWidget({
   const refitKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
-    const entrySec = earliestEntrySecond(pairOpen);
+    const entrySec = earliestEntrySecond(followed);
 
     if (entrySec === null || effectivePair.length === 0) return;
 
     const firstCandle = candles[0];
 
-    if (!firstCandle || Math.floor(firstCandle.time / 1000) <= entrySec)
-      return;
+    if (!firstCandle || Math.floor(firstCandle.time / 1000) <= entrySec) return;
 
     const refitKey = `${effectivePair}@${entrySec}`;
 
@@ -541,11 +731,10 @@ export function PositionCandleWidget({
     if (fit === null) return;
     refitKeyStore.setState(() => refitKey);
     patch({ timeframe: fit.timeframe, limit: fit.limit });
-  }, [pairOpen, candles, cfg.timeframe, limit, effectivePair]);
+  }, [followed, candles, cfg.timeframe, limit, effectivePair]);
 
-  const candleSecs = useDerived(
-    bars,
-    (src): number[] => src.map((b) => b.time),
+  const candleSecs = useDerived(bars, (src): number[] =>
+    src.map((b) => b.time),
   );
 
   const palette = candlePalette(useColorBlindSafe());
@@ -627,20 +816,52 @@ export function PositionCandleWidget({
   const lastRsi = cfg.subplot === "rsi" ? lastPlotValue(rsiPlots) : null;
 
   const narrow = useNarrowMode(420);
-  const availablePairs = pairsQ.data?.pairs ?? EMPTY_PAIRS;
+
+  // Picker list: pairs the scope actually traded (SQL over the full
+  // mirror — includes delisted history the whitelist forgot). Without the
+  // traded-pairs grant the picker falls back to the whitelist so pinning
+  // still works; the manual-entry fallback in the combobox covers the
+  // no-list case entirely.
+  const tradedPickerPairs = useDerived(
+    tradedQ.data,
+    (data): ReadonlyArray<string> => (data?.pairs ?? []).map((r) => r.pair),
+    { inputs: shallow },
+  );
+
+  const availablePairs =
+    historyAccess.allowed && tradedPickerPairs.length > 0
+      ? tradedPickerPairs
+      : (pairsQ.data?.pairs ?? EMPTY_PAIRS);
 
   // Exchange-sourced candles (backend fallback for unanalyzed timeframes).
   const isMarketData = candlesQ.data?.source === "exchange";
 
-  const chipOptions: PositionChipOption[] = buckets.map((b) => ({
-    key: b.pair,
-    label: b.pair,
-    pnl: b.pnl,
-    count: fleet ? b.count : undefined,
-    detail: fleet && b.bots ? b.bots : undefined,
-  }));
+  // Open-position chips; on a flat book a single dimmed chip names the
+  // followed exit so the auto-followed closed position stays visible and
+  // one click pins it for history review.
+  const chipOptions: PositionChipOption[] = exitFollowed
+    ? followedClosed
+      ? [
+          {
+            key: followedClosed.pair,
+            label: followedClosed.pair,
+            pnl: followedClosed.closeProfitPct ?? followedClosed.profitPct,
+            detail:
+              followedClosed.exitReason ??
+              (fleet ? followedClosed.instanceName : undefined),
+            closed: true,
+          },
+        ]
+      : []
+    : buckets.map((b) => ({
+        key: b.pair,
+        label: b.pair,
+        pnl: b.pnl,
+        count: fleet ? b.count : undefined,
+        detail: fleet && b.bots ? b.bots : undefined,
+      }));
 
-  const windowStats = useDerived(bars, (src) => {
+  const windowStats = useDerived(liveBars, (src) => {
     const lastBar = src[src.length - 1];
     const prevBar = src[src.length - 2];
 
@@ -706,7 +927,7 @@ export function PositionCandleWidget({
         />
         <PairCombobox
           id={`posc-pair-${panelId}`}
-          label="Pair (empty = follow open positions)"
+          label="Pair — traded history (empty = follow open positions)"
           value={cfg.pair}
           pairs={availablePairs}
           onChange={(pair) => patch({ pair })}
@@ -950,13 +1171,14 @@ export function PositionCandleWidget({
                   {windowChange.toFixed(2)}%
                 </span>
                 {tradesAccess.allowed &&
-                pairOpen.length > 0 &&
+                followed.length > 0 &&
                 avgEntry !== null ? (
                   <PositionChip
-                    positions={pairOpen}
+                    positions={followed}
                     avgEntry={avgEntry}
                     precision={chartPrecision}
                     compact={narrow}
+                    kind={exitFollowed ? "closed" : "open"}
                   />
                 ) : null}
                 {narrow ? null : (
@@ -992,7 +1214,7 @@ export function PositionCandleWidget({
               </span>
             </div>
             <CandleChart
-              candles={candles}
+              candles={allCandles}
               overlays={overlays}
               showVolume={cfg.showVolume}
               subplot={subplot}
@@ -1001,18 +1223,17 @@ export function PositionCandleWidget({
               avgEntryIsShort={followedIsShort}
               avgEntrySince={entrySince}
               followMarkers
+              onRequestOlder={() => history.loadOlder(allCandles[0]?.time ?? 0)}
             />
           </div>
         ) : (
           <EmptyState
             title={
-              effectivePair.length === 0
-                ? "No open positions"
-                : "No candles"
+              effectivePair.length === 0 ? "No open positions" : "No candles"
             }
             hint={
               effectivePair.length === 0
-                ? "Flat is a position too — the chart follows your next open trade automatically. Pick an instance in ⚙ settings."
+                ? "Flat is a position too — the chart follows your next open trade automatically, or pick any traded pair in ⚙ settings."
                 : strategyFallback !== undefined
                   ? `Your bot analyzes ${strategyFallback} — ${cfg.timeframe} isn't analyzed for ${effectivePair}, so there's no live chart for it.`
                   : `Freqtrade has no analyzed data for ${effectivePair} · ${cfg.timeframe} — the pair may be off the bot's whitelist or the timeframe unanalyzed.`

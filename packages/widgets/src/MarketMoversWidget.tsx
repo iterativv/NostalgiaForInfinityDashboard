@@ -112,11 +112,28 @@ export function MarketMoversWidget({
   const count = clampInt(cfg.count, 5, 1, 20);
   const access = useWidgetAccess(MARKET_MOVERS_CAPABILITIES);
 
-  const { data, error, isLoading } = useOpenPositionsSource(cfg.instanceId, {
+  // Both rankings are SQL clauses now: sign filter + ORDER BY + LIMIT —
+  // the database returns exactly each side's top n over the full fleet.
+  const gainersQ = useOpenPositionsSource(cfg.instanceId, {
     enabled: access.allowed,
+    filter: "gain",
+    sort: "profitPct",
+    dir: "desc",
+    limit: count,
   });
 
-  const state = queryState(error, isLoading);
+  const losersQ = useOpenPositionsSource(cfg.instanceId, {
+    enabled: access.allowed,
+    filter: "loss",
+    sort: "profitPct",
+    dir: "asc",
+    limit: count,
+  });
+
+  const state = queryState(
+    gainersQ.error ?? losersQ.error,
+    gainersQ.isLoading || losersQ.isLoading,
+  );
 
   const accessError = access.allowed
     ? null
@@ -129,25 +146,8 @@ export function MarketMoversWidget({
 
   const showBot = cfg.instanceId === "all";
 
-  // Derived through a store: sorting + slicing on every Panel re-render
-  // (resize/store ticks) stalled the main thread on large position lists.
-  const { gainers, losers } = useDerived(
-    [data, count] as const,
-    ([positions, n]) => {
-      const ranked = [...(positions ?? [])].sort(
-        (a, b) => (b.profitPct ?? 0) - (a.profitPct ?? 0),
-      );
-
-      return {
-        gainers: ranked.filter((p) => (p.profitPct ?? 0) >= 0).slice(0, n),
-        losers: [...ranked]
-          .reverse()
-          .filter((p) => (p.profitPct ?? 0) < 0)
-          .slice(0, n),
-      };
-    },
-    { inputs: shallowStore },
-  );
+  const gainers = gainersQ.data ?? [];
+  const losers = losersQ.data ?? [];
 
   // Column set derived through a store: rebuilt only when fleet mode changes.
   const columns = useDerived([showBot] as const, buildColumns, {
@@ -163,11 +163,7 @@ export function MarketMoversWidget({
     { header: COL.openDate, value: (p) => p.openDate },
   ];
 
-  const exportRows = useDerived(
-    [gainers, losers] as const,
-    ([gainers, losers]) => [...gainers, ...losers],
-    { inputs: shallowStore },
-  );
+  const exportRows = [...gainers, ...losers];
 
   const section = (title: string, rows: typeof gainers) => (
     <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>

@@ -26,6 +26,7 @@ import { AuthGroupLive } from "./auth.js";
 import { DbLive, MigrateLive } from "./snapshots.js";
 import { LivePollerLive } from "./capabilities/poller.js";
 import { streamRouteHandler } from "./capabilities/stream.js";
+import { exportRouteHandler } from "./export.js";
 import { readCorsOrigins } from "./config.js";
 import { SessionAuthLive } from "./auth/session.js";
 import { StaticSiteLive, type StaticSource } from "./static.js";
@@ -158,6 +159,7 @@ export const launchServer = (options: BootOptions): void => {
   const AppLive = Layer.mergeAll(
     HttpLayerRouter.addHttpApi(NfiApi),
     HttpLayerRouter.add("GET", "/api/stream", streamRouteHandler),
+    HttpLayerRouter.add("GET", "/api/export", exportRouteHandler),
     StaticSiteLive(options.static),
   ).pipe(
     Layer.provide(GroupsLive),

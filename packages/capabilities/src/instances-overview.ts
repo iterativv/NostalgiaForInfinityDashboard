@@ -132,6 +132,13 @@ export const InstancesOverviewCapability = defineCapability({
           totalStake: rows.reduce((sum, row) => sum + (row.totalStake ?? 0), 0),
           stakeCurrency:
             stakeCurrencies.size === 1 ? [...stakeCurrencies][0] : undefined,
+          // Trade-count totals summed server-side so consumers never fold
+          // the per-instance rows client-side.
+          closedTradeCount: rows.reduce(
+            (sum, row) => sum + (row.closedTradeCount ?? 0),
+            0,
+          ),
+          tradeCount: rows.reduce((sum, row) => sum + (row.tradeCount ?? 0), 0),
         },
       };
     }).pipe(

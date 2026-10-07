@@ -22,7 +22,14 @@ import {
   type CapabilityResult,
   type Principal,
 } from "@nfi/capabilities";
-import { InstanceRepo, SettingsRepo, SnapshotRepo, UserRepo, WorkspaceRepo } from "@nfi/db";
+import {
+  InstanceRepo,
+  SettingsRepo,
+  SnapshotRepo,
+  TradesRepo,
+  UserRepo,
+  WorkspaceRepo,
+} from "@nfi/db";
 import { FreqtradeClient, makeFreqtradeService } from "@nfi/freqtrade-client";
 import {
   loadServerConfig,
@@ -61,6 +68,7 @@ export const makeCapabilityContext = (
   | WorkspaceRepo
   | InstanceRepo
   | SnapshotRepo
+  | TradesRepo
   | UserRepo
   | SettingsRepo
 > =>
@@ -70,6 +78,7 @@ export const makeCapabilityContext = (
     const workspaces = yield* WorkspaceRepo;
     const instances = yield* InstanceRepo;
     const snapshots = yield* SnapshotRepo;
+    const trades = yield* TradesRepo;
     const users = yield* UserRepo;
     const settings = yield* SettingsRepo;
 
@@ -162,6 +171,7 @@ export const makeCapabilityContext = (
       workspaces,
       instances,
       snapshots,
+      trades,
       users,
       settings,
       principal,
@@ -193,6 +203,7 @@ export const buildCapabilityContext: Effect.Effect<
   | WorkspaceRepo
   | InstanceRepo
   | SnapshotRepo
+  | TradesRepo
   | UserRepo
   | SettingsRepo
 > = makeCapabilityContext();
@@ -210,6 +221,7 @@ export const runCapabilityEffect = <N extends CapabilityName>(
   | WorkspaceRepo
   | InstanceRepo
   | SnapshotRepo
+  | TradesRepo
   | UserRepo
   | SettingsRepo
 > =>
@@ -255,6 +267,7 @@ export const runCapabilityForHttp = <N extends CapabilityName>(
   | WorkspaceRepo
   | InstanceRepo
   | SnapshotRepo
+  | TradesRepo
   | UserRepo
   | SettingsRepo
   | SessionAuth

@@ -4,8 +4,12 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveOrderIsEntry,
+  deriveTradeDurationSeconds,
+  openProfitAbs,
+  openProfitPct,
   parseStrategyVersion,
   parseStrategyVersionFromLogs,
+  toUtcIso,
   tradesTailBounds,
 } from "./index.js";
 
@@ -121,7 +125,12 @@ describe("parseStrategyVersionFromLogs (newest heartbeat wins)", () => {
   it("finds the heartbeat line among structured log rows", () => {
     expect(
       parseStrategyVersionFromLogs([
-        ["2026-10-05 18:20:01", "INFO", "freqtrade.worker", "Starting worker …"],
+        [
+          "2026-10-05 18:20:01",
+          "INFO",
+          "freqtrade.worker",
+          "Starting worker …",
+        ],
         [
           "2026-10-05 18:25:54",
           "INFO",
@@ -135,9 +144,19 @@ describe("parseStrategyVersionFromLogs (newest heartbeat wins)", () => {
   it("prefers the newest heartbeat when several are present", () => {
     expect(
       parseStrategyVersionFromLogs([
-        ["t1", "INFO", "w", "Bot heartbeat. PID=1, version='1, strategy_version: v1', state='RUNNING'"],
+        [
+          "t1",
+          "INFO",
+          "w",
+          "Bot heartbeat. PID=1, version='1, strategy_version: v1', state='RUNNING'",
+        ],
         ["t2", "INFO", "w", "unrelated line"],
-        ["t3", "INFO", "w", "Bot heartbeat. PID=1, version='2, strategy_version: v2', state='RUNNING'"],
+        [
+          "t3",
+          "INFO",
+          "w",
+          "Bot heartbeat. PID=1, version='2, strategy_version: v2', state='RUNNING'",
+        ],
       ]),
     ).toBe("v2");
   });
@@ -148,5 +167,124 @@ describe("parseStrategyVersionFromLogs (newest heartbeat wins)", () => {
     expect(
       parseStrategyVersionFromLogs([["t", "INFO", "w", "nothing here"]]),
     ).toBe(undefined);
+  });
+});
+
+/**
+ * Regression tests for the UTC/timezone boundary.
+ *
+ * Freqtrade serializes trade dates as NAIVE UTC strings (`Trade.to_json`
+ * renders UTC datetimes with `DATETIME_PRINT_FORMAT` — no zone marker).
+ * JavaScript parses those as browser-LOCAL time, shifting every age,
+ * duration and timestamp display by the machine's UTC offset. The client
+ * annotates the zone at the decode boundary; these tests pin that.
+ */
+describe("toUtcIso (naive-UTC trade dates → ISO UTC)", () => {
+  it("pins Z onto freqtrade's space-separated dates", () => {
+    expect(toUtcIso("2026-10-06 13:43:00")).toBe("2026-10-06T13:43:00Z");
+  });
+
+  it("pins Z onto naive T-separated dates", () => {
+    expect(toUtcIso("2026-10-06T13:43:00")).toBe("2026-10-06T13:43:00Z");
+  });
+
+  it("leaves explicit zones untouched", () => {
+    expect(toUtcIso("2026-10-06T13:43:00Z")).toBe("2026-10-06T13:43:00Z");
+    expect(toUtcIso("2026-10-06T13:43:00+02:00")).toBe(
+      "2026-10-06T13:43:00+02:00",
+    );
+    expect(toUtcIso("2026-10-06 13:43:00-0530")).toBe(
+      "2026-10-06 13:43:00-0530",
+    );
+  });
+});
+
+/**
+ * The REST `/trades` schema carries NO duration field — FreqUI derives it
+ * as `close_timestamp - open_timestamp`. Without the derivation the tables'
+ * Duration columns read a field that never exists.
+ */
+describe("deriveTradeDurationSeconds (client-side duration)", () => {
+  it("prefers an explicit trade_duration_s (forks/newer builds)", () => {
+    expect(
+      deriveTradeDurationSeconds({
+        trade_duration_s: 42,
+        open_timestamp: 1_000_000,
+        close_timestamp: 9_000_000,
+        open_date: "2026-10-06T13:00:00Z",
+        close_date: "2026-10-06T13:01:00Z",
+      }),
+    ).toBe(42);
+  });
+
+  it("derives from the epoch-ms timestamps (freqtrade's real payload)", () => {
+    expect(
+      deriveTradeDurationSeconds({
+        open_timestamp: 1_000_000,
+        close_timestamp: 1_090_000,
+        open_date: "2026-10-06T13:00:00Z",
+        close_date: "2026-10-06T13:01:30Z",
+      }),
+    ).toBe(90);
+  });
+
+  it("falls back to the UTC-normalized date strings", () => {
+    expect(
+      deriveTradeDurationSeconds({
+        open_date: "2026-10-06 13:00:00",
+        close_date: "2026-10-06 13:01:00",
+      }),
+    ).toBe(60);
+  });
+
+  it("is undefined for open trades (no close)", () => {
+    expect(
+      deriveTradeDurationSeconds({
+        open_timestamp: 1_000_000,
+        open_date: "2026-10-06T13:00:00Z",
+      }),
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * Whole-stake open-trade profit (NFI calc_total_profit convention).
+ *
+ * Freqtrade's `/status` `profit_ratio`/`profit_abs` cover only the REMAINING
+ * position — realized P/L from NFI de-risks and grind exits is invisible to
+ * them, so a de-risked trade reads a number the strategy never acted on.
+ * `total_profit_ratio`/`total_profit_abs` carry the whole-stake view (same
+ * convention as the closed side's `close_profit`); the desk must prefer them.
+ */
+describe("openProfitPct / openProfitAbs (whole-stake open profit)", () => {
+  it("prefers total_profit_ratio (×100) over the remaining-position ratio", () => {
+    expect(
+      openProfitPct({ total_profit_ratio: -0.3529, profit_ratio: 0.4 }),
+    ).toBe(-35.29);
+    expect(openProfitAbs({ total_profit_abs: -14.49, profit_abs: 2.5 })).toBe(
+      -14.49,
+    );
+  });
+
+  it("falls back to profit_ratio for builds predating the total fields", () => {
+    expect(openProfitPct({ profit_ratio: -0.095, profit_pct: -9.5 })).toBe(
+      -9.5,
+    );
+    expect(openProfitAbs({ profit_abs: -0.62 })).toBe(-0.62);
+  });
+
+  it("falls back to the pre-rounded profit_pct when no ratio exists", () => {
+    expect(openProfitPct({ profit_pct: -9.5 })).toBe(-9.5);
+  });
+
+  it("skips NaN ratios (freqtrade sends NaN when the rate is unavailable)", () => {
+    expect(
+      openProfitPct({
+        total_profit_ratio: Number.NaN,
+        profit_ratio: Number.NaN,
+        profit_pct: Number.NaN,
+      }),
+    ).toBeUndefined();
+    expect(openProfitAbs({ total_profit_abs: Number.NaN })).toBeUndefined();
   });
 });

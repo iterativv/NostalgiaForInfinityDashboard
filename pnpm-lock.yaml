@@ -41,12 +41,18 @@ importers:
       '@nfi/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@nfi/export-core':
+        specifier: workspace:*
+        version: link:../../packages/export-core
       '@nfi/freqtrade-client':
         specifier: workspace:*
         version: link:../../packages/freqtrade-client
       effect:
         specifier: ^3.22.2
         version: 3.22.2
+      xlsx:
+        specifier: file:../../packages/widgets/vendor/xlsx-0.20.3.tgz
+        version: file:packages/widgets/vendor/xlsx-0.20.3.tgz
     devDependencies:
       '@repo/eslint-config':
         specifier: workspace:*
@@ -308,6 +314,28 @@ importers:
         specifier: 17.13.0
         version: 17.13.0
 
+  packages/export-core:
+    dependencies:
+      '@nfi/api-contract':
+        specifier: workspace:*
+        version: link:../api-contract
+    devDependencies:
+      '@repo/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@repo/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
+      eslint:
+        specifier: 10.12.0
+        version: 10.12.0(supports-color@7.2.0)
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: ^5.0.3
+        version: 5.0.3(@types/node@26.6.4)(vite@8.3.2(@types/node@26.6.4)(esbuild@0.28.2)(sass@1.104.1)(tsx@4.23.15))
+
   packages/freqtrade-client:
     dependencies:
       '@effect/platform':
@@ -438,6 +466,9 @@ importers:
       '@nfi/capabilities':
         specifier: workspace:*
         version: link:../capabilities
+      '@nfi/export-core':
+        specifier: workspace:*
+        version: link:../export-core
       '@nfi/ui':
         specifier: workspace:*
         version: link:../ui

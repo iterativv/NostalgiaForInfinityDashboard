@@ -63,7 +63,7 @@ export function PositionPairChips({
         className={autoActive ? "nfi-tf-btn nfi-tf-active" : "nfi-tf-btn"}
         onClick={onAuto}
         aria-pressed={autoActive}
-        title="Follow the newest open position automatically"
+        title="Follow the newest position automatically (open, else the latest exit)"
       >
         Auto
       </button>

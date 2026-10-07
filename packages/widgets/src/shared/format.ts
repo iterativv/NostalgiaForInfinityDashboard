@@ -3,6 +3,7 @@
 
 import { isConfigNumber } from "./config";
 import { formatDateTime } from "./timeFormat";
+import { parseTradeTime } from "./tradeSort";
 
 /** Plain formatting helpers shared by widgets (not components, not schemas). */
 
@@ -35,18 +36,24 @@ export const fmt = (
 /** Timestamp in the globally configured time format (Settings → Appearance). */
 export const fmtDate = (value: string | undefined): string => {
   if (!value) return "—";
-  const d = new Date(value.replace(" ", "T"));
+  // `parseTradeTime` yields 0 exactly for unparseable input — show the raw
+  // string then instead of formatting the epoch.
 
-  if (Number.isNaN(d.getTime())) return value;
+  if (parseTradeTime(value) === 0) return value;
 
   return formatDateTime(value);
 };
 
+/**
+ * Close-date to epoch ms, naive-UTC strings pinned to UTC (see
+ * `parseTradeTime`) so chart x-positions never shift by the machine's
+ * UTC offset.
+ */
 export const parseCloseDate = (value: string | undefined): number | null => {
   if (!value) return null;
-  const t = new Date(value.replace(" ", "T")).getTime();
+  const t = parseTradeTime(value);
 
-  return Number.isNaN(t) ? null : t;
+  return t === 0 ? null : t;
 };
 
 /** Order timestamp (ms) in the globally configured time format. */
@@ -58,7 +65,6 @@ export const orderDate = (timestamp: number | undefined): string => {
 
   return formatDateTime(d);
 };
-
 
 export const hostOf = (baseUrl: string): string => {
   try {
@@ -87,49 +93,20 @@ export const pnlClass = (value: number | undefined | null): string =>
   `nfi-pnl-${pnlTone(value)}`;
 
 /** Signed fixed-point string (`+1.23`, `-0.45`, `0.00`) for PnL values. */
-export const fmtSigned = (
-  value: number | undefined,
-  digits: number,
-  fallback = "—",
-): string => {
-  if (value === undefined || !Number.isFinite(value)) return fallback;
-  const fixed = value.toFixed(digits);
+import { fmtDuration, fmtSigned } from "@nfi/export-core";
 
-  return value > 0 ? `+${fixed}` : fixed;
-};
+export { fmtDuration, fmtSigned };
 
-/** Compact age/duration (`2d 4h`, `38m`, `45s`) from seconds. */
-export const fmtDuration = (seconds: number | undefined | null): string => {
-  if (
-    seconds === undefined ||
-    seconds === null ||
-    !Number.isFinite(seconds) ||
-    seconds < 0
-  )
-    return "—";
-  const s = Math.floor(seconds);
-
-  if (s < 60) return `${s}s`;
-  const minutes = Math.floor(s / 60);
-
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remMinutes = minutes % 60;
-
-  if (hours < 24)
-    return remMinutes > 0 ? `${hours}h ${remMinutes}m` : `${hours}h`;
-  const days = Math.floor(hours / 24);
-  const remHours = hours % 24;
-
-  return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
-};
-
-/** Age of a date string (space or ISO separated), as compact duration from now. */
+/**
+ * Age of a trade date as a compact duration from now. Naive-UTC strings
+ * pin to UTC (see `parseTradeTime`) — the difference against `Date.now()`
+ * is only correct when both sides share a zone.
+ */
 export const fmtAge = (iso: string | undefined): string => {
   if (!iso) return "—";
-  const t = new Date(iso.includes("T") ? iso : iso.replace(" ", "T")).getTime();
+  const t = parseTradeTime(iso);
 
-  if (Number.isNaN(t)) return "—";
+  if (t === 0) return "—";
 
   return fmtDuration((Date.now() - t) / 1000);
 };

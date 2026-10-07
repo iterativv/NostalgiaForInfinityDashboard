@@ -13,7 +13,7 @@ import { Schema } from "effect";
 import type { Capability } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
 import { Tag } from "@carbon/react";
-import { EmptyState, shallow, useDerived, WidgetFrame } from "@nfi/ui";
+import { EmptyState, WidgetFrame } from "@nfi/ui";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import {
   InstanceIdField,
@@ -25,24 +25,19 @@ import { queryState, useWidgetAccess } from "./shared/query";
 import { useTimeFormat } from "./shared/timeFormat";
 import { InstanceSelect } from "./shared/InstanceSelect";
 import { InstanceDot, useInstanceColors } from "./shared/instanceColors";
-import {
-  useClosedPositionsSource,
-  useOpenPositionsSource,
-} from "./shared/sources";
+import { ALL_INSTANCES } from "./shared/InstanceSelect";
+import { useCapability } from "./live/live";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
-import { ExportMenu, type ExportColumn } from "./shared/export";
-import { COL } from "./shared/columns";
+import { ServerExportMenu } from "./shared/export";
 import {
   closeWidgetSettings,
   useWidgetSettingsOpen,
 } from "./shared/widgetSettingsBus";
 
 export const TRADE_TAPE_CAPABILITIES: ReadonlyArray<Capability> = [
-  "instances.open-positions",
-  "instances.closed-positions",
-  "instances.positions-all",
-  "instances.closed-all",
+  "instances.trade-tape",
+  "instances.trade-tape-all",
 ];
 
 export const TradeTapeConfigSchema = Schema.Struct({
@@ -58,9 +53,12 @@ export const TRADE_TAPE_DEFAULTS: TradeTapeConfig = Schema.decodeUnknownSync(
   TradeTapeConfigSchema,
 )({});
 
-interface TapeEvent {
+/**
+ * One rendered tape row: the contract event plus the presentation labels
+ * (detail string, formatted date) composed from the SQL-selected fields.
+ */
+interface TapeRow {
   readonly key: string;
-  readonly at: number;
   readonly dateLabel: string;
   readonly kind: "open" | "close";
   readonly pair: string;
@@ -71,13 +69,6 @@ interface TapeEvent {
   readonly profit: number | undefined;
 }
 
-const toTime = (value: string | undefined): number | null => {
-  if (!value) return null;
-  const t = new Date(value.replace(" ", "T")).getTime();
-
-  return Number.isNaN(t) ? null : t;
-};
-
 export function TradeTapeWidget({
   config,
   panelId,
@@ -87,18 +78,34 @@ export function TradeTapeWidget({
   const limit = clampInt(cfg.limit, 30, 5, 100);
   const access = useWidgetAccess(TRADE_TAPE_CAPABILITIES);
 
-  const openQ = useOpenPositionsSource(cfg.instanceId, {
-    enabled: access.allowed,
-  });
+  // Both halves (kind filter, newest-N selection) are SQL clauses on the
+  // mirror; the feed arrives merged and newest-first.
+  const fleetTape = cfg.instanceId === ALL_INSTANCES;
 
-  const closedQ = useClosedPositionsSource(cfg.instanceId, limit, {
-    enabled: access.allowed,
-  });
-
-  const state = queryState(
-    openQ.error ?? closedQ.error,
-    openQ.isLoading || closedQ.isLoading,
+  const perInstanceTape = useCapability(
+    "instances.trade-tape",
+    {
+      id: fleetTape ? "default" : cfg.instanceId,
+      limit: String(limit),
+      opens: cfg.showOpens ? undefined : "false",
+      closes: cfg.showCloses ? undefined : "false",
+    },
+    { enabled: access.allowed && !fleetTape },
   );
+
+  const fleetView = useCapability(
+    "instances.trade-tape-all",
+    {
+      limit: String(limit),
+      opens: cfg.showOpens ? undefined : "false",
+      closes: cfg.showCloses ? undefined : "false",
+    },
+    { enabled: access.allowed && fleetTape },
+  );
+
+  const tapeQ = fleetTape ? fleetView : perInstanceTape;
+
+  const state = queryState(tapeQ.error, tapeQ.isLoading);
 
   const accessError = access.allowed
     ? null
@@ -115,71 +122,22 @@ export function TradeTapeWidget({
   // Derived through a store: event-list build + sort reruns only when the
   // sources/config change — recomputing on every re-render stalled
   // scrolling/resizing on busy instances.
-  const visible = useDerived(
-    [
-      openQ.data,
-      closedQ.data,
-      cfg.showOpens,
-      cfg.showCloses,
-      cfg.instanceId,
-      limit,
-    ] as const,
-    ([openData, closedData, showOpens, showCloses, instanceId, limit]) => {
-      const events: TapeEvent[] = [];
-
-      if (showOpens) {
-        for (const p of openData ?? []) {
-          const at = toTime(p.openDate) ?? 0;
-          events.push({
-            key: `open-${p.instanceId ?? instanceId}-${p.tradeId}`,
-            at,
-            dateLabel: fmtDate(p.openDate),
-            kind: "open",
-            pair: p.pair,
-            bot: p.instanceName,
-            botId: p.instanceId,
-            detail: `${p.isShort ? "SHORT" : "LONG"} @ ${fmt(p.openRate, 4)}${p.enterTag?.trim() ? ` · ${p.enterTag.trim()}` : ""}`,
-            profit: undefined,
-          });
-        }
-      }
-
-      if (showCloses) {
-        for (const p of closedData ?? []) {
-          const at = toTime(p.closeDate) ?? toTime(p.openDate) ?? 0;
-          const profit = p.closeProfitAbs ?? p.profitAbs;
-          events.push({
-            key: `close-${p.instanceId ?? instanceId}-${p.tradeId}`,
-            at,
-            dateLabel: fmtDate(p.closeDate ?? p.openDate),
-            kind: "close",
-            pair: p.pair,
-            bot: p.instanceName,
-            botId: p.instanceId,
-            detail: `closed${p.exitReason?.trim() ? ` · ${p.exitReason.trim()}` : ""}`,
-            profit,
-          });
-        }
-      }
-
-      events.sort((a, b) => b.at - a.at);
-
-      return events.slice(0, limit);
-    },
-    { inputs: shallow },
-  );
+  const visible: TapeRow[] = (tapeQ.data?.events ?? []).map((event) => ({
+    key: `${event.kind}-${event.instanceId ?? cfg.instanceId}-${event.tradeId}`,
+    dateLabel: fmtDate(event.at),
+    kind: event.kind,
+    pair: event.pair,
+    bot: event.instanceName,
+    botId: event.instanceId,
+    detail:
+      event.kind === "open"
+        ? `${event.isShort ? "SHORT" : "LONG"} @ ${fmt(event.openRate, 4)}${event.enterTag?.trim() ? ` · ${event.enterTag.trim()}` : ""}`
+        : `closed${event.exitReason?.trim() ? ` · ${event.exitReason.trim()}` : ""}`,
+    profit: event.profitAbs,
+  }));
 
   const showBot = cfg.instanceId === "all";
   const colors = useInstanceColors();
-
-  const exportColumns: ReadonlyArray<ExportColumn<TapeEvent>> = [
-    { header: COL.event, value: (e) => e.kind },
-    { header: COL.pair, value: (e) => e.pair },
-    { header: COL.bot, value: (e) => e.bot ?? "" },
-    { header: COL.detail, value: (e) => e.detail },
-    { header: COL.profit, value: (e) => e.profit },
-    { header: COL.date, value: (e) => e.dateLabel },
-  ];
 
   return (
     <>
@@ -225,10 +183,14 @@ export function TradeTapeWidget({
         isLoading={state.isLoading}
         error={accessError ?? state.error}
         actions={
-          <ExportMenu
+          <ServerExportMenu
             filenameBase={`trade-tape-${cfg.instanceId}`}
-            columns={exportColumns}
-            rows={visible}
+            dataset="trade-tape"
+            params={{
+              instanceId:
+                cfg.instanceId === ALL_INSTANCES ? undefined : cfg.instanceId,
+            }}
+            disabled={visible.length === 0}
           />
         }
       >

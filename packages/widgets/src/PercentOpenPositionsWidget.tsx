@@ -5,6 +5,12 @@
  * Public open-trades table — percent P&L, wallet share and age, never
  * amounts (the "non-sensitive" twin of the open trades table).
  *
+ * Profit % is the WHOLE-STAKE view (freqtrade's `total_profit_ratio`, the
+ * same convention as closed-trade % and NFI's calc_total_profit): realized
+ * P/L from NFI de-risks / grind exits is included, unlike `/status`'s
+ * remaining-position-only `profit_ratio`, which drifts once a trade has
+ * partial exits.
+ *
  * Backed by `instances.open-positions.relative`: safe for publicly
  * shareable pages (allocation weights are shares of a server-side total
  * that is never exposed). Mirrors the main table's affordances — trade-ID
@@ -51,12 +57,6 @@ import {
 } from "./shared/tradeSort";
 import { useTimeFormat } from "./shared/timeFormat";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
-import {
-  expandPositionRows,
-  RELATIVE_ORDER_EXPORT_COLUMNS,
-  withOrderRows,
-  type ExportColumn,
-} from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -116,42 +116,10 @@ export const PERCENT_OPEN_POSITIONS_DEFAULTS: PercentOpenPositionsConfig =
 
 const EMPTY_POSITIONS: ReadonlyArray<RelativeOpenPosition> = [];
 
-/** Position-side CSV/XLSX columns (percent-only — never absolute amounts). */
-const POSITION_EXPORT_COLUMNS: ReadonlyArray<
-  ExportColumn<RelativeOpenPosition>
-> = [
-  { header: COL.tradeId, value: (p) => p.tradeId },
-  { header: COL.pair, value: (p) => p.pair },
-  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
-  { header: COL.profitPct, value: (p) => p.profitPct },
-  {
-    header: COL.walletPct,
-    value: (p) =>
-      p.allocationWeight !== undefined &&
-      Number.isFinite(p.allocationWeight)
-        ? p.allocationWeight * 100
-        : undefined,
-  },
-  { header: COL.leverage, value: (p) => p.leverage },
-  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
-  { header: COL.strategy, value: (p) => p.strategy ?? "" },
-  { header: COL.openDate, value: (p) => p.openDate },
-];
-
-/**
- * Grouped CSV/XLSX columns: position columns + sub-order columns.
- * One position row (order cells empty, merged in XLSX) followed by one
- * row per sub-order (position cells empty, merged in XLSX).
- */
-const EXPORT_COLUMNS = withOrderRows({
-  positionColumns: POSITION_EXPORT_COLUMNS,
-  orderColumns: RELATIVE_ORDER_EXPORT_COLUMNS,
-});
-
 /** Column set depends on the widget config's column toggles. */
-function buildColumns([
-  cfg,
-]: readonly [PercentOpenPositionsConfig]): NfiColumnDef<RelativeOpenPosition>[] {
+function buildColumns([cfg]: readonly [
+  PercentOpenPositionsConfig,
+]): NfiColumnDef<RelativeOpenPosition>[] {
   const defs: (NfiColumnDef<RelativeOpenPosition> | null)[] = [
     cfg.showTradeId
       ? {
@@ -293,22 +261,28 @@ export function PercentOpenPositionsWidget({
     { inputs: shallowStore, output: shallowStore },
   );
 
-  /** Grouped export rows: position row + sub-order rows per position. */
-  const exportRows = expandPositionRows(positions, (p) => p.orders);
+  // Footer metrics arrive server-side (SQL open summary against the
+  // never-exposed wallet total); the local fallbacks only cover snapshots
+  // from before the field existed.
+  const stats = data?.stats;
 
-  const deployed = positions.reduce(
-    (sum, p) => sum + (p.allocationWeight ?? 0),
-    0,
-  );
+  const deployed =
+    stats?.deployedWeight ??
+    positions.reduce((sum, p) => sum + (p.allocationWeight ?? 0), 0);
 
   const withPnl = positions.filter(
     (p) => p.profitPct !== undefined && Number.isFinite(p.profitPct),
   );
 
   const avgPnl =
-    withPnl.length > 0
+    stats?.avgProfitPct ??
+    (withPnl.length > 0
       ? withPnl.reduce((sum, p) => sum + (p.profitPct ?? 0), 0) / withPnl.length
-      : null;
+      : null);
+
+  const largestShare =
+    stats?.largestWeight ??
+    positions.reduce((max, p) => Math.max(max, p.allocationWeight ?? 0), 0);
 
   // Column set derived through a store: rebuilt only when the widget
   // config actually changes.
@@ -391,12 +365,7 @@ export function PercentOpenPositionsWidget({
               />
               <Stat
                 label="Largest"
-                value={`${(
-                  positions.reduce(
-                    (max, p) => Math.max(max, p.allocationWeight ?? 0),
-                    0,
-                  ) * 100
-                ).toFixed(1)}%`}
+                value={`${(largestShare * 100).toFixed(1)}%`}
                 sub="single-trade wallet share"
               />
             </div>
@@ -419,8 +388,12 @@ export function PercentOpenPositionsWidget({
                   }}
                   exportMenu={{
                     filenameBase: `open-trades-pct-${cfg.instanceId}`,
-                    columns: EXPORT_COLUMNS,
-                    rows: exportRows,
+                    dataset: "open-trades-relative",
+                    params: {
+                      instanceId: cfg.instanceId,
+                      search: debouncedSearch,
+                    },
+                    disabled: positions.length === 0,
                   }}
                 />
                 <div className="nfi-table-scroll">
@@ -430,7 +403,9 @@ export function PercentOpenPositionsWidget({
                     getRowId={(p) => `${cfg.instanceId}-${p.tradeId}`}
                     sorting={sorting}
                     renderExpandedRow={(row) => (
-                      <RelativeOrdersFacets orders={row.original.orders ?? []} />
+                      <RelativeOrdersFacets
+                        orders={row.original.orders ?? []}
+                      />
                     )}
                   />
                 </div>

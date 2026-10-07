@@ -272,6 +272,12 @@ const toSeriesMarkers = (
 
 const EMPTY_TRADE_MARKERS: ReadonlyArray<TvTradeMarker> = [];
 
+/**
+ * Visible-range distance from the oldest bar that fires `onRequestOlder`:
+ * a few screens of context stay pannable while the next page loads.
+ */
+const LOAD_OLDER_TRIGGER_BARS = 12;
+
 export function CandleChart({
   candles,
   overlays,
@@ -283,6 +289,7 @@ export function CandleChart({
   avgEntryIsShort = false,
   avgEntrySince = null,
   followMarkers = false,
+  onRequestOlder,
 }: {
   candles: ReadonlyArray<Candle>;
   overlays: ReadonlyArray<TvOverlayLine>;
@@ -315,6 +322,14 @@ export function CandleChart({
    * never reacts to candle ticks, so free panning is undisturbed.
    */
   followMarkers?: boolean;
+  /**
+   * Infinite scroll-back: called whenever the visible range approaches the
+   * oldest loaded bar (within `LOAD_OLDER_TRIGGER_BARS`). Fires per pan
+   * frame while near the edge — the requester must self-throttle (the
+   * `useCandleHistory` hook no-ops while a page is in flight or history
+   * is exhausted). Omit to keep the chart bounded to the given candles.
+   */
+  onRequestOlder?: () => void;
 }) {
   // Element stores for the three host divs. Effects read `.state` at
   // execution time — a live box exactly like the old refs — so effect deps
@@ -516,6 +531,22 @@ export function CandleChart({
     }));
   }
 
+  // History-page requester for the scroll-back trigger below — a live box
+  // so the range subscription (registered once per chart structure) reads
+  // the latest callback without re-subscribing per render.
+  const requestOlderStore = useLocalStore<(() => void) | null>(null);
+
+  if (requestOlderStore.state !== onRequestOlder) {
+    requestOlderStore.setState(() => onRequestOlder ?? null);
+  }
+
+  /** Fires the requester when the view nears the oldest loaded bar. */
+  const triggerOlderIfNeeded = (from: number): void => {
+    if (from > LOAD_OLDER_TRIGGER_BARS) return;
+
+    requestOlderStore.state?.();
+  };
+
   // --- Structure: create charts + series (no per-tick data) ---------------
   useStoreEffect(() => {
     const priceEl = priceElStore.state;
@@ -681,6 +712,7 @@ export function CandleChart({
           handlesStore.state.subChart
             ?.timeScale()
             .setVisibleLogicalRange(range);
+          triggerOlderIfNeeded(range.from);
         }
       });
     } else {
@@ -691,7 +723,10 @@ export function CandleChart({
         subHist: null,
       }));
       chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-        if (range) rangeStore.setState(() => range);
+        if (range) {
+          rangeStore.setState(() => range);
+          triggerOlderIfNeeded(range.from);
+        }
       });
     }
 
@@ -703,16 +738,25 @@ export function CandleChart({
       chart.timeScale().setVisibleLogicalRange(savedRange);
       subChart?.timeScale().setVisibleLogicalRange(savedRange);
     } else {
-      chart.timeScale().fitContent();
-      subChart?.timeScale().fitContent();
+      // Initial zoom: keep enough pixels per bar that the time axis never
+      // starts crowded — a narrow pane shows a shorter window instead of
+      // squeezing the whole dataset (200+ bars once history accumulates
+      // behind fitContent). Logical units are one per bar, so this adapts
+      // to any timeframe; the user's own zoom/pan is never touched after
+      // first paint. ~68px allowance covers the right price scale plus the
+      // rightOffset; 9px/bar is lightweight-charts' comfortable minimum.
+      const minPixelsPerBar = 9;
+      const usableWidth = Math.max(0, (priceEl.clientWidth || 600) - 68);
 
-      // Hide the oversized fit-content range on first paint for small sets.
-      if (candleData.length < 60) {
-        const to = candleData.length + 4;
-        const from = Math.max(0, to - 60);
-        chart.timeScale().setVisibleLogicalRange({ from, to });
-        subChart?.timeScale().setVisibleLogicalRange({ from, to });
-      }
+      const visibleBars = Math.max(
+        20,
+        Math.min(candleData.length, Math.floor(usableWidth / minPixelsPerBar)),
+      );
+
+      const to = candleData.length + 4;
+      const from = Math.max(0, to - visibleBars);
+      chart.timeScale().setVisibleLogicalRange({ from, to });
+      subChart?.timeScale().setVisibleLogicalRange({ from, to });
     }
 
     const onCrosshair = (param: MouseEventParams) => {
@@ -784,8 +828,27 @@ export function CandleChart({
   ]);
 
   // --- Data: push new points into the existing series ----------------------
+  // Oldest loaded bar (whole seconds) of the previous data frame — detects
+  // history prepends so the visible TIME range can be restored after
+  // `setData` (logical indexes shift when older bars prepend, and the
+  // default behavior after a prepend drags the view leftward with them).
+  const prevOldestStore = useLocalStore<number | null>(null);
+
   useStoreEffect(() => {
     if (!hasCandles) return;
+
+    const chart = handlesStore.state.chart;
+    const nextOldest = candleData[0] ? Number(candleData[0].time) : null;
+    const prevOldest = prevOldestStore.state;
+
+    const prepended =
+      chart !== null &&
+      prevOldest !== null &&
+      nextOldest !== null &&
+      nextOldest < prevOldest;
+
+    const restoreRange =
+      prepended && chart ? chart.timeScale().getVisibleRange() : null;
 
     try {
       handlesStore.state.candles?.setData(candleData);
@@ -834,6 +897,20 @@ export function CandleChart({
         // Ignore — next tick repairs.
       }
     }
+
+    // Keep the user's view anchored to the same time span the prepended
+    // bars slid underneath it. The restore also re-fires the range
+    // subscription, which re-arms the next history page if the edge is
+    // still close.
+    if (restoreRange && chart) {
+      try {
+        chart.timeScale().setVisibleRange(restoreRange);
+      } catch {
+        // Chart mid-rebuild — next tick repairs.
+      }
+    }
+
+    prevOldestStore.setState(() => nextOldest);
   }, [candleData, volumeData, overlays, subplot, showVolume, hasCandles]);
 
   // --- Trade overlay: markers + avg-entry line + PnL fill -------------------
@@ -1067,6 +1144,7 @@ export function CandleChart({
   return (
     <div
       style={{
+        position: "relative",
         width: "100%",
         maxWidth: "100%",
         minWidth: 0,
@@ -1077,6 +1155,8 @@ export function CandleChart({
         overflow: "hidden",
       }}
     >
+      {/* Legend floats above the chart (see .nfi-candle-legend) — never a
+          flow sibling, so hover text can't shift the panes. */}
       <div className="nfi-mono nfi-candle-legend" aria-live="polite">
         {bar ? (
           <>

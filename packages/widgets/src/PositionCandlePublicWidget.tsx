@@ -5,7 +5,8 @@
  * Position candles (public) — the shareable twin of `position-candle`.
  *
  * Same follow-the-open-position behavior (quick-selector chips, `Auto`
- * tracking the newest open position), but built only from market data and
+ * tracking the newest open position, and a watched close handing control
+ * back to auto), but built only from market data and
  * `.relative` position payloads: entry/exit markers carry direction,
  * percentages and tags — never amounts, prices or order detail.
  *
@@ -82,6 +83,7 @@ import {
   type PositionChipOption,
 } from "./shared/PositionPairChips";
 import { useCandlePending } from "./shared/candlePending";
+import { useCandleHistory, mergeOlderCandles } from "./shared/candleHistory";
 import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 
 /** OHLCV candles (public market data). */
@@ -380,6 +382,38 @@ export function PositionCandlePublicWidget({
 
   const effectivePair = pinned || buckets[0]?.pair || "";
 
+  // Closed-position auto-advance (same policy as the sensitive twin): a
+  // pin only ever pins LIVE positions. A followed pair the chart watches
+  // closing (live → absent across settled open-positions frames) clears
+  // the pin so auto takes over; a pin set on an already-closed pair
+  // (deliberate history review, including across reloads) stays.
+  const pinWasLive = useLocalStore(false);
+
+  useStoreEffect(() => {
+    if (!positionsAccess.allowed || openRelQ.data === undefined) {
+      pinWasLive.setState(() => false);
+
+      return;
+    }
+
+    if (pinned.length === 0) {
+      pinWasLive.setState(() => false);
+
+      return;
+    }
+
+    if (pinnedOpen) {
+      pinWasLive.setState(() => true);
+
+      return;
+    }
+
+    if (pinWasLive.state) {
+      pinWasLive.setState(() => false);
+      patch({ pair: "" });
+    }
+  }, [positionsAccess.allowed, openRelQ.data, pinned, pinnedOpen]);
+
   const candlesQ = useCapability(
     "instances.candles",
     {
@@ -404,6 +438,21 @@ export function PositionCandlePublicWidget({
   const showSettings = useWidgetSettingsOpen(panelId);
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
+
+  // Infinite scroll-back (same as the sensitive twin): older exchange pages
+  // accumulate as the user pans toward the oldest bar.
+  const history = useCandleHistory({
+    enabled: marketAccess.allowed && effectivePair.length > 0,
+    instanceId: cfg.instanceId,
+    pair: effectivePair,
+    timeframe: cfg.timeframe,
+  });
+
+  const allCandles = useDerived(
+    [candles, history.older] as const,
+    ([live, older]) => (older.length > 0 ? mergeOlderCandles(older, live) : live),
+    { inputs: shallow },
+  );
 
   // Same timeframe-switch grace as the sensitive twin: hold loading instead
   // of flashing "no analyzed data" while the fresh seed is in flight.
@@ -446,7 +495,21 @@ export function PositionCandlePublicWidget({
     if (next) patch({ pair: next });
   }, [pairsQ.data, effectivePair]);
 
-  const bars = useDerived(candles, (src): IndicatorBar[] =>
+  const bars = useDerived(allCandles, (src): IndicatorBar[] =>
+    orderedByTime(
+      src.map((c) => ({
+        time: Math.floor(c.time / 1000),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      })),
+    ),
+  );
+
+  // Toolbar readouts stay scoped to the LIVE window (see sensitive twin).
+  const liveBars = useDerived(candles, (src): IndicatorBar[] =>
     orderedByTime(
       src.map((c) => ({
         time: Math.floor(c.time / 1000),
@@ -678,7 +741,7 @@ export function PositionCandlePublicWidget({
     count: b.count > 1 ? b.count : undefined,
   }));
 
-  const windowStats = useDerived(bars, (src) => {
+  const windowStats = useDerived(liveBars, (src) => {
     const lastBar = src[src.length - 1];
     const prevBar = src[src.length - 2];
 
@@ -1093,7 +1156,7 @@ export function PositionCandlePublicWidget({
               </span>
             </div>
             <CandleChart
-              candles={candles}
+              candles={allCandles}
               overlays={overlays}
               showVolume={cfg.showVolume}
               subplot={subplot}
@@ -1102,6 +1165,9 @@ export function PositionCandlePublicWidget({
               avgEntryIsShort={followedIsShort}
               avgEntrySince={entrySince}
               followMarkers
+              onRequestOlder={() =>
+                history.loadOlder(allCandles[0]?.time ?? 0)
+              }
               avgEntryTitle={
                 entryBaseline !== null
                   ? `entry lvl ${entryBaseline.toFixed(chartPrecision)}`

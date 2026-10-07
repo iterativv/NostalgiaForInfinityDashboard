@@ -64,11 +64,51 @@ export {
   type StoredSession,
 } from "./sessions.js";
 
+export {
+  migrateTrades,
+  TradesRepo,
+  TradesRepoLive,
+  type AggregateArgs,
+  type AggregateExtreme,
+  type AggregateGroupBy,
+  type AggregateResult,
+  type AggregateRow,
+  type AggregateTotals,
+  type ClosedListResult,
+  type ClosedPercentStats,
+  type ClosedPercentStatsArgs,
+  type CumulativeProfitArgs,
+  type CumulativeProfitResult,
+  type CumulativeProfitRow,
+  type CumulativeProfitTotal,
+  type ListClosedArgs,
+  type ListOpenArgs,
+  type LocksArgs,
+  type MirrorClosedPosition,
+  type MirrorOpenPosition,
+  type OpenListResult,
+  type OpenSummary,
+  type OpenSummaryArgs,
+  type OpenSummaryPairRow,
+  type OpenSummaryResult,
+  type PairListArgs,
+  type PairWatchArgs,
+  type PairWatchResultRow,
+  type PerformanceStats,
+  type PerformanceStatsArgs,
+  type TapeArgs,
+  type TradesRepoService,
+  type TradeSyncState,
+  type TradedPairRow,
+  type TradedPairsArgs,
+} from "./trades.js";
+
 import { migrateWorkspaces } from "./workspaces.js";
 import { migrateInstances } from "./instances.js";
 import { migrateSettings } from "./settings.js";
 import { migrateUsers } from "./users.js";
 import { migrateSessions } from "./sessions.js";
+import { migrateTrades } from "./trades.js";
 
 /**
  * @nfi/db
@@ -205,10 +245,21 @@ export const migrate: Effect.Effect<
   yield* sql`ALTER TABLE workspaces ADD COLUMN trellis_json TEXT`.pipe(
     Effect.catchIf(isDuplicateColumn, () => Effect.void),
   );
+  // Masonry stack page mode (panes at natural height in one scrolling
+  // column) — 0/1 with 0 = absent exactly like the optional schema field.
+  yield* sql`ALTER TABLE workspaces ADD COLUMN stacked INTEGER NOT NULL DEFAULT 0`.pipe(
+    Effect.catchIf(isDuplicateColumn, () => Effect.void),
+  );
+  // Manual Tetris wall block widths (panelId → column span JSON). NULL = no
+  // manual widths — the wall falls back to the pane's tiled width fraction.
+  yield* sql`ALTER TABLE workspaces ADD COLUMN tetris_spans_json TEXT`.pipe(
+    Effect.catchIf(isDuplicateColumn, () => Effect.void),
+  );
   yield* migrateInstances;
   yield* migrateSettings;
   yield* migrateUsers;
   yield* migrateSessions;
+  yield* migrateTrades;
 }).pipe(Effect.asVoid);
 
 /** One link of a driver error's `cause` chain: an optional message plus the next link. */
@@ -256,12 +307,53 @@ export interface SnapshotRepoService {
      */
     bucket?: BalanceHistoryBucket,
   ) => Effect.Effect<BalanceHistoryResponse, SqlError.SqlError | ParseError>;
+  /**
+   * Underwater curve + drawdown scalars computed in SQL over the FULL
+   * snapshot history (running peak via a window function — never a
+   * windowed JS scan, which would cap max drawdown at the fetched slice).
+   */
+  readonly drawdown: (
+    args: DrawdownArgs,
+  ) => Effect.Effect<DrawdownResult, SqlError.SqlError>;
+}
+
+/** Drawdown read: `instanceId: null` = fleet (per-minute sums, every instance). */
+export interface DrawdownArgs {
+  readonly instanceId: string | null;
+  /** Newest N curve points returned (the scalars always cover all history). */
+  readonly limit: number;
+}
+
+export interface DrawdownPoint {
+  readonly recordedAt: string;
+  /** Percent below the running peak (<= 0; 0 while the peak is not positive). */
+  readonly drawdown: number;
+}
+
+export interface DrawdownResult {
+  readonly points: ReadonlyArray<DrawdownPoint>;
+  /** Deepest drawdown over the FULL history (percent, <= 0). */
+  readonly maxDrawdown: number;
+  /** Newest point's drawdown (percent, <= 0; 0 with no history). */
+  readonly currentDrawdown: number;
+  /** All-time equity peak (profit_all_coin high-water mark). */
+  readonly peakValue: number;
 }
 
 export class SnapshotRepo extends Context.Tag("nfi/SnapshotRepo")<
   SnapshotRepo,
   SnapshotRepoService
 >() {}
+
+// SAFETY: @effect/sql returns untyped rows; the drawdown statements SELECT
+// exactly the aliased columns of T (statement and type sit together at the
+// call site), and NULL/non-finite values are re-coerced downstream.
+const sqlRows = <T>(rows: ReadonlyArray<unknown>): T[] => rows as T[];
+
+// SAFETY: first row of a statement whose SELECT list is exactly T's aliased
+// columns; the scalar aggregate (no GROUP BY) always yields one row.
+const firstRow = <T>(rows: ReadonlyArray<unknown>): T | undefined =>
+  rows[0] as T | undefined;
 
 export const SnapshotRepoLive: Layer.Layer<
   SnapshotRepo,
@@ -316,6 +408,70 @@ export const SnapshotRepoLive: Layer.Layer<
         ORDER BY recordedAt DESC
         LIMIT ${limit}
       `;
+    };
+
+    /**
+     * Underwater curve over the FULL snapshot history, all in SQL:
+     * `running` carries each row's running peak (window MAX), `dd` the
+     * distance below it. The fleet variant merges instances per minute
+     * first (ISO-8601 prefixes sort chronologically), mirroring the
+     * fleet profit-history merge — but over every recorded row, not a
+     * per-instance window.
+     */
+    const drawdownQueries = (instanceId: string | null, limit: number) => {
+      // `id` (insertion order) breaks same-millisecond ties so the running
+      // peak stays monotonic in recording order; the fleet merge has one
+      // row per minute, so its tiebreaker is inert (NULL).
+      const base =
+        instanceId === null
+          ? sql`
+            SELECT NULL AS id,
+                   substr(recorded_at, 1, 16) || ':00.000Z' AS recorded_at,
+                   SUM(profit_all_coin) AS profit_all_coin
+            FROM profit_snapshots
+            GROUP BY substr(recorded_at, 1, 16)
+          `
+          : sql`
+            SELECT id, recorded_at, profit_all_coin
+            FROM profit_snapshots
+            WHERE instance_id = ${instanceId}
+          `;
+
+      const windowed = sql`
+        WITH running AS (
+          SELECT id,
+                 recorded_at AS recordedAt,
+                 profit_all_coin AS equity,
+                 MAX(profit_all_coin) OVER (
+                   ORDER BY recorded_at, id ROWS UNBOUNDED PRECEDING
+                 ) AS peak
+          FROM (${base})
+        ),
+        dd AS (
+          SELECT recordedAt, id, peak,
+                 CASE WHEN peak > 0
+                   THEN (equity - peak) / peak * 100.0
+                   ELSE 0
+                 END AS drawdown
+          FROM running
+        )
+      `;
+
+      return {
+        scalars: sql`
+          ${windowed}
+          SELECT COALESCE(MIN(drawdown), 0) AS maxDrawdown,
+                 COALESCE(MAX(peak), 0) AS peakValue
+          FROM dd
+        `,
+        curve: sql`
+          ${windowed}
+          SELECT recordedAt, drawdown
+          FROM dd
+          ORDER BY recordedAt DESC, id DESC
+          LIMIT ${limit}
+        `,
+      };
     };
 
     return {
@@ -393,6 +549,39 @@ export const SnapshotRepoLive: Layer.Layer<
           return yield* Schema.decodeUnknown(BalanceHistoryResponse)({
             points: ascending,
           });
+        }),
+
+      drawdown: (args) =>
+        Effect.gen(function* () {
+          const { scalars, curve } = drawdownQueries(
+            args.instanceId,
+            args.limit,
+          );
+
+          const scalarRow = firstRow<{
+            maxDrawdown: number;
+            peakValue: number;
+          }>(yield* scalars);
+
+          const newest = sqlRows<{
+            recordedAt: string;
+            drawdown: number;
+          }>(yield* curve);
+
+          // Newest-first from SQL; the chart wants chronological order.
+          const points = [...newest].reverse().map((row) => ({
+            recordedAt: row.recordedAt,
+            drawdown: Number.isFinite(row.drawdown) ? row.drawdown : 0,
+          }));
+
+          const last = points[points.length - 1];
+
+          return {
+            points,
+            maxDrawdown: scalarRow?.maxDrawdown ?? 0,
+            currentDrawdown: last?.drawdown ?? 0,
+            peakValue: scalarRow?.peakValue ?? 0,
+          };
         }),
     } satisfies SnapshotRepoService;
   }),

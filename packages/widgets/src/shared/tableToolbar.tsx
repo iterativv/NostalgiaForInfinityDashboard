@@ -14,7 +14,11 @@
  *
  * The filter stays server-side: the search text rides the stream
  * subscription exactly like the old bespoke inputs (callers keep their
- * debounced subscription wiring — this component only renders).
+ * debounced subscription wiring). Exports come in two variants sharing one
+ * busy-guarded menu: SERVER (`dataset` + `params`) downloads a file the
+ * backend generated over the FULL matching set — the path every windowed
+ * table uses — and CLIENT (`columns` + `rows`) serializes rows the widget
+ * already holds in full.
  */
 
 import { useState } from "react";
@@ -27,10 +31,12 @@ import {
   TableToolbarSearch,
 } from "@carbon/react";
 import {
+  downloadServerExport,
   exportRowsToCsv,
   exportRowsToJson,
   exportRowsToXlsx,
   type ExportColumn,
+  type ServerExportParams,
 } from "./export";
 import { Download } from "@carbon/icons-react";
 
@@ -51,12 +57,37 @@ export interface ToolbarOrderProps {
   readonly onChange: (id: string) => void;
 }
 
-/** Export overflow section (CSV + XLSX + JSON of the exported rows). */
-export interface ToolbarExportProps<T> {
+/**
+ * Export overflow section (CSV + XLSX + JSON). Two variants:
+ *
+ * - SERVER (`dataset` + `params`): the backend generates the file from the
+ *   FULL matching set in the mirror — the windowed tables' export path
+ *   (loaded rows are a viewport, never the export).
+ * - CLIENT (`columns` + `rows`): in-browser serialization of rows the
+ *   widget already holds in full (snapshot datasets only).
+ */
+export interface ServerToolbarExport {
+  readonly dataset: string;
+  readonly params?: ServerExportParams;
+  readonly filenameBase: string;
+  /** Nothing loaded yet — the server set can't be empty-matched blindly. */
+  readonly disabled?: boolean;
+}
+
+export interface ClientToolbarExport<T> {
   readonly filenameBase: string;
   readonly columns: ReadonlyArray<ExportColumn<T>>;
   readonly rows: ReadonlyArray<T>;
+  /**
+   * Full-dataset fetch run on export, INSTEAD of `rows` — for the rare
+   * client-side table whose dataset is bigger than its loaded window.
+   * Errors fall back to `rows` so an export never no-ops.
+   */
+  readonly loadRows?: () => Promise<ReadonlyArray<T>>;
 }
+
+export type ToolbarExportProps<T> =
+  ServerToolbarExport | ClientToolbarExport<T>;
 
 export function NfiTableToolbar<T extends object>({
   label,
@@ -72,19 +103,71 @@ export function NfiTableToolbar<T extends object>({
 }) {
   const [busy, setBusy] = useState(false);
 
+
+  const server =
+    exportMenu !== undefined && "dataset" in exportMenu
+      ? exportMenu
+      : undefined;
+
+  const client =
+    exportMenu !== undefined && !("dataset" in exportMenu)
+      ? exportMenu
+      : undefined;
+
   const empty =
     exportMenu === undefined ||
-    exportMenu.rows.length === 0 ||
-    exportMenu.columns.length === 0;
+    (server !== undefined && server.disabled === true) ||
+    (client !== undefined &&
+      (client.rows.length === 0 || client.columns.length === 0));
 
-  const onXlsx = (): void => {
+  /** Rows to serialize: the full fetch when the caller provides one. */
+  const resolveRows = async (): Promise<ReadonlyArray<T>> => {
+    if (client === undefined) return [];
+
+    if (client.loadRows === undefined) return client.rows;
+
+    try {
+      const rows = await client.loadRows();
+
+      return rows.length > 0 ? rows : client.rows;
+    } catch {
+      return client.rows;
+    }
+  };
+
+  /** One export run — server download or client serialization. */
+  const onExport = async (format: "csv" | "xlsx" | "json"): Promise<void> => {
     if (exportMenu === undefined || empty || busy) return;
+
     setBusy(true);
-    void exportRowsToXlsx(
-      exportMenu.filenameBase,
-      exportMenu.columns,
-      exportMenu.rows,
-    ).finally(() => setBusy(false));
+
+    try {
+      if (server !== undefined) {
+        await downloadServerExport(
+          server.dataset,
+          format,
+          server.params,
+          server.filenameBase,
+        );
+
+        return;
+      }
+
+      const columns = client?.columns ?? [];
+      const rows = await resolveRows();
+
+      if (format === "csv")
+        exportRowsToCsv(exportMenu.filenameBase, columns, rows);
+      else if (format === "json")
+        exportRowsToJson(exportMenu.filenameBase, columns, rows);
+      else await exportRowsToXlsx(exportMenu.filenameBase, columns, rows);
+    } catch (cause) {
+      // Server exports reject with the backend's formatted message; the
+      // menu stays usable and the failure is visible instead of silent.
+      window.alert(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -124,31 +207,19 @@ export function NfiTableToolbar<T extends object>({
             renderIcon={Download}
           >
             <OverflowMenuItem
-              disabled={empty}
-              itemText="Export CSV"
-              onClick={() =>
-                exportRowsToCsv(
-                  exportMenu.filenameBase,
-                  exportMenu.columns,
-                  exportMenu.rows,
-                )
-              }
+              disabled={empty || busy}
+              itemText={busy ? "Preparing…" : "Export CSV"}
+              onClick={() => void onExport("csv")}
             />
             <OverflowMenuItem
               disabled={empty || busy}
               itemText={busy ? "Preparing…" : "Export XLSX"}
-              onClick={onXlsx}
+              onClick={() => void onExport("xlsx")}
             />
             <OverflowMenuItem
-              disabled={empty}
-              itemText="Export JSON"
-              onClick={() =>
-                exportRowsToJson(
-                  exportMenu.filenameBase,
-                  exportMenu.columns,
-                  exportMenu.rows,
-                )
-              }
+              disabled={empty || busy}
+              itemText={busy ? "Preparing…" : "Export JSON"}
+              onClick={() => void onExport("json")}
             />
           </TableToolbarMenu>
         ) : null}
@@ -167,5 +238,7 @@ export function NfiTableContainer({
 }: {
   readonly children: React.ReactNode;
 }) {
-  return <TableContainer className="nfi-table-container">{children}</TableContainer>;
+  return (
+    <TableContainer className="nfi-table-container">{children}</TableContainer>
+  );
 }

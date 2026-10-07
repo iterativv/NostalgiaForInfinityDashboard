@@ -64,12 +64,7 @@ import {
 } from "./shared/tradeSort";
 import { useTimeFormat } from "./shared/timeFormat";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
-import {
-  expandPositionRows,
-  RELATIVE_ORDER_EXPORT_COLUMNS,
-  withOrderRows,
-  type ExportColumn,
-} from "./shared/export";
+
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -134,39 +129,8 @@ export const PERCENT_CLOSED_TRADES_DEFAULTS: PercentClosedTradesConfig =
 /** Window growth cap — matches the relative closed capability limit cap. */
 const MAX_WINDOW = 5_000;
 
-/** Position-side CSV/XLSX columns (percent-only — never absolute amounts). */
-const POSITION_EXPORT_COLUMNS: ReadonlyArray<
-  ExportColumn<RelativeClosedPosition>
-> = [
-  { header: COL.tradeId, value: (p) => p.tradeId },
-  { header: COL.pair, value: (p) => p.pair },
-  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
-  {
-    header: COL.profitPct,
-    value: (p) => p.closeProfitPct ?? p.profitPct,
-  },
-  { header: COL.duration, value: (p) => fmtDuration(p.tradeDurationSeconds) },
-  { header: COL.exitReason, value: (p) => p.exitReason ?? "" },
-  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
-  { header: COL.strategy, value: (p) => p.strategy ?? "" },
-  { header: COL.openDate, value: (p) => p.openDate },
-  { header: COL.closeDate, value: (p) => p.closeDate ?? "" },
-];
-
-/**
- * Grouped CSV/XLSX columns: position columns + sub-order columns.
- * One position row (order cells empty, merged in XLSX) followed by one
- * row per sub-order (position cells empty, merged in XLSX).
- */
-const EXPORT_COLUMNS = withOrderRows({
-  positionColumns: POSITION_EXPORT_COLUMNS,
-  orderColumns: RELATIVE_ORDER_EXPORT_COLUMNS,
-});
-
 /** Column set depends on the widget config's column toggles. */
-function buildColumns([
-  cfg,
-]: readonly [
+function buildColumns([cfg]: readonly [
   PercentClosedTradesConfig,
 ]): NfiColumnDef<RelativeClosedPosition>[] {
   const defs: (NfiColumnDef<RelativeClosedPosition> | null)[] = [
@@ -327,31 +291,45 @@ export function PercentClosedTradesWidget({
     { inputs: shallowStore, output: shallowStore },
   );
 
-  /** Grouped export rows: position row + sub-order rows per position. */
-  const exportRows = expandPositionRows(positions, (p) => p.orders);
+  // Footer metrics arrive server-side: `stats` is a SQL aggregate over
+  // EVERY closed trade matching the current search — the loaded page may
+  // be a window, the footer never is. The local fallbacks only cover
+  // snapshots from before the field existed.
+  const stats = view.data?.stats;
 
   const withPnl = positions.filter(
     (p) => p.closeProfitPct !== undefined && Number.isFinite(p.closeProfitPct),
   );
 
-  const wins = withPnl.filter((p) => (p.closeProfitPct ?? 0) > 0).length;
-  const winRate = withPnl.length > 0 ? (wins / withPnl.length) * 100 : null;
+  const wins =
+    stats?.wins ?? withPnl.filter((p) => (p.closeProfitPct ?? 0) > 0).length;
+
+  const winnersBase = stats?.withPnl ?? withPnl.length;
+
+  const winRate =
+    stats?.winRatePct ??
+    (withPnl.length > 0 ? (wins / withPnl.length) * 100 : null);
 
   const avgPnl =
-    withPnl.length > 0
+    stats?.avgProfitPct ??
+    (withPnl.length > 0
       ? withPnl.reduce((sum, p) => sum + (p.closeProfitPct ?? 0), 0) /
         withPnl.length
-      : null;
+      : null);
 
-  const best = withPnl.reduce(
-    (max, p) => Math.max(max, p.closeProfitPct ?? 0),
-    Number.NEGATIVE_INFINITY,
-  );
+  const best =
+    stats?.bestPct ??
+    withPnl.reduce(
+      (max, p) => Math.max(max, p.closeProfitPct ?? 0),
+      Number.NEGATIVE_INFINITY,
+    );
 
-  const worst = withPnl.reduce(
-    (min, p) => Math.min(min, p.closeProfitPct ?? 0),
-    Number.POSITIVE_INFINITY,
-  );
+  const worst =
+    stats?.worstPct ??
+    withPnl.reduce(
+      (min, p) => Math.min(min, p.closeProfitPct ?? 0),
+      Number.POSITIVE_INFINITY,
+    );
 
   /**
    * Deeper history probably exists (see ClosedPositionsWidget's rule):
@@ -454,7 +432,7 @@ export function PercentClosedTradesWidget({
               <Stat
                 label="Win rate"
                 value={winRate === null ? "—" : `${winRate.toFixed(1)}%`}
-                sub={`${wins}/${withPnl.length} winners`}
+                sub={`${wins}/${winnersBase} winners`}
                 tone={
                   winRate === null
                     ? "neutral"
@@ -466,7 +444,11 @@ export function PercentClosedTradesWidget({
               <Stat
                 label={COL.avgPct}
                 value={avgPnl === null ? "—" : `${fmtSigned(avgPnl, 2)}%`}
-                sub={`window of ${positions.length} trades`}
+                sub={
+                  stats
+                    ? "all matching trades"
+                    : `window of ${positions.length} trades`
+                }
                 tone={avgPnl !== null && avgPnl >= 0 ? "positive" : "negative"}
               />
               <Stat
@@ -498,8 +480,12 @@ export function PercentClosedTradesWidget({
                   }}
                   exportMenu={{
                     filenameBase: `closed-trades-pct-${cfg.instanceId}`,
-                    columns: EXPORT_COLUMNS,
-                    rows: exportRows,
+                    dataset: "closed-trades-relative",
+                    params: {
+                      instanceId: cfg.instanceId,
+                      search: debouncedSearch,
+                    },
+                    disabled: positions.length === 0,
                   }}
                 />
                 <div className="nfi-table-scroll">
@@ -509,7 +495,9 @@ export function PercentClosedTradesWidget({
                     getRowId={(p) => `${cfg.instanceId}-${p.tradeId}`}
                     sorting={sorting}
                     renderExpandedRow={(row) => (
-                      <RelativeOrdersFacets orders={row.original.orders ?? []} />
+                      <RelativeOrdersFacets
+                        orders={row.original.orders ?? []}
+                      />
                     )}
                   />
                   <LoadMoreRow

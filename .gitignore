@@ -43,3 +43,6 @@ yarn-error.log*
 
 # Standalone binary default sqlite location (repo-root runs)
 nfi-desk.db*
+
+# Agent session workspace (plans, local skill copies)
+.zcode/

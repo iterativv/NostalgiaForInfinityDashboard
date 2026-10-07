@@ -35,7 +35,6 @@ import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
 import { SettingsSelect } from "./shared/SettingsSelect";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
-import { type ExportColumn } from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -146,11 +145,7 @@ function buildColumns([cfg, stake]: readonly [
       ? {
           id: "profitAbs",
           header: () => (
-            <span
-              title={
-                stake ? `Total profit in ${stake}` : "Total profit"
-              }
-            >
+            <span title={stake ? `Total profit in ${stake}` : "Total profit"}>
               {COL.totalProfit}
             </span>
           ),
@@ -190,19 +185,33 @@ export function TagPerformanceWidget({
   const groupBy = cfg.groupBy;
   const sortBy = cfg.sortBy;
 
+  // Grouping (GROUP BY), minTrades (HAVING) and ordering (ORDER BY) are
+  // SQL clauses over the FULL mirror history — no client-side filter or
+  // sort runs here.
+  const sortParam = sortBy === "tag" ? null : sortBy;
+
   const perInstance = useCapability(
     "instances.tag-performance",
     {
       id: cfg.instanceId,
       limit: String(limit),
       groupBy,
+      minTrades: String(minTrades),
+      sortBy: sortParam ?? undefined,
+      sortDir: "desc",
     },
     { enabled: !fleet },
   );
 
   const fleetView = useCapability(
     "instances.tag-performance-all",
-    { limit: String(limit), groupBy },
+    {
+      limit: String(limit),
+      groupBy,
+      minTrades: String(minTrades),
+      sortBy: sortParam ?? undefined,
+      sortDir: "desc",
+    },
     { enabled: fleet },
   );
 
@@ -251,15 +260,13 @@ export function TagPerformanceWidget({
     inputs: shallow,
   });
 
-  const rows = (data?.rows ?? [])
-    .filter((r) => r.trades >= minTrades)
-    .sort((a, b) => {
-      // Metrics sort best-first; the tag name sorts A→Z — the "sort by"
-      // pick alone decides both, no separate direction toggle.
-      if (sortBy === "tag") return a.tag.localeCompare(b.tag);
-
-      return b[sortBy] - a[sortBy];
-    });
+  // Rows arrive grouped, filtered and ordered from SQL. The "tag" sort key
+  // has no SQL column — order by name here (a stable display transform over
+  // the complete result, not a coverage filter).
+  const rows =
+    sortBy === "tag"
+      ? [...(data?.rows ?? [])].sort((a, b) => a.tag.localeCompare(b.tag))
+      : (data?.rows ?? []);
 
   const groupItems = TAG_GROUP_ITEMS.map((i) => ({ ...i }));
 
@@ -272,19 +279,6 @@ export function TagPerformanceWidget({
           : COL.exitReason
         : i.text,
   }));
-
-  const exportColumns: ReadonlyArray<ExportColumn<TagPerformanceRow>> = [
-    {
-      header: groupBy === "enter" ? COL.enterTag : COL.exitReason,
-      value: (r) => r.tag,
-    },
-    { header: COL.trades, value: (r) => r.trades },
-    { header: COL.wins, value: (r) => r.wins },
-    { header: COL.losses, value: (r) => r.losses },
-    { header: COL.winRate, value: (r) => r.winrate },
-    { header: COL.totalProfit, value: (r) => r.profitAbs },
-    { header: COL.avgPct, value: (r) => r.profitPctAvg },
-  ];
 
   return (
     <>
@@ -373,8 +367,18 @@ export function TagPerformanceWidget({
               label="Tag performance table actions"
               exportMenu={{
                 filenameBase: `tag-performance-${cfg.instanceId}`,
-                columns: exportColumns,
-                rows,
+                dataset: "tag-performance",
+                params: {
+                  instanceId:
+                    cfg.instanceId === ALL_INSTANCES
+                      ? undefined
+                      : cfg.instanceId,
+                  groupBy,
+                  minTrades,
+                  sortBy: sortParam ?? undefined,
+                  sortDir: "desc",
+                },
+                disabled: rows.length === 0,
               }}
             />
             <div className="nfi-table-scroll">

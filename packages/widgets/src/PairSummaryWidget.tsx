@@ -31,12 +31,11 @@ import {
 } from "./shared/config";
 import { clampInt, fmt, pnlClass } from "./shared/format";
 import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
+import { useCapability } from "./live/live";
 import { queryState, useWidgetAccess } from "./shared/query";
 import { SettingsSelect } from "./shared/SettingsSelect";
-import { useClosedPositionsSource } from "./shared/sources";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
-import { type ExportColumn } from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -45,8 +44,8 @@ import {
 } from "./shared/widgetSettingsBus";
 
 export const PAIR_SUMMARY_CAPABILITIES: ReadonlyArray<Capability> = [
-  "instances.closed-positions",
-  "instances.closed-all",
+  "instances.tag-performance",
+  "instances.tag-performance-all",
 ];
 
 const SORTS = [
@@ -83,7 +82,6 @@ interface PairRow {
   readonly losses: number;
   readonly winrate: number;
   readonly profitAbs: number;
-  readonly profitPctSum: number;
   readonly profitPctAvg: number;
 }
 
@@ -181,11 +179,45 @@ export function PairSummaryWidget({
   const minTrades = clampInt(cfg.minTrades, 1, 1, 100);
   const access = useWidgetAccess(PAIR_SUMMARY_CAPABILITIES);
 
-  const source = useClosedPositionsSource(cfg.instanceId, limit, {
-    enabled: access.allowed,
-  });
+  // One SQL GROUP BY over the FULL mirror history: pairs are the dimension,
+  // minTrades the HAVING, sortBy the ORDER BY — the widget renders the
+  // grouped rows verbatim (no client-side window to drop trades).
+  const sortParam = cfg.sortBy === "pair" ? null : cfg.sortBy;
 
-  const state = queryState(source.error, source.isLoading);
+  const perInstance = useCapability(
+    "instances.tag-performance",
+    {
+      id: cfg.instanceId,
+      limit: String(limit),
+      groupBy: "pair",
+      minTrades: String(minTrades),
+      sortBy: sortParam ?? undefined,
+      sortDir: "desc",
+    },
+    { enabled: access.allowed && cfg.instanceId !== ALL_INSTANCES },
+  );
+
+  const fleetView = useCapability(
+    "instances.tag-performance-all",
+    {
+      limit: String(limit),
+      groupBy: "pair",
+      minTrades: String(minTrades),
+      sortBy: sortParam ?? undefined,
+      sortDir: "desc",
+    },
+    { enabled: access.allowed && cfg.instanceId === ALL_INSTANCES },
+  );
+
+  const data =
+    cfg.instanceId === ALL_INSTANCES ? fleetView.data : perInstance.data;
+
+  const state = queryState(
+    cfg.instanceId === ALL_INSTANCES ? fleetView.error : perInstance.error,
+    cfg.instanceId === ALL_INSTANCES
+      ? fleetView.isLoading
+      : perInstance.isLoading,
+  );
 
   const accessError = access.allowed
     ? null
@@ -196,81 +228,42 @@ export function PairSummaryWidget({
   const patch = (p: Partial<PairSummaryConfig>) =>
     applyWidgetSettings(panelId, "pair-summary", cfg, p);
 
-  const positions = source.data ?? [];
+  const rows: PairRow[] =
+    cfg.sortBy === "pair"
+      ? [...(data?.rows ?? [])]
+          .map((row) => ({ ...row, pair: row.tag }))
+          .sort((a, b) => a.pair.localeCompare(b.pair))
+      : (data?.rows ?? []).map((row) => ({ ...row, pair: row.tag }));
 
-  const byPair = new Map<
-    string,
-    {
-      trades: number;
-      wins: number;
-      losses: number;
-      profitAbs: number;
-      pctSum: number;
-    }
-  >();
+  // Footer metrics come from the server's full-set SQL aggregate — summing
+  // the (LIMITed) rows client-side would silently drop every pair past the
+  // window. The row-reduce fallback only covers snapshots from before the
+  // field existed.
+  const totals = data?.totals;
 
-  for (const position of positions) {
-    const profitAbs = position.closeProfitAbs ?? position.profitAbs ?? 0;
-    const profitPct = position.closeProfitPct ?? position.profitPct ?? 0;
+  const netProfit = totals
+    ? totals.profitAbs
+    : rows.reduce((sum, row) => sum + row.profitAbs, 0);
 
-    const entry = byPair.get(position.pair) ?? {
-      trades: 0,
-      wins: 0,
-      losses: 0,
-      profitAbs: 0,
-      pctSum: 0,
-    };
+  const totalTrades = totals
+    ? totals.trades
+    : rows.reduce((sum, row) => sum + row.trades, 0);
 
-    entry.trades += 1;
+  const best = data?.best
+    ? { pair: data.best.tag, profitAbs: data.best.value }
+    : rows.reduce<PairRow | undefined>(
+        (acc, row) =>
+          acc === undefined || row.profitAbs > acc.profitAbs ? row : acc,
+        undefined,
+      );
 
-    if (profitAbs > 0) entry.wins += 1;
-    else if (profitAbs < 0) entry.losses += 1;
-    entry.profitAbs += profitAbs;
-    entry.pctSum += profitPct;
-    byPair.set(position.pair, entry);
-  }
-
-  const rows: PairRow[] = [...byPair.entries()]
-    .flatMap(([pair, entry]) =>
-      entry.trades < minTrades
-        ? []
-        : [
-            {
-              pair,
-              trades: entry.trades,
-              wins: entry.wins,
-              losses: entry.losses,
-              winrate: entry.trades > 0 ? entry.wins / entry.trades : 0,
-              profitAbs: entry.profitAbs,
-              profitPctSum: entry.pctSum,
-              profitPctAvg: entry.trades > 0 ? entry.pctSum / entry.trades : 0,
-            },
-          ],
-    )
-    .sort((a, b) => {
-      const key = cfg.sortBy;
-
-      // Metrics sort best-first; the pair name sorts A→Z — the "sort by"
-      // pick alone decides both, no separate direction toggle.
-      if (key === "pair") return a.pair.localeCompare(b.pair);
-
-      return b[key] - a[key];
-    });
-
-  const netProfit = rows.reduce((sum, row) => sum + row.profitAbs, 0);
-  const totalTrades = rows.reduce((sum, row) => sum + row.trades, 0);
-
-  const best = rows.reduce<PairRow | undefined>(
-    (acc, row) =>
-      acc === undefined || row.profitAbs > acc.profitAbs ? row : acc,
-    undefined,
-  );
-
-  const worst = rows.reduce<PairRow | undefined>(
-    (acc, row) =>
-      acc === undefined || row.profitAbs < acc.profitAbs ? row : acc,
-    undefined,
-  );
+  const worst = data?.worst
+    ? { pair: data.worst.tag, profitAbs: data.worst.value }
+    : rows.reduce<PairRow | undefined>(
+        (acc, row) =>
+          acc === undefined || row.profitAbs < acc.profitAbs ? row : acc,
+        undefined,
+      );
 
   // Column set derived through a store: rebuilt only when the win-rate /
   // avg-% flags flip; row order is fixed by the "Sort by" pick (data
@@ -280,16 +273,6 @@ export function PairSummaryWidget({
     buildColumns,
     { inputs: shallow },
   );
-
-  const exportColumns: ReadonlyArray<ExportColumn<PairRow>> = [
-    { header: COL.pair, value: (r) => r.pair },
-    { header: COL.trades, value: (r) => r.trades },
-    { header: COL.wins, value: (r) => r.wins },
-    { header: COL.losses, value: (r) => r.losses },
-    { header: COL.winRate, value: (r) => r.winrate },
-    { header: COL.totalProfit, value: (r) => r.profitAbs },
-    { header: COL.avgPct, value: (r) => r.profitPctAvg },
-  ];
 
   return (
     <>
@@ -388,8 +371,18 @@ export function PairSummaryWidget({
                 label="Pair summary table actions"
                 exportMenu={{
                   filenameBase: `pair-summary-${cfg.instanceId}`,
-                  columns: exportColumns,
-                  rows,
+                  dataset: "tag-performance",
+                  params: {
+                    instanceId:
+                      cfg.instanceId === ALL_INSTANCES
+                        ? undefined
+                        : cfg.instanceId,
+                    groupBy: "pair",
+                    minTrades,
+                    sortBy: sortParam ?? undefined,
+                    sortDir: "desc",
+                  },
+                  disabled: rows.length === 0,
                 }}
               />
               <div className="nfi-table-scroll">

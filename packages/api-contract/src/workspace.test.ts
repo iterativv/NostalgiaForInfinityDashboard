@@ -142,6 +142,25 @@ describe("Workspace schema", () => {
     expect(plain.trellis).toBeUndefined();
   });
 
+  it("round-trips the masonry-stack page flag and survives its absence", () => {
+    const stacked = decodeWorkspace({
+      ...structuredClone(VALID_WORKSPACE),
+      stacked: true,
+    });
+
+    expect(stacked.stacked).toBe(true);
+
+    const revived = decodeWorkspace(
+      JSON.parse(JSON.stringify(Schema.encodeSync(Workspace)(stacked))),
+    );
+
+    expect(revived).toEqual(stacked);
+
+    // Older documents without the field decode with the tiled stage.
+    const plain = decodeWorkspace(structuredClone(VALID_WORKSPACE));
+    expect(plain.stacked).toBeUndefined();
+  });
+
   it("rejects unsupported schema versions explicitly", () => {
     const future = { ...structuredClone(VALID_WORKSPACE), schemaVersion: 999 };
     expect(() => decodePersistedWorkspace(future)).toThrow(/schema version/i);

@@ -44,6 +44,10 @@ export const InstancesGroupLive = HttpApiBuilder.group(
         runCapabilityForHttp("instances.open-positions", {
           id: path.id,
           search: urlParams.search,
+          sort: urlParams.sort,
+          dir: urlParams.dir,
+          limit: urlParams.limit,
+          filter: urlParams.filter,
         }),
       )
       .handle("closedPositions", ({ path, urlParams }) =>
@@ -59,6 +63,9 @@ export const InstancesGroupLive = HttpApiBuilder.group(
           id: path.id,
           limit: urlParams.limit,
           groupBy: urlParams.groupBy,
+          minTrades: urlParams.minTrades,
+          sortBy: urlParams.sortBy,
+          sortDir: urlParams.sortDir,
         }),
       )
       .handle("pairs", ({ path, urlParams }) =>
@@ -74,6 +81,7 @@ export const InstancesGroupLive = HttpApiBuilder.group(
           pair: urlParams.pair,
           timeframe: urlParams.timeframe,
           limit: urlParams.limit,
+          before: urlParams.before,
         }),
       )
       .handle("plotConfig", ({ path, urlParams }) =>
@@ -107,13 +115,19 @@ export const InstancesGroupLive = HttpApiBuilder.group(
           id: path.id,
           limit: urlParams.limit,
           groupBy: urlParams.groupBy,
+          minTrades: urlParams.minTrades,
+          sortBy: urlParams.sortBy,
+          sortDir: urlParams.sortDir,
         }),
       )
       .handle("config", ({ path }) =>
         runCapabilityForHttp("instances.config", { id: path.id }),
       )
-      .handle("locks", ({ path }) =>
-        runCapabilityForHttp("instances.locks", { id: path.id }),
+      .handle("locks", ({ path, urlParams }) =>
+        runCapabilityForHttp("instances.locks", {
+          id: path.id,
+          includeExpired: urlParams.includeExpired,
+        }),
       )
       .handle("blacklist", ({ path, urlParams }) =>
         runCapabilityForHttp("instances.blacklist", {
@@ -147,6 +161,10 @@ export const InstancesGroupLive = HttpApiBuilder.group(
       .handle("positionsAll", ({ urlParams }) =>
         runCapabilityForHttp("instances.positions-all", {
           search: urlParams.search,
+          sort: urlParams.sort,
+          dir: urlParams.dir,
+          limit: urlParams.limit,
+          filter: urlParams.filter,
         }),
       )
       .handle("closedAll", ({ urlParams }) =>
@@ -165,6 +183,7 @@ export const InstancesGroupLive = HttpApiBuilder.group(
         runCapabilityForHttp("instances.balance-history", {
           limit: urlParams.limit,
           bucket: urlParams.bucket,
+          id: urlParams.id,
         }),
       )
       .handle("balanceHistoryAllRelative", ({ urlParams }) =>
@@ -186,9 +205,67 @@ export const InstancesGroupLive = HttpApiBuilder.group(
         runCapabilityForHttp("instances.tag-performance-all", {
           limit: urlParams.limit,
           groupBy: urlParams.groupBy,
+          minTrades: urlParams.minTrades,
+          sortBy: urlParams.sortBy,
+          sortDir: urlParams.sortDir,
         }),
       )
-      .handle("locksAll", () => runCapabilityForHttp("instances.locks-all", {}))
+      .handle("locksAll", ({ urlParams }) =>
+        runCapabilityForHttp("instances.locks-all", {
+          includeExpired: urlParams.includeExpired,
+        }),
+      )
+      .handle("tradeTape", ({ path, urlParams }) =>
+        runCapabilityForHttp("instances.trade-tape", {
+          id: path.id,
+          limit: urlParams.limit,
+          opens: urlParams.opens,
+          closes: urlParams.closes,
+        }),
+      )
+      .handle("tradeTapeAll", ({ urlParams }) =>
+        runCapabilityForHttp("instances.trade-tape-all", {
+          limit: urlParams.limit,
+          opens: urlParams.opens,
+          closes: urlParams.closes,
+        }),
+      )
+      .handle("pairWatch", ({ path, urlParams }) =>
+        runCapabilityForHttp("instances.pair-watch", {
+          id: path.id,
+          pairs: urlParams.pairs,
+          showOnlyOpen: urlParams.showOnlyOpen,
+        }),
+      )
+      .handle("pairWatchAll", ({ urlParams }) =>
+        runCapabilityForHttp("instances.pair-watch-all", {
+          pairs: urlParams.pairs,
+          showOnlyOpen: urlParams.showOnlyOpen,
+        }),
+      )
+      .handle("performanceStats", ({ urlParams }) =>
+        runCapabilityForHttp("instances.performance-stats", {
+          id: urlParams.id,
+        }),
+      )
+      .handle("drawdown", ({ urlParams }) =>
+        runCapabilityForHttp("instances.drawdown", {
+          id: urlParams.id,
+          limit: urlParams.limit,
+        }),
+      )
+      .handle("cumulativeProfit", ({ urlParams }) =>
+        runCapabilityForHttp("instances.cumulative-profit", {
+          id: urlParams.id,
+          limit: urlParams.limit,
+        }),
+      )
+      .handle("exposure", ({ urlParams }) =>
+        runCapabilityForHttp("instances.exposure", { id: urlParams.id }),
+      )
+      .handle("tradedPairs", ({ urlParams }) =>
+        runCapabilityForHttp("instances.traded-pairs", { id: urlParams.id }),
+      )
       .handle("blacklistAll", ({ urlParams }) =>
         runCapabilityForHttp("instances.blacklist-all", {
           search: urlParams.search,

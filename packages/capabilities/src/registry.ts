@@ -56,6 +56,15 @@ import { InstancesRemoveCapability } from "./instances-remove.js";
 import { InstancesStatusCapability } from "./instances-status.js";
 import { InstancesTagPerformanceCapability } from "./instances-tag-performance.js";
 import { InstancesTagPerformanceAllCapability } from "./instances-tag-performance-all.js";
+import { InstancesTradeTapeCapability } from "./instances-trade-tape.js";
+import { InstancesTradeTapeAllCapability } from "./instances-trade-tape-all.js";
+import { InstancesPairWatchCapability } from "./instances-pair-watch.js";
+import { InstancesPairWatchAllCapability } from "./instances-pair-watch-all.js";
+import { InstancesPerformanceStatsCapability } from "./instances-performance-stats.js";
+import { InstancesDrawdownCapability } from "./instances-drawdown.js";
+import { InstancesCumulativeProfitCapability } from "./instances-cumulative-profit.js";
+import { InstancesExposureCapability } from "./instances-exposure.js";
+import { InstancesTradedPairsCapability } from "./instances-traded-pairs.js";
 import { InstancesTagPerformanceRelativeCapability } from "./instances-tag-performance-relative.js";
 import { InstancesUpdateCapability } from "./instances-update.js";
 import { SystemBackendConfigCapability } from "./system-backend-config.js";
@@ -154,6 +163,15 @@ export const CAPABILITY_REGISTRY = {
     InstancesBalanceHistoryAllRelativeCapability,
   "instances.profit-history-all.relative":
     InstancesProfitHistoryAllRelativeCapability,
+  "instances.trade-tape": InstancesTradeTapeCapability,
+  "instances.trade-tape-all": InstancesTradeTapeAllCapability,
+  "instances.pair-watch": InstancesPairWatchCapability,
+  "instances.pair-watch-all": InstancesPairWatchAllCapability,
+  "instances.performance-stats": InstancesPerformanceStatsCapability,
+  "instances.drawdown": InstancesDrawdownCapability,
+  "instances.cumulative-profit": InstancesCumulativeProfitCapability,
+  "instances.exposure": InstancesExposureCapability,
+  "instances.traded-pairs": InstancesTradedPairsCapability,
   "users.list": UsersListCapability,
   "users.create": UsersCreateCapability,
   "users.update": UsersUpdateCapability,

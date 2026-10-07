@@ -36,6 +36,7 @@ import {
 import { useCapability } from "./live/live";
 import { useWidgetConfigSink } from "./shared/sessionConfig";
 import { useCandlePending } from "./shared/candlePending";
+import { useCandleHistory, mergeOlderCandles } from "./shared/candleHistory";
 import { useStrategyTimeframe } from "./shared/strategyTimeframe";
 import {
   InstanceIdField,
@@ -326,6 +327,23 @@ export function CandleChartWidget({
 
   const candles = useDerived(candlesQ.data, (data) => data?.candles ?? []);
 
+  // Infinite scroll-back: older exchange pages accumulate as the user pans
+  // toward the oldest bar; the chart requests a page and the merged series
+  // (live window + history) feeds the chart AND the in-widget indicators,
+  // so overlays stay continuous across the seam.
+  const history = useCandleHistory({
+    enabled: market.allowed && cfg.pair.trim().length > 0,
+    instanceId: cfg.instanceId,
+    pair: cfg.pair,
+    timeframe: cfg.timeframe,
+  });
+
+  const allCandles = useDerived(
+    [candles, history.older] as const,
+    ([live, older]) => (older.length > 0 ? mergeOlderCandles(older, live) : live),
+    { inputs: shallow },
+  );
+
   // Timeframe switches refetch while a cached EMPTY result would otherwise
   // flash "no analyzed data" with no loader — hold loading through a short
   // grace so long analyses read as loading.
@@ -376,8 +394,9 @@ export function CandleChartWidget({
 
   // Bars drive the indicator math and VWAP: dedupe by bar-time seconds
   // (keep the newest) so a duplicated candle from freqtrade cannot produce
-  // duplicate-time indicator points either.
-  const bars = useDerived(candles, (src): TvBar[] =>
+  // duplicate-time indicator points either. The merged series (live window
+  // + scroll-back history) keeps the overlays continuous into the past.
+  const bars = useDerived(allCandles, (src): TvBar[] =>
     orderedByTime(
       src.map((c) => ({
         time: Math.floor(c.time / 1000),
@@ -1107,7 +1126,7 @@ export function CandleChartWidget({
               </div>
             ) : null}
             <CandleChart
-              candles={candles}
+              candles={allCandles}
               overlays={overlays}
               showVolume={cfg.showVolume}
               subplot={subplot}
@@ -1115,6 +1134,9 @@ export function CandleChartWidget({
               avgEntryPrice={avgEntry}
               avgEntryIsShort={followedIsShort}
               avgEntrySince={entrySince}
+              onRequestOlder={() =>
+                history.loadOlder(allCandles[0]?.time ?? 0)
+              }
             />
           </div>
         ) : (

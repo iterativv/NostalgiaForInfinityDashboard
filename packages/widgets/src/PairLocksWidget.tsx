@@ -148,15 +148,18 @@ export function PairLocksWidget({
   const fleet = cfg.instanceId === ALL_INSTANCES;
   const colors = useInstanceColors();
 
+  // Expired-vs-active is a SQL WHERE on the mirror (includeExpired).
+  const includeExpired = cfg.showExpired ? "true" : undefined;
+
   const perInstance = useCapability(
     "instances.locks",
-    { id: fleet ? "default" : cfg.instanceId },
+    { id: fleet ? "default" : cfg.instanceId, includeExpired },
     { enabled: !fleet },
   );
 
   const fleetView = useCapability(
     "instances.locks-all",
-    {},
+    { includeExpired },
     { enabled: fleet },
   );
 
@@ -182,10 +185,30 @@ export function PairLocksWidget({
   // Backend payloads vary across freqtrade versions (bare array vs
   // `{locks}`, extra fields) — the client normalizes to `{locks}`, but
   // guard the array here too so a foreign body can never throw the render.
-  const allLocks = Array.isArray(data?.locks) ? data.locks : [];
-  const locks = allLocks.filter((lock) => cfg.showExpired || lock.active);
+  const locks = Array.isArray(data?.locks) ? data.locks : [];
 
-  const active = allLocks.filter((lock) => lock.active).length;
+  // Active count for the header stat: with the SQL filter active the
+  // expired rows never left the database, so read the stat from an
+  // active-only subscription instead of filtering in the client.
+  const activePerInstance = useCapability(
+    "instances.locks",
+    { id: fleet ? "default" : cfg.instanceId },
+    { enabled: !fleet && cfg.showExpired },
+  );
+
+  const activeFleet = useCapability(
+    "instances.locks-all",
+    {},
+    { enabled: fleet && cfg.showExpired },
+  );
+
+  const activeSource = cfg.showExpired
+    ? (fleet ? activeFleet.data : activePerInstance.data)
+    : { locks };
+
+  const active = (Array.isArray(activeSource?.locks) ? activeSource.locks : []).filter(
+    (lock) => lock.active,
+  ).length;
 
   const reasons = new Set(
     locks.map((lock) => lock.reason ?? ""),
@@ -225,7 +248,7 @@ export function PairLocksWidget({
               <Stat
                 label="Active locks"
                 value={String(active)}
-                sub={`${allLocks.length} total`}
+                sub={`${data?.countOnRecord ?? locks.length} total`}
               />
               <Stat
                 label="Pairs locked"
@@ -256,11 +279,13 @@ export function PairLocksWidget({
         ) : (
           <EmptyState
             title={
-              allLocks.length > 0 ? "No active locks" : "No pair locks"
+              (data?.countOnRecord ?? 0) > 0
+                ? "No active locks"
+                : "No pair locks"
             }
             hint={
-              allLocks.length > 0
-                ? `${allLocks.length} expired ${allLocks.length === 1 ? "lock" : "locks"} on record ${fleet ? "across the fleet" : `on “${cfg.instanceId}”`} — enable “Show expired locks” in Settings to review ${allLocks.length === 1 ? "it" : "them"}.`
+              (data?.countOnRecord ?? 0) > 0
+                ? `${data?.countOnRecord ?? 0} locks on record ${fleet ? "across the fleet" : `on “${cfg.instanceId}”`} — enable “Show expired locks” in Settings to review them.`
                 : `Nothing is paused right now — that is the normal state. Freqtrade locks a pair only while a protection (cooldown, max drawdown, …) pauses it, and each lock clears automatically at its expiry. Showing ${fleet ? "the whole fleet" : `“${cfg.instanceId}”`}; switch instances in Settings if you expected locks elsewhere.`
             }
           />

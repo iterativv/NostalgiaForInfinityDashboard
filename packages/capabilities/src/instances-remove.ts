@@ -35,6 +35,10 @@ export const InstancesRemoveCapability = defineCapability({
       if (!existing)
         return yield* Effect.fail(notFoundError("instance", options.id));
       yield* ctx.instances.deleteInstance(options.id);
+      // Drop the trades mirror rows too — a removed instance keeps no
+      // history (the mirror would otherwise leak its trades into fleet
+      // queries forever).
+      yield* ctx.trades.deleteInstanceData(options.id);
 
       return { id: options.id };
     }).pipe(

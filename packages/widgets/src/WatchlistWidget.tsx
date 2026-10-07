@@ -34,11 +34,9 @@ import {
 import { fmt, pnlClass } from "./shared/format";
 import { queryState, useWidgetAccess } from "./shared/query";
 import { InstanceSelect } from "./shared/InstanceSelect";
-import {
-  useClosedPositionsSource,
-  useOpenPositionsSource,
-  type SourcedOpenPosition,
-} from "./shared/sources";
+import type { OpenPosition } from "@nfi/api-contract";
+import { ALL_INSTANCES } from "./shared/InstanceSelect";
+import { useCapability } from "./live/live";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
 import {
@@ -47,10 +45,8 @@ import {
 } from "./shared/widgetSettingsBus";
 
 export const WATCHLIST_CAPABILITIES: ReadonlyArray<Capability> = [
-  "instances.open-positions",
-  "instances.closed-positions",
-  "instances.positions-all",
-  "instances.closed-all",
+  "instances.pair-watch",
+  "instances.pair-watch-all",
 ];
 
 export const WatchlistConfigSchema = Schema.Struct({
@@ -65,12 +61,10 @@ export const WATCHLIST_DEFAULTS: WatchlistConfig = Schema.decodeUnknownSync(
   WatchlistConfigSchema,
 )({});
 
-const normalizePair = (pair: string): string => pair.trim().toUpperCase();
-
 /** One tracked pair joined with its live open position and last close. */
 interface WatchlistRow {
   readonly pair: string;
-  readonly open: SourcedOpenPosition | undefined;
+  readonly open: (OpenPosition & { instanceId?: string; instanceName?: string }) | undefined;
   readonly last:
     | { pct: number | undefined; profit: number | undefined }
     | undefined;
@@ -156,15 +150,33 @@ export function WatchlistWidget({
   const cfg = config;
   const access = useWidgetAccess(WATCHLIST_CAPABILITIES);
 
-  const openQ = useOpenPositionsSource(cfg.instanceId, {
-    enabled: access.allowed,
-  });
+  // One SQL join over the mirror: the pair list is the `pair IN (...)`
+  // filter, showOnlyOpen a WHERE — a pair's last close is found in the FULL
+  // history (a 200-row window used to mislabel traded pairs as untracked).
+  const fleet = cfg.instanceId === ALL_INSTANCES;
 
-  const closedQ = useClosedPositionsSource(cfg.instanceId, 200, {
-    enabled: access.allowed,
-  });
+  const perInstance = useCapability(
+    "instances.pair-watch",
+    {
+      id: fleet ? "default" : cfg.instanceId,
+      pairs: cfg.pairs,
+      showOnlyOpen: cfg.showOnlyOpen ? "true" : undefined,
+    },
+    { enabled: access.allowed && !fleet },
+  );
 
-  const state = queryState(openQ.error, openQ.isLoading);
+  const fleetView = useCapability(
+    "instances.pair-watch-all",
+    {
+      pairs: cfg.pairs,
+      showOnlyOpen: cfg.showOnlyOpen ? "true" : undefined,
+    },
+    { enabled: access.allowed && fleet },
+  );
+
+  const watchQ = fleet ? fleetView : perInstance;
+
+  const state = queryState(watchQ.error, watchQ.isLoading);
 
   const accessError = access.allowed
     ? null
@@ -186,40 +198,14 @@ export function WatchlistWidget({
     inputs: shallowStore,
   });
 
-  const wanted = cfg.pairs
-    .split(",")
-    .map(normalizePair)
-    .filter((p) => p.length > 0)
-    .slice(0, 30);
-
-  const openByPair = new Map(
-    (openQ.data ?? []).map((p) => [normalizePair(p.pair), p]),
-  );
-
-  const lastClosedByPair = new Map<
-    string,
-    { pct: number | undefined; profit: number | undefined }
-  >();
-
-  for (const p of closedQ.data ?? []) {
-    const key = normalizePair(p.pair);
-
-    if (!lastClosedByPair.has(key)) {
-      lastClosedByPair.set(key, {
-        pct: p.closeProfitPct ?? p.profitPct,
-        profit: p.closeProfitAbs ?? p.profitAbs,
-      });
-    }
-  }
-
-  const rows: WatchlistRow[] = wanted
-    .map((pair) => {
-      const open = openByPair.get(pair);
-      const last = lastClosedByPair.get(pair);
-
-      return { pair, open, last };
-    })
-    .filter((row) => (cfg.showOnlyOpen ? row.open !== undefined : true));
+  const rows: WatchlistRow[] = (watchQ.data?.rows ?? []).map((row) => ({
+    pair: row.pair,
+    open: row.open,
+    last:
+      row.lastPct === undefined && row.lastProfit === undefined
+        ? undefined
+        : { pct: row.lastPct, profit: row.lastProfit },
+  }));
 
   return (
     <>

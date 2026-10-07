@@ -229,7 +229,12 @@ export function useTimeFormat(): TimeFormatId {
 /** Anything a caller might hand a timestamp formatter (missing allowed). */
 type TimeInput = string | number | Date | undefined | null;
 
-/** Accepts ms numbers, Dates, and freqtrade's space-separated timestamps. */
+/**
+ * Accepts ms numbers, Dates, and freqtrade's space-separated timestamps.
+ * Naive strings (no zone — freqtrade serializes UTC without a marker)
+ * pin to UTC before date-fns renders them in the browser's local zone,
+ * so displayed wall clocks never shift by the machine's UTC offset.
+ */
 const toDate = (value: TimeInput): Date | null => {
   if (value === undefined || value === null) return null;
 
@@ -244,7 +249,15 @@ const toDate = (value: TimeInput): Date | null => {
   if (!value) return null;
 
   try {
-    const iso = value.includes("T") ? parseISO(value) : parseISO(value.replace(" ", "T"));
+    const normalized = value.includes("T")
+      ? value
+      : value.replace(" ", "T");
+
+    const zoned = /[zZ]|[+-]\d{2}:?\d{2}$/.test(normalized)
+      ? normalized
+      : `${normalized}Z`;
+
+    const iso = parseISO(zoned);
 
     return Number.isNaN(iso.getTime()) ? null : iso;
   } catch {

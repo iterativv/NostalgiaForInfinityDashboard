@@ -4,11 +4,12 @@
 /**
  * Drawdown — how deep is the hole, and how long has it lasted.
  *
- * Computes the underwater curve from the recorded profit history
- * (`instances.profit-history`, minute snapshots of ANY configured
- * instance): the running peak of all-time profit vs. its current level.
- * Shows max drawdown, current drawdown and the peak, plus the underwater
- * line chart.
+ * `instances.drawdown` computes the underwater curve AND its scalars in
+ * SQL over the FULL recorded snapshot history (running peak = window
+ * MAX): the `limit` option only trims the rendered curve — max drawdown,
+ * current drawdown and the all-time peak always cover every recorded
+ * point (the old widget scanned a fetched window client-side, so its
+ * "max" only measured the visible slice).
  */
 
 import {
@@ -37,15 +38,13 @@ import {
 } from "./shared/widgetSettingsBus";
 
 export const DRAWDOWN_CAPABILITIES: ReadonlyArray<Capability> = [
-  "instances.profit-history",
-  // Fleet mode: merged fleet-total snapshots instead of one bot's series.
-  "instances.profit-history-all",
+  "instances.drawdown",
 ];
 
 export const DrawdownConfigSchema = Schema.Struct({
   /** Which bot's recorded history to chart. */
   instanceId: InstanceIdField,
-  /** Snapshot window (points) used for the curve. */
+  /** Snapshot window (points) rendered on the curve. */
   limit: numberWithDefault(500),
 });
 
@@ -54,11 +53,6 @@ export type DrawdownConfig = typeof DrawdownConfigSchema.Type;
 export const DRAWDOWN_DEFAULTS: DrawdownConfig = Schema.decodeUnknownSync(
   DrawdownConfigSchema,
 )({});
-
-interface DrawdownPoint {
-  readonly date: string;
-  readonly drawdown: number;
-}
 
 export function DrawdownWidget({
   config,
@@ -71,23 +65,12 @@ export function DrawdownWidget({
     Math.max(50, Math.min(1000, Math.round(cfg.limit))),
   );
 
-  const perInstance = useCapability(
-    "instances.profit-history",
-    { id: cfg.instanceId, limit: windowLimit },
-    { enabled: !fleet },
-  );
+  const view = useCapability("instances.drawdown", {
+    id: fleet ? undefined : cfg.instanceId,
+    limit: windowLimit,
+  });
 
-  const fleetView = useCapability(
-    "instances.profit-history-all",
-    { limit: windowLimit },
-    { enabled: fleet },
-  );
-
-  const data = fleet ? fleetView.data : perInstance.data;
-  const error = fleet ? fleetView.error : perInstance.error;
-  const isLoading = fleet ? fleetView.isLoading : perInstance.isLoading;
-
-  const state = queryState(error, isLoading);
+  const state = queryState(view.error, view.isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
   // Time axis ticks follow the globally configured time format.
   const timeFormat = useTimeFormat();
@@ -95,33 +78,19 @@ export function DrawdownWidget({
   const patch = (p: Partial<DrawdownConfig>) =>
     applyWidgetSettings(panelId, "drawdown", cfg, p);
 
-  const points = data?.points ?? [];
-  // Underwater curve: distance of all-time profit from its running peak.
-  const curve: DrawdownPoint[] = [];
-  let peak = Number.NEGATIVE_INFINITY;
-  let maxDrawdown = 0;
-  let peakValue = 0;
+  const data = view.data;
+  const curve = data?.points ?? [];
+  const maxDrawdown = data?.maxDrawdown ?? 0;
+  const current = data?.currentDrawdown ?? 0;
+  const peakValue = data?.peakValue ?? 0;
 
-  for (const point of points) {
-    const equity = point.profitAllCoin;
-    peak = Math.max(peak, equity);
-    peakValue = peak;
-    const drawdown = peak > 0 ? ((equity - peak) / peak) * 100 : 0;
-    maxDrawdown = Math.min(maxDrawdown, drawdown);
-    curve.push({
-      date: point.recordedAt.slice(0, 16).replace("T", " "),
-      drawdown: Number(drawdown.toFixed(2)),
-    });
-  }
-
-  const current = curve[curve.length - 1]?.drawdown ?? 0;
   // Compact cells draw the underwater curve alone; the stat row needs the
   // full ~260px budget to stay above it without clipping the chart.
   const compact = useCompactMode(260);
 
   const chartData = curve.map((point) => ({
     group: "Drawdown %",
-    date: point.date,
+    date: point.recordedAt.slice(0, 16).replace("T", " "),
     value: point.drawdown,
   }));
 

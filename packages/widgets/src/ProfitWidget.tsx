@@ -64,18 +64,27 @@ export function ProfitWidget({ config, panelId }: WidgetProps<ProfitConfig>) {
     ? (fleetView.data?.totals.stakeCurrency ?? "—")
     : (perInstanceView.data?.stakeCurrency ?? "—");
 
+  // Fleet trade counts come from the server-side totals (the per-instance
+  // rows used to be folded client-side); the reduce only covers snapshots
+  // from before the fields existed.
+  const fleetTotals = fleetView.data?.totals;
+
   const trades = fleet
-    ? (fleetView.data?.instances.reduce(
-        (sum, row) => sum + (row.closedTradeCount ?? 0),
+    ? (fleetTotals?.tradeCount ??
+      fleetView.data?.instances.reduce(
+        (sum, row) => sum + (row.tradeCount ?? 0),
         0,
-      ) ?? 0)
+      ) ??
+      0)
     : perInstanceView.data?.tradeCount;
 
   const closedTrades = fleet
-    ? (fleetView.data?.instances.reduce(
+    ? (fleetTotals?.closedTradeCount ??
+      fleetView.data?.instances.reduce(
         (sum, row) => sum + (row.closedTradeCount ?? 0),
         0,
-      ) ?? 0)
+      ) ??
+      0)
     : perInstanceView.data?.closedTradeCount;
 
   return (

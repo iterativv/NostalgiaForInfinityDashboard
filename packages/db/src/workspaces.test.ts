@@ -347,6 +347,115 @@ describe("WorkspaceRepo (sqlite)", () => {
       { workspace_id: "ws-same-ids-2" },
     ]);
   });
+
+  it("persists the masonry-stack flag and survives its absence", async () => {
+    await runTest(
+      Effect.gen(function* () {
+        const repo = yield* WorkspaceRepo;
+
+        const stacked = decodeWorkspace({
+          ...FIXTURE_INPUT,
+          id: "ws-stacked",
+          stacked: true,
+          layout: {
+            type: "tabs",
+            id: "tabs-stacked",
+            panels: [],
+            activePanelId: null,
+          },
+          panels: {},
+          activePanelId: null,
+        });
+
+        yield* repo.saveWorkspace(structuredClone(stacked));
+        const loaded = yield* repo.loadWorkspace("ws-stacked");
+        expect(loaded?.stacked).toBe(true);
+
+        // A re-save without the flag clears it (0 column) — any tiled
+        // preset apply turns the mode off through the same path.
+        yield* repo.saveWorkspace({
+          ...structuredClone(stacked),
+          stacked: undefined,
+          version: 8,
+        });
+        const cleared = yield* repo.loadWorkspace("ws-stacked");
+        expect(cleared?.stacked).toBeUndefined();
+        expect(cleared?.version).toBe(8);
+
+        yield* repo.deleteWorkspace("ws-stacked");
+      }),
+    );
+  });
+
+  it("persists manual tetris wall widths and survives their absence", async () => {
+    await runTest(
+      Effect.gen(function* () {
+        const repo = yield* WorkspaceRepo;
+
+        const wall = decodeWorkspace({
+          ...FIXTURE_INPUT,
+          id: "ws-tetris-spans",
+          layout: {
+            type: "tabs",
+            id: "tabs-tetris",
+            panels: [],
+            activePanelId: null,
+          },
+          panels: {},
+          activePanelId: null,
+          tetrisSpans: { "panel-a": 4, "panel-c": 1 },
+        });
+
+        yield* repo.saveWorkspace(structuredClone(wall));
+        const loaded = yield* repo.loadWorkspace("ws-tetris-spans");
+        expect(loaded?.tetrisSpans).toEqual({ "panel-a": 4, "panel-c": 1 });
+
+        // A re-save without the map clears it (NULL column) — grid presets
+        // that rebuild the page shape drop manual widths this way.
+        yield* repo.saveWorkspace({
+          ...structuredClone(wall),
+          tetrisSpans: undefined,
+          version: 9,
+        });
+        const cleared = yield* repo.loadWorkspace("ws-tetris-spans");
+        expect(cleared?.tetrisSpans).toBeUndefined();
+        expect(cleared?.version).toBe(9);
+
+        yield* repo.deleteWorkspace("ws-tetris-spans");
+      }),
+    );
+  });
+
+  it("treats a corrupt tetris-widths column as absent, not fatal", async () => {
+    await runTest(
+      Effect.gen(function* () {
+        const repo = yield* WorkspaceRepo;
+        const sql = yield* SqlClient.SqlClient;
+
+        const wall = decodeWorkspace({
+          ...FIXTURE_INPUT,
+          id: "ws-tetris-corrupt",
+          layout: {
+            type: "tabs",
+            id: "tabs-tetris-corrupt",
+            panels: [],
+            activePanelId: null,
+          },
+          panels: {},
+          activePanelId: null,
+        });
+
+        yield* repo.saveWorkspace(structuredClone(wall));
+        yield* sql`UPDATE workspaces SET tetris_spans_json = 'not json' WHERE id = 'ws-tetris-corrupt'`;
+
+        const loaded = yield* repo.loadWorkspace("ws-tetris-corrupt");
+        expect(loaded?.tetrisSpans).toBeUndefined();
+
+        yield* repo.deleteWorkspace("ws-tetris-corrupt");
+      }),
+    );
+  });
+
   it("rebuilds a legacy global-key panels table in place (auto-migration)", async () => {
     // Simulate a pre-migration deployment: the old `id`-only PRIMARY KEY
     // table. Boot-time migration converges the schema without losing rows.

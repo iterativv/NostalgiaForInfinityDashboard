@@ -5,15 +5,19 @@ import { Effect, Schema } from "effect";
 import { WhitelistResponse } from "@nfi/api-contract";
 import { defineCapability } from "./definition.js";
 import { asBackendError } from "./errors.js";
-import { applySearch } from "./search.js";
+import { normalizeSearch } from "./search.js";
 
 const WhitelistOptions = Schema.Struct({
   id: Schema.String.pipe(Schema.minLength(1)),
-  /** Free-text filter applied server-side over the full pair list. */
+  /** Free-text filter — a SQL LIKE over the mirrored pair list. */
   search: Schema.optional(Schema.String),
 });
 
-/** `instances.whitelist` — the pairs the strategy actually analyzes. */
+/**
+ * `instances.whitelist` — the pairs the strategy actually analyzes, read
+ * from the mirror: the search is a SQL LIKE and `length` is the unfiltered
+ * SQL COUNT (same semantics as before, full coverage by construction).
+ */
 export const InstancesWhitelistCapability = defineCapability({
   name: "instances.whitelist",
   optionsSchema: WhitelistOptions,
@@ -23,13 +27,10 @@ export const InstancesWhitelistCapability = defineCapability({
   pollMs: 60_000,
   exposes: ["market-data"],
   run: (options, ctx) =>
-    Effect.flatMap(ctx.resolveInstance(options.id), (service) =>
-      service.getWhitelist(),
-    ).pipe(
-      Effect.map((body) => ({
-        pairs: applySearch(body.pairs, (pair) => [pair], options.search),
-        length: body.pairs.length,
-      })),
-      Effect.mapError((cause) => asBackendError("instance whitelist", cause)),
-    ),
+    ctx.trades.listWhitelist({
+      instanceId: options.id,
+      search: normalizeSearch(options.search),
+    }).pipe(
+    Effect.mapError((cause) => asBackendError("instance whitelist", cause)),
+  ),
 });

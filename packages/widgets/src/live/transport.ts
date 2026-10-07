@@ -47,6 +47,15 @@ export function setStreamBaseUrl(baseUrl: string): void {
 
 /** Absolute-or-relative stream URL for one SSE connection attempt. */
 export function resolveStreamUrl(pathAndQuery: string): string {
+  return resolveRestUrl(pathAndQuery);
+}
+
+/**
+ * Absolute-or-relative backend URL for one-shot REST fetches that bypass
+ * the typed capability transport (the `/api/export` file downloads) — same
+ * base as the stream: empty = same-origin (Vite `/api` proxy in dev).
+ */
+export function resolveRestUrl(pathAndQuery: string): string {
   if (streamBaseUrl === "") return pathAndQuery;
   const path = pathAndQuery.startsWith("/") ? pathAndQuery : `/${pathAndQuery}`;
 

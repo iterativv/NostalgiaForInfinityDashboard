@@ -339,9 +339,9 @@ export const ClosedPositionsQuery = Schema.Struct({
   limit: Schema.optional(Schema.String),
   offset: Schema.optional(Schema.String),
   /**
-   * Free-text filter applied server-side BEFORE limit/offset slicing, so
-   * matches outside the requested window still surface (client-side
-   * filtering of the fetched window would silently drop them).
+   * Free-text filter applied at the SQL level (mirror WHERE clause), so it
+   * always covers the FULL trade history and `totalTrades` reports the
+   * filtered total — never a windowed scan.
    */
   search: Schema.optional(Schema.String),
 });
@@ -350,7 +350,7 @@ export type ClosedPositionsQuery = typeof ClosedPositionsQuery.Type;
 
 /**
  * Server-side free-text filter for full-list reads (open positions,
- * whitelists, blacklists): same before-slicing guarantee as
+ * whitelists, blacklists): same SQL WHERE pushdown as
  * `ClosedPositionsQuery.search`.
  */
 export const SearchQuery = Schema.Struct({
@@ -358,6 +358,24 @@ export const SearchQuery = Schema.Struct({
 });
 
 export type SearchQuery = typeof SearchQuery.Type;
+
+/**
+ * Query for the open-position tables: free-text search plus SQL-level
+ * ordering/selection so consumers (e.g. market movers) get exactly their
+ * window from the database instead of filtering a fetched array.
+ */
+export const OpenPositionsQuery = Schema.Struct({
+  search: Schema.optional(Schema.String),
+  /** Sort key: absent keeps the source order (open date desc). */
+  sort: Schema.optional(Schema.Literal("profitPct")),
+  dir: Schema.optional(Schema.Literal("asc", "desc")),
+  /** SQL LIMIT after sort/filter. */
+  limit: Schema.optional(Schema.String),
+  /** Sign partition: gainers (profit >= 0), losers (< 0), or both. */
+  filter: Schema.optional(Schema.Literal("gain", "loss")),
+});
+
+export type OpenPositionsQuery = typeof OpenPositionsQuery.Type;
 
 /** Snapshot-history window size, shared by the fleet balance-history reads. */
 /**
@@ -373,18 +391,99 @@ export const BalanceHistoryQuery = Schema.Struct({
   limit: Schema.optional(Schema.String),
   /** Aggregation bucket; absent = raw newest samples (no aggregation). */
   bucket: Schema.optional(BalanceHistoryBucket),
+  /**
+   * Fleet reads: restrict the response to ONE instance (SQL WHERE) instead
+   * of every instance's history — the widget's instance picker selects the
+   * slice server-side.
+   */
+  id: Schema.optional(Schema.String),
 });
 
 export type BalanceHistoryQuery = typeof BalanceHistoryQuery.Type;
 
-// --- NFI tag performance (aggregated closed-trade stats per tag) -------------
+// --- Trade tape (newest opens + closes as one SQL-ordered feed) --------------
 
-export const TagGroupBy = Schema.Literal("enter", "exit");
+/** One tape event: a position opening or closing, newest-first. */
+export const TapeEvent = Schema.Struct({
+  kind: Schema.Literal("open", "close"),
+  tradeId: Schema.Number,
+  pair: Schema.String,
+  /** ISO-UTC event time (open_date for opens, close_date for closes). */
+  at: Schema.String,
+  isShort: Schema.optional(Schema.Boolean),
+  openRate: Schema.optional(Schema.Number),
+  enterTag: Schema.optional(Schema.String),
+  exitReason: Schema.optional(Schema.String),
+  /** Close profit in stake currency (closes only). */
+  profitAbs: Schema.optional(Schema.Number),
+  /** Fleet reads carry the owning instance. */
+  instanceId: Schema.optional(Schema.String),
+  instanceName: Schema.optional(Schema.String),
+});
+
+export type TapeEvent = typeof TapeEvent.Type;
+
+export const TapeResponse = Schema.Struct({
+  events: Schema.Array(TapeEvent),
+});
+
+export type TapeResponse = typeof TapeResponse.Type;
+
+export const TapeQuery = Schema.Struct({
+  /** Max events returned (SQL LIMIT over the merged feed). */
+  limit: Schema.optional(Schema.String),
+  opens: Schema.optional(Schema.String),
+  closes: Schema.optional(Schema.String),
+});
+
+export type TapeQuery = typeof TapeQuery.Type;
+
+// --- Pair watch (tracked pairs joined with live + last-closed state) ---------
+
+/** One tracked pair: its live open position (if any) + last closed result. */
+export const PairWatchRow = Schema.Struct({
+  pair: Schema.String,
+  open: Schema.optional(OpenPosition),
+  /** Most recent close for the pair (any instance on fleet reads). */
+  lastPct: Schema.optional(Schema.Number),
+  lastProfit: Schema.optional(Schema.Number),
+  lastCloseDate: Schema.optional(Schema.String),
+  /** Fleet reads attribute the open position to its instance. */
+  instanceId: Schema.optional(Schema.String),
+  instanceName: Schema.optional(Schema.String),
+});
+
+export type PairWatchRow = typeof PairWatchRow.Type;
+
+export const PairWatchResponse = Schema.Struct({
+  rows: Schema.Array(PairWatchRow),
+});
+
+export type PairWatchResponse = typeof PairWatchResponse.Type;
+
+export const PairWatchQuery = Schema.Struct({
+  /** Comma-separated pair list (SQL `pair IN (...)`, up to 32). */
+  pairs: Schema.optional(Schema.String),
+  showOnlyOpen: Schema.optional(Schema.String),
+});
+
+export type PairWatchQuery = typeof PairWatchQuery.Type;
+
+// --- NFI trade performance (aggregated closed-trade stats per dimension) -----
+
+/**
+ * Aggregation dimension over the closed-trade mirror, computed as one SQL
+ * GROUP BY: enter/exit tags, trading pair, or strategy.
+ */
+export const TagGroupBy = Schema.Literal("enter", "exit", "pair", "strategy");
 
 export type TagGroupBy = typeof TagGroupBy.Type;
 
 export const TagPerformanceRow = Schema.Struct({
-  /** Trimmed tag value (`enter_tag` for `enter`, `exit_reason` for `exit`). */
+  /**
+   * Dimension value: trimmed tag (`enter_tag` for `enter`, `exit_reason`
+   * for `exit`), the pair, or the strategy name.
+   */
   tag: Schema.String,
   trades: Schema.Number,
   wins: Schema.Number,
@@ -395,16 +494,73 @@ export const TagPerformanceRow = Schema.Struct({
   profitAbs: Schema.Number,
   /** Mean of close profit percent. */
   profitPctAvg: Schema.Number,
+  /** Set on fleet strategy breakdowns: one row per strategy per instance. */
+  instanceId: Schema.optional(Schema.String),
+  instanceName: Schema.optional(Schema.String),
 });
 
 export type TagPerformanceRow = typeof TagPerformanceRow.Type;
 
+/**
+ * Full-set scalars for grouped reads — one SQL aggregate over EVERY closed
+ * trade matching the same WHERE, so footer sums never stop at the grouped
+ * rows' LIMIT.
+ */
+export const AggregateTotals = Schema.Struct({
+  trades: Schema.Number,
+  wins: Schema.Number,
+  losses: Schema.Number,
+  /** Wins / trades (0 when no trades). */
+  winrate: Schema.Number,
+  /** Σ close profit in stake currency (absolute variant only). */
+  profitAbs: Schema.Number,
+  /** Mean close profit percent over the full matching set. */
+  profitPctAvg: Schema.Number,
+});
+
+export type AggregateTotals = typeof AggregateTotals.Type;
+
+/** One-dimensional extreme: the best (or worst) dimension value + metric. */
+export const AggregateExtreme = Schema.Struct({
+  tag: Schema.String,
+  value: Schema.Number,
+});
+
+export type AggregateExtreme = typeof AggregateExtreme.Type;
+
+/**
+ * Percentages-only stats (relative variant of `AggregateTotals`) — no
+ * absolute profit, so the shareable tag reads keep their guarantees.
+ * Named `stats` like the other relative footers: "totals" reads
+ * amount-shaped to the sensitivity audit.
+ */
+export const RelativeTagStats = Schema.Struct({
+  trades: Schema.Number,
+  wins: Schema.Number,
+  losses: Schema.Number,
+  winrate: Schema.Number,
+  profitPctAvg: Schema.Number,
+  /** Best avg-% dimension value behind a min-trades gate (SQL). */
+  bestEdge: Schema.optional(AggregateExtreme),
+});
+
+export type RelativeTagStats = typeof RelativeTagStats.Type;
+
 export const TagPerformanceResponse = Schema.Struct({
   groupBy: TagGroupBy,
   rows: Schema.Array(TagPerformanceRow),
-  /** Closed trades actually aggregated (after the limit window). */
+  /** Closed trades actually aggregated (the full matching mirror set). */
   aggregatedTrades: Schema.Number,
   totalTrades: Schema.optional(Schema.Number),
+  /**
+   * Full-set scalars over EVERY matching closed trade (SQL, same WHERE —
+   * immune to the row LIMIT): footer sums computed server-side.
+   */
+  totals: Schema.optional(AggregateTotals),
+  /** Highest-profit dimension value (HAVING-aware, SQL ORDER BY … LIMIT 1). */
+  best: Schema.optional(AggregateExtreme),
+  /** Lowest-profit dimension value (HAVING-aware). */
+  worst: Schema.optional(AggregateExtreme),
 });
 
 export type TagPerformanceResponse = typeof TagPerformanceResponse.Type;
@@ -412,9 +568,204 @@ export type TagPerformanceResponse = typeof TagPerformanceResponse.Type;
 export const TagPerformanceQuery = Schema.Struct({
   limit: Schema.optional(Schema.String),
   groupBy: Schema.optional(Schema.String),
+  /**
+   * SQL HAVING: only dimensions with at least this many closed trades.
+   * Pushed down so grouping always covers the FULL history.
+   */
+  minTrades: Schema.optional(Schema.String),
+  /** SQL ORDER BY key for the grouped rows (best-first by default). */
+  sortBy: Schema.optional(Schema.String),
+  sortDir: Schema.optional(Schema.Literal("asc", "desc")),
+  /**
+   * Best-edge gate (relative reads): the `bestEdge` row only counts
+   * dimensions with at least this many closed trades. Default 3.
+   */
+  bestEdgeMinTrades: Schema.optional(Schema.String),
 });
 
 export type TagPerformanceQuery = typeof TagPerformanceQuery.Type;
+
+// --- Server-computed metrics (SQL aggregates over the FULL mirror) -----------
+//
+// One capability family per headline metric block. Every number below is
+// computed by the database over the ENTIRE dataset — the frontend renders
+// them verbatim and never aggregates loaded windows client-side (a fetched
+// window cannot answer "what is my all-time profit factor").
+
+/** Restrict a metric read to one instance; absent = fleet (all instances). */
+export const MetricInstanceQuery = Schema.Struct({
+  id: Schema.optional(Schema.String),
+});
+
+export type MetricInstanceQuery = typeof MetricInstanceQuery.Type;
+
+/**
+ * Headline closed-trade metrics: one SQL aggregate over every closed trade
+ * in scope. `profitFactor` is `grossWin / grossLoss`, reported as 0 when
+ * `grossLoss` is 0 — callers show ∞ when `grossLoss === 0 && wins > 0`
+ * (JSON cannot carry Infinity).
+ */
+export const PerformanceStatsResponse = Schema.Struct({
+  trades: Schema.Number,
+  wins: Schema.Number,
+  losses: Schema.Number,
+  grossWin: Schema.Number,
+  grossLoss: Schema.Number,
+  net: Schema.Number,
+  /** 0..100. */
+  winrate: Schema.Number,
+  profitFactor: Schema.Number,
+  /** net / trades. */
+  expectancy: Schema.Number,
+  avgWin: Schema.Number,
+  avgLoss: Schema.Number,
+  /** Best / worst single trade in stake currency. */
+  best: Schema.Number,
+  worst: Schema.Number,
+});
+
+export type PerformanceStatsResponse = typeof PerformanceStatsResponse.Type;
+
+export const PerformanceStatsQuery = MetricInstanceQuery;
+
+export type PerformanceStatsQuery = typeof MetricInstanceQuery.Type;
+
+/** One point of the underwater curve (drawdown percent below running peak). */
+export const DrawdownPoint = Schema.Struct({
+  recordedAt: Schema.String,
+  /** Percent below the running peak (<= 0; 0 while the peak is not positive). */
+  drawdown: Schema.Number,
+});
+
+export type DrawdownPoint = typeof DrawdownPoint.Type;
+
+/**
+ * Underwater curve + scalars computed in SQL over the FULL snapshot
+ * history (running peak = window MAX): a small curve `limit` trims the
+ * chart, never the metrics.
+ */
+export const DrawdownResponse = Schema.Struct({
+  points: Schema.Array(DrawdownPoint),
+  /** Deepest drawdown over the full history (percent, <= 0). */
+  maxDrawdown: Schema.Number,
+  /** Newest point's drawdown (percent, <= 0; 0 with no history). */
+  currentDrawdown: Schema.Number,
+  /** All-time equity peak (profit high-water mark). */
+  peakValue: Schema.Number,
+});
+
+export type DrawdownResponse = typeof DrawdownResponse.Type;
+
+export const DrawdownQuery = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  /** Newest N curve points returned (scalars always cover all history). */
+  limit: Schema.optional(Schema.String),
+});
+
+export type DrawdownQuery = typeof DrawdownQuery.Type;
+
+/** One cumulative-profit point: SQL running sum up to and including the trade. */
+export const CumulativeProfitPoint = Schema.Struct({
+  /** Close time (ISO). */
+  at: Schema.String,
+  /** This trade's close profit. */
+  profit: Schema.Number,
+  /** Running sum over the FULL closed history at this trade. */
+  cumulative: Schema.Number,
+});
+
+export type CumulativeProfitPoint = typeof CumulativeProfitPoint.Type;
+
+/** One instance's cumulative series (fleet reads carry one per instance). */
+export const CumulativeProfitSeries = Schema.Struct({
+  instanceId: Schema.optional(Schema.String),
+  instanceName: Schema.optional(Schema.String),
+  points: Schema.Array(CumulativeProfitPoint),
+  /** Final running sum over the instance's FULL closed history. */
+  totalProfit: Schema.Number,
+  /** Closed trades in the full history for this series. */
+  trades: Schema.Number,
+});
+
+export type CumulativeProfitSeries = typeof CumulativeProfitSeries.Type;
+
+export const CumulativeProfitResponse = Schema.Struct({
+  series: Schema.Array(CumulativeProfitSeries),
+});
+
+export type CumulativeProfitResponse = typeof CumulativeProfitResponse.Type;
+
+export const CumulativeProfitQuery = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  /** Newest N points kept per series (running sums stay full-history). */
+  limit: Schema.optional(Schema.String),
+});
+
+export type CumulativeProfitQuery = typeof CumulativeProfitQuery.Type;
+
+/** Open-book guardrail metrics — one SQL aggregate over the open mirror. */
+export const OpenRiskSummary = Schema.Struct({
+  positions: Schema.Number,
+  deployed: Schema.Number,
+  unrealized: Schema.Number,
+  maxLeverage: Schema.Number,
+  longs: Schema.Number,
+  shorts: Schema.Number,
+  largestStake: Schema.Number,
+  pairs: Schema.Number,
+});
+
+export type OpenRiskSummary = typeof OpenRiskSummary.Type;
+
+/** Per-pair open allocation: stake sum + its share of deployed (0..1, SQL). */
+export const ExposurePairRow = Schema.Struct({
+  pair: Schema.String,
+  positions: Schema.Number,
+  stake: Schema.Number,
+  unrealized: Schema.Number,
+  share: Schema.Number,
+});
+
+export type ExposurePairRow = typeof ExposurePairRow.Type;
+
+export const ExposureResponse = Schema.Struct({
+  summary: OpenRiskSummary,
+  rows: Schema.Array(ExposurePairRow),
+});
+
+export type ExposureResponse = typeof ExposureResponse.Type;
+
+export const ExposureQuery = MetricInstanceQuery;
+
+export type ExposureQuery = typeof MetricInstanceQuery.Type;
+
+// --- Traded pairs (every pair with trade history, SQL over the mirror) -------
+
+/** One pair the scope actually traded — open or closed, full history. */
+export const TradedPairRow = Schema.Struct({
+  pair: Schema.String,
+  /** Open + closed trades on the pair. */
+  trades: Schema.Number,
+  openTrades: Schema.Number,
+  closedTrades: Schema.Number,
+  /** Most recent trade event (ISO; close date for closes, else open date). */
+  lastAt: Schema.String,
+});
+
+export type TradedPairRow = typeof TradedPairRow.Type;
+
+export const TradedPairsResponse = Schema.Struct({
+  /** Most recently active first. */
+  pairs: Schema.Array(TradedPairRow),
+  /** Row count (distinct traded pairs). */
+  length: Schema.Number,
+});
+
+export type TradedPairsResponse = typeof TradedPairsResponse.Type;
+
+export const TradedPairsQuery = MetricInstanceQuery;
+
+export type TradedPairsQuery = typeof MetricInstanceQuery.Type;
 
 // --- Market / candle data (OHLCV, normalized by the backend) -----------------
 
@@ -452,6 +803,13 @@ export const CandlesQuery = Schema.Struct({
   timeframe: Schema.optional(Schema.String),
   /** Last N candles. Defaults to 200, capped server-side. */
   limit: Schema.optional(Schema.String),
+  /**
+   * History paging (epoch MILLIS): return candles strictly OLDER than this
+   * instant from the exchange's public klines, instead of the newest
+   * window. Powers the charts' infinite scroll; exchanges without a
+   * public fallback fail the call (history exhausted).
+   */
+  before: Schema.optional(Schema.String),
 });
 
 export type CandlesQuery = typeof CandlesQuery.Type;
@@ -532,9 +890,21 @@ export type PairLock = typeof PairLock.Type;
 
 export const LocksResponse = Schema.Struct({
   locks: Schema.Array(PairLock),
+  /** Locks on record including expired ones (the unfiltered SQL COUNT). */
+  countOnRecord: Schema.optional(Schema.Number),
 });
 
 export type LocksResponse = typeof LocksResponse.Type;
+
+/**
+ * Pair-lock read: `includeExpired` is the SQL WHERE — expired locks live in
+ * the mirror but stay out of the response unless asked for.
+ */
+export const LocksQuery = Schema.Struct({
+  includeExpired: Schema.optional(Schema.String),
+});
+
+export type LocksQuery = typeof LocksQuery.Type;
 
 export const BlacklistedPair = Schema.Struct({
   pair: Schema.String,
@@ -569,6 +939,8 @@ export type TaggedPairLock = typeof TaggedPairLock.Type;
 
 export const FleetLocksResponse = Schema.Struct({
   locks: Schema.Array(TaggedPairLock),
+  /** Locks on record including expired ones (the unfiltered SQL COUNT). */
+  countOnRecord: Schema.optional(Schema.Number),
 });
 
 export type FleetLocksResponse = typeof FleetLocksResponse.Type;
@@ -635,9 +1007,21 @@ export const ProfitBucket = Schema.Struct({
 
 export type ProfitBucket = typeof ProfitBucket.Type;
 
+/** Window totals for a bucket series — computed server-side over the buckets. */
+export const ProfitBucketTotals = Schema.Struct({
+  profitAbs: Schema.Number,
+  trades: Schema.Number,
+  bestProfitAbs: Schema.Number,
+  worstProfitAbs: Schema.Number,
+});
+
+export type ProfitBucketTotals = typeof ProfitBucketTotals.Type;
+
 export const ProfitBucketsResponse = Schema.Struct({
   bucket: ProfitBucketKind,
   buckets: Schema.Array(ProfitBucket),
+  /** Σ profit / trades + best & worst bucket, computed by the backend. */
+  totals: Schema.optional(ProfitBucketTotals),
 });
 
 export type ProfitBucketsResponse = typeof ProfitBucketsResponse.Type;
@@ -696,6 +1080,10 @@ export const FleetOverviewResponse = Schema.Struct({
     losses: Schema.Number,
     totalStake: Schema.Number,
     stakeCurrency: Schema.optional(Schema.String),
+    /** Closed trades across the fleet (server-side sum; absent on old data). */
+    closedTradeCount: Schema.optional(Schema.Number),
+    /** Trades (open + closed) across the fleet (server-side sum). */
+    tradeCount: Schema.optional(Schema.Number),
   }),
 });
 
@@ -1014,8 +1402,26 @@ export const RelativeOpenPosition = Schema.Struct({
 
 export type RelativeOpenPosition = typeof RelativeOpenPosition.Type;
 
+/** Percent/weight-only open-book stats (no absolute can be derived). */
+export const RelativeOpenStats = Schema.Struct({
+  /** Σ stakeAmount / totalStake (0..1+; the denominator stays secret). */
+  deployedWeight: Schema.Number,
+  /** Mean profit percent across the open book. */
+  avgProfitPct: Schema.Number,
+  /** Largest single-trade share of the wallet (0..1). */
+  largestWeight: Schema.Number,
+});
+
+export type RelativeOpenStats = typeof RelativeOpenStats.Type;
+
 export const RelativeOpenPositionsResponse = Schema.Struct({
   positions: Schema.Array(RelativeOpenPosition),
+  /**
+   * Full-book stats computed server-side (SQL over the mirror + the
+   * never-exposed wallet total): deployed share, mean profit percent and
+   * the largest single-trade share.
+   */
+  stats: Schema.optional(RelativeOpenStats),
 });
 
 export type RelativeOpenPositionsResponse =
@@ -1041,11 +1447,31 @@ export const RelativeClosedPosition = Schema.Struct({
 
 export type RelativeClosedPosition = typeof RelativeClosedPosition.Type;
 
+/** Percentages-only closed-trade stats for the shareable table footer. */
+export const RelativeClosedStats = Schema.Struct({
+  /** Closed trades carrying a close percent (the full matching set). */
+  withPnl: Schema.Number,
+  wins: Schema.Number,
+  /** wins / withPnl * 100 (0 when none). */
+  winRatePct: Schema.Number,
+  avgProfitPct: Schema.Number,
+  bestPct: Schema.Number,
+  worstPct: Schema.Number,
+});
+
+export type RelativeClosedStats = typeof RelativeClosedStats.Type;
+
 export const RelativeClosedPositionsResponse = Schema.Struct({
   positions: Schema.Array(RelativeClosedPosition),
   tradesCount: Schema.optional(Schema.Number),
   totalTrades: Schema.optional(Schema.Number),
   offset: Schema.optional(Schema.Number),
+  /**
+   * Full-set stats computed in SQL over EVERY closed trade matching the
+   * same search — win rate / avg / best / worst percent over the entire
+   * history, not just the loaded page.
+   */
+  stats: Schema.optional(RelativeClosedStats),
 });
 
 export type RelativeClosedPositionsResponse =
@@ -1060,6 +1486,9 @@ export const RelativeTagPerformanceRow = Schema.Struct({
   winrate: Schema.Number,
   /** Mean of close profit percent. No absolute profit — see `TagPerformanceRow`. */
   profitPctAvg: Schema.Number,
+  /** Set on fleet strategy breakdowns: one row per strategy per instance. */
+  instanceId: Schema.optional(Schema.String),
+  instanceName: Schema.optional(Schema.String),
 });
 
 export type RelativeTagPerformanceRow = typeof RelativeTagPerformanceRow.Type;
@@ -1069,6 +1498,8 @@ export const RelativeTagPerformanceResponse = Schema.Struct({
   rows: Schema.Array(RelativeTagPerformanceRow),
   aggregatedTrades: Schema.Number,
   totalTrades: Schema.optional(Schema.Number),
+  /** Full-set percentages-only stats (SQL over every matching trade). */
+  stats: Schema.optional(RelativeTagStats),
 });
 
 export type RelativeTagPerformanceResponse =
@@ -1447,6 +1878,19 @@ export const PanelInstance = Schema.Struct({
 
 export type PanelInstance = typeof PanelInstance.Type;
 
+/**
+ * Manual Tetris wall block widths (panelId → column span on the wall's
+ * 6-column grid), written by dragging a wall block's right edge. Exported
+ * separately so the db layer can decode the persisted JSON column with the
+ * exact same boundary the Workspace field uses.
+ */
+export const TetrisSpans = Schema.Record({
+  key: Schema.String,
+  value: Schema.Number.pipe(Schema.int(), Schema.greaterThanOrEqualTo(1)),
+});
+
+export type TetrisSpans = typeof TetrisSpans.Type;
+
 export const Workspace = Schema.Struct({
   id: WorkspaceId,
   name: Schema.String.pipe(Schema.minLength(1)),
@@ -1479,6 +1923,21 @@ export const Workspace = Schema.Struct({
    * override (stored here via the page actions menu).
    */
   icon: Schema.optional(Schema.String.pipe(Schema.minLength(1))),
+  /**
+   * Masonry stack page mode: panes render as one scrolling column that may
+   * exceed the viewport, each pane following its active tab widget's
+   * natural content height (no internal scrollbar) instead of Trellis
+   * tiling the stage into fixed one-screen cells. Absent/false keeps the
+   * tiled stage. Applied via the "Masonry stack" grid preset; any tiled
+   * preset turns it back off.
+   */
+  stacked: Schema.optional(Schema.Boolean),
+  /**
+   * Manual Tetris wall block widths (panelId → column span); see
+   * `TetrisSpans`. Grid presets that rebuild the page shape clear the map;
+   * "Tetris wall" (a mode-only re-pack) keeps it.
+   */
+  tetrisSpans: Schema.optional(TetrisSpans),
   /**
    * Page provenance: `"user"` marks pages explicitly added through the
    * Add-page picker. Preset workspaces seeded automatically by older builds
@@ -1947,6 +2406,15 @@ export const Capability = Schema.Literal(
   "instances.balance-history",
   "instances.balance-history.relative",
   "instances.profit-history-all.relative",
+  "instances.trade-tape",
+  "instances.trade-tape-all",
+  "instances.pair-watch",
+  "instances.pair-watch-all",
+  "instances.performance-stats",
+  "instances.drawdown",
+  "instances.cumulative-profit",
+  "instances.exposure",
+  "instances.traded-pairs",
   "users.list",
   "users.create",
   "users.update",
@@ -2018,6 +2486,15 @@ export const ALL_CAPABILITIES: ReadonlyArray<Capability> = [
   "instances.balance-history",
   "instances.balance-history.relative",
   "instances.profit-history-all.relative",
+  "instances.trade-tape",
+  "instances.trade-tape-all",
+  "instances.pair-watch",
+  "instances.pair-watch-all",
+  "instances.performance-stats",
+  "instances.drawdown",
+  "instances.cumulative-profit",
+  "instances.exposure",
+  "instances.traded-pairs",
   "users.list",
   "users.create",
   "users.update",
@@ -2232,9 +2709,7 @@ export type UpdatePageDefaultsResponse = typeof UpdatePageDefaultsResponse.Type;
 
 export const AppearanceDefaults = Schema.Struct({
   /** Carbon base theme (`white`, `g10`, `g90`, `g100`). */
-  colorTheme: Schema.optional(
-    Schema.Literal("white", "g10", "g90", "g100"),
-  ),
+  colorTheme: Schema.optional(Schema.Literal("white", "g10", "g90", "g100")),
   /** Accent color family. */
   accentColor: Schema.optional(
     Schema.Literal(
@@ -2370,6 +2845,15 @@ const ENDPOINT_CAPABILITY_TABLE = {
   ],
   "Instances.profitHistoryAll": ["instances.profit-history-all"],
   "Instances.tagPerformanceAll": ["instances.tag-performance-all"],
+  "Instances.tradeTape": ["instances.trade-tape"],
+  "Instances.tradeTapeAll": ["instances.trade-tape-all"],
+  "Instances.pairWatch": ["instances.pair-watch"],
+  "Instances.pairWatchAll": ["instances.pair-watch-all"],
+  "Instances.performanceStats": ["instances.performance-stats"],
+  "Instances.drawdown": ["instances.drawdown"],
+  "Instances.cumulativeProfit": ["instances.cumulative-profit"],
+  "Instances.exposure": ["instances.exposure"],
+  "Instances.tradedPairs": ["instances.traded-pairs"],
   "Users.list": ["users.list"],
   "Users.create": ["users.create"],
   "Users.update": ["users.update"],
@@ -2837,7 +3321,7 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
         HttpApiEndpoint.get(
           "openPositions",
         )`/api/instances/${HttpApiSchema.param("id", Schema.String)}/positions/open`
-          .setUrlParams(SearchQuery)
+          .setUrlParams(OpenPositionsQuery)
           .addSuccess(OpenPositionsResponse)
           .addError(BackendError, { status: 502 }),
       )
@@ -2930,6 +3414,7 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
         HttpApiEndpoint.get(
           "locks",
         )`/api/instances/${HttpApiSchema.param("id", Schema.String)}/locks`
+          .setUrlParams(LocksQuery)
           .addSuccess(LocksResponse)
           .addError(BackendError, { status: 502 }),
       )
@@ -2951,6 +3436,7 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
       )
       .add(
         HttpApiEndpoint.get("locksAll", "/api/instances/locks/all")
+          .setUrlParams(LocksQuery)
           .addSuccess(FleetLocksResponse)
           .addError(BackendError, { status: 502 }),
       )
@@ -2996,7 +3482,7 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
       )
       .add(
         HttpApiEndpoint.get("positionsAll", "/api/instances/positions/open-all")
-          .setUrlParams(SearchQuery)
+          .setUrlParams(OpenPositionsQuery)
           .addSuccess(FleetOpenPositionsResponse)
           .addError(BackendError, { status: 502 }),
       )
@@ -3055,6 +3541,70 @@ export const NfiApi = HttpApi.make("NfiPanelApi")
         )
           .setUrlParams(TagPerformanceQuery)
           .addSuccess(TagPerformanceResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get(
+          "tradeTape",
+        )`/api/instances/${HttpApiSchema.param("id", Schema.String)}/tape`
+          .setUrlParams(TapeQuery)
+          .addSuccess(TapeResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get("tradeTapeAll", "/api/instances/tape/all")
+          .setUrlParams(TapeQuery)
+          .addSuccess(TapeResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get(
+          "pairWatch",
+        )`/api/instances/${HttpApiSchema.param("id", Schema.String)}/pairs/watch`
+          .setUrlParams(PairWatchQuery)
+          .addSuccess(PairWatchResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get("pairWatchAll", "/api/instances/pairs/watch-all")
+          .setUrlParams(PairWatchQuery)
+          .addSuccess(PairWatchResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get(
+          "performanceStats",
+          "/api/instances/performance-stats",
+        )
+          .setUrlParams(PerformanceStatsQuery)
+          .addSuccess(PerformanceStatsResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get("drawdown", "/api/instances/drawdown")
+          .setUrlParams(DrawdownQuery)
+          .addSuccess(DrawdownResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get(
+          "cumulativeProfit",
+          "/api/instances/cumulative-profit",
+        )
+          .setUrlParams(CumulativeProfitQuery)
+          .addSuccess(CumulativeProfitResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get("exposure", "/api/instances/exposure")
+          .setUrlParams(ExposureQuery)
+          .addSuccess(ExposureResponse)
+          .addError(BackendError, { status: 502 }),
+      )
+      .add(
+        HttpApiEndpoint.get("tradedPairs", "/api/instances/traded-pairs")
+          .setUrlParams(TradedPairsQuery)
+          .addSuccess(TradedPairsResponse)
           .addError(BackendError, { status: 502 }),
       ),
   );

@@ -7,18 +7,20 @@ import {
   type FleetWhitelistInstance,
 } from "@nfi/api-contract";
 import { defineCapability } from "./definition.js";
-import { toBackendError } from "./errors.js";
-import { fleetInstances, perInstance } from "./fleet.js";
-import { applySearch, matchesSearch, normalizeSearch } from "./search.js";
+import { asBackendError } from "./errors.js";
+import { fleetInstances } from "./fleet.js";
+import { normalizeSearch } from "./search.js";
 
 const WhitelistAllOptions = Schema.Struct({
-  /** Free-text filter applied server-side over the full pair lists. */
+  /** Free-text filter — a SQL LIKE per instance's mirrored list. */
   search: Schema.optional(Schema.String),
 });
 
 /**
  * `instances.whitelist-all` — whitelisted pairs across every configured
  * instance, grouped per instance plus a sorted union for fleet views.
+ * Each instance's list (search included) comes from one SQL query over the
+ * mirror; the handler only assembles the per-instance groups and union.
  */
 export const InstancesWhitelistAllCapability = defineCapability({
   name: "instances.whitelist-all",
@@ -31,57 +33,47 @@ export const InstancesWhitelistAllCapability = defineCapability({
   run: (options, ctx) =>
     Effect.gen(function* () {
       const instances = yield* fleetInstances(ctx);
+      const search = normalizeSearch(options.search);
 
-      const outcomes = yield* perInstance(instances, (instance) =>
-        instance.service.getWhitelist(),
+      const grouped = yield* Effect.forEach(
+        instances,
+        (instance) =>
+          Effect.gen(function* () {
+            const list = yield* ctx.trades.listWhitelist({
+              instanceId: instance.id,
+              search,
+            });
+
+            // A search matching the bot keeps its whole list.
+            const botMatched =
+              search !== null &&
+              (instance.name.toLowerCase().includes(search.toLowerCase()) ||
+                instance.id.toLowerCase().includes(search.toLowerCase()));
+
+            const pairs =
+              botMatched
+                ? (yield* ctx.trades.listWhitelist({
+                    instanceId: instance.id,
+                    search: null,
+                  })).pairs
+                : list.pairs;
+
+            return {
+              instanceId: instance.id,
+              instanceName: instance.name,
+              pairs,
+              length: list.length,
+              matched: search === null || pairs.length > 0 || botMatched,
+            };
+          }).pipe(Effect.catchAll(() => Effect.succeed(null))),
+        { concurrency: 4 },
       );
 
-      const needle = normalizeSearch(options.search);
-      const perInstanceRows: FleetWhitelistInstance[] = [];
-      let failures = 0;
-      let firstError: string | null = null;
-
-      for (const outcome of outcomes) {
-        if (outcome.data !== undefined) {
-          const allPairs = [...outcome.data.pairs];
-
-          // A search matching the bot keeps its whole list; otherwise the
-          // list is filtered to matching pairs (bots with neither drop out).
-          const pairs =
-            needle !== null &&
-            matchesSearch(
-              [outcome.instance.id, outcome.instance.name],
-              needle,
-            )
-              ? allPairs
-              : applySearch(allPairs, (pair) => [pair], options.search);
-
-          if (needle === null || pairs.length > 0) {
-            perInstanceRows.push({
-              instanceId: outcome.instance.id,
-              instanceName: outcome.instance.name,
-              pairs,
-              length: allPairs.length,
-            });
-          }
-        } else {
-          failures += 1;
-          firstError = firstError ?? outcome.error ?? "unreachable";
-        }
-      }
-
-      if (
-        perInstanceRows.length === 0 &&
-        failures > 0 &&
-        failures === instances.length
-      ) {
-        return yield* Effect.fail(
-          toBackendError(
-            "fleet whitelist",
-            firstError ?? "all instances unreachable",
-          ),
-        );
-      }
+      const perInstanceRows: FleetWhitelistInstance[] = grouped
+        .filter((row): row is NonNullable<typeof row> =>
+          row !== null && (search === null || row.matched),
+        )
+        .map(({ matched: _matched, ...row }) => row);
 
       const union = [
         ...new Set(perInstanceRows.flatMap((row) => row.pairs)),
@@ -93,6 +85,6 @@ export const InstancesWhitelistAllCapability = defineCapability({
         length: union.length,
       };
     }).pipe(
-      Effect.mapError((cause) => toBackendError("fleet whitelist", cause)),
-    ),
+    Effect.mapError((cause) => asBackendError("fleet whitelist", cause)),
+  ),
 });

@@ -2,343 +2,59 @@
 // SPDX-License-Identifier: SSPL-1.0
 
 /**
- * Table export — CSV / XLSX / JSON download for position-related tables.
+ * Table export — CSV / XLSX / JSON downloads.
  *
- * Every position table (open/closed positions, their `.relative` twins,
- * and the aggregations built from them) offers the same export
- * (`ExportMenu`, rendered in the widget frame's `actions` slot). Columns
- * are plain header + value accessors so exports carry raw values — never
- * the table's rendered JSX (tags, pills, links).
+ * Two paths share one column model (`@nfi/export-core`):
  *
- * Position tables export grouped rows (`expandPositionRows` +
- * `withOrderRows`): the header is `position columns + sub-order columns`.
- * Each position emits one position row (position cells filled, order cells
- * empty) followed by one row per sub-order (position cells empty, order
- * cells filled). CSV leaves the empty side blank; XLSX additionally merges
- * the empty side — horizontally per row, and vertically across a
- * position's order rows — so each group reads as one block.
- * JSON carries the same row objects, pretty-printed (2-space indent).
+ * - SERVER (`ServerExportMenu`, used by every windowed table): the browser
+ *   fetches `GET /api/export?dataset=…&format=…` and the backend generates
+ *   the file from the FULL matching set in the mirror — not just the rows
+ *   currently loaded in the table. Errors surface through the shared
+ *   `formatQueryError` (403 on ungranted datasets included).
+ * - CLIENT (`ExportMenu`, snapshot datasets that are fully loaded anyway —
+ *   e.g. market movers): the same serialization runs in the browser over
+ *   the rows the widget already holds.
  *
- * CSV follows RFC 4180 quoting with a UTF-8 BOM so Excel opens it
- * directly. XLSX goes through SheetJS (`xlsx`, dynamically imported so the
- * heavy parser stays out of the initial bundle) via `aoa_to_sheet` so
- * duplicate headers (e.g. position `Amount` + order `Amount`) keep their
- * own columns. JSON uses the same headers as keys, suffixing repeats as
- * `Amount (2)` so no column is lost.
+ * Grouped position exports (position row + one row per sub-order) are
+ * defined once in `@nfi/export-core`, so a server-generated file is
+ * cell-for-cell what the client used to serialize — including the XLSX
+ * merge blocks and the nested `Orders` JSON records.
  */
 
 import { useState } from "react";
 import { Button } from "@carbon/react";
 import { Download } from "@carbon/icons-react";
-import type { RelativeOrder, TradeOrder } from "@nfi/api-contract";
-import { COL } from "./columns";
+import {
+  buildExportFilename,
+  buildGroupedMerges,
+  rowsToCellMatrix,
+  rowsToCsv,
+  rowsToJson,
+  type ExportColumn,
+} from "@nfi/export-core";
+import { formatQueryError } from "@nfi/api-contract";
+import { resolveRestUrl } from "../live/transport";
 
-/** One exportable column: header text + raw cell value. */
-export interface ExportColumn<T> {
-  readonly header: string;
-  readonly value: (row: T) => string | number | boolean | null | undefined;
-}
-
-/** Cell values a table export renders: text, numbers, flags or blanks. */
-export type CsvCellValue = string | number | boolean | null | undefined;
-
-/**
- * One grouped export row: a position row, or one sub row per order.
- * `position` is always the owning position; `order` is present on
- * sub rows only.
- */
-export interface FlatExportRow<P, O> {
-  readonly kind: "position" | "order";
-  readonly position: P;
-  readonly order?: O;
-}
-
-/**
- * Positions → grouped export rows: one `{ kind: "position" }` row per
- * position, each followed by its `{ kind: "order" }` sub rows (in the
- * stored order order). Positions without orders export as a lone
- * position row.
- */
-export function expandPositionRows<P, O>(
-  rows: ReadonlyArray<P>,
-  getOrders: (position: P) => ReadonlyArray<O> | undefined,
-): Array<FlatExportRow<P, O>> {
-  const out: Array<FlatExportRow<P, O>> = [];
-
-  for (const position of rows) {
-    out.push({ kind: "position", position });
-
-    for (const order of getOrders(position) ?? [])
-      out.push({ kind: "order", position, order });
-  }
-
-  return out;
-}
-
-/**
- * Position columns + order columns → one grouped column set for
- * `expandPositionRows` output. Position rows fill the position cells
- * (order cells blank); sub-order rows leave every position cell blank
- * and fill the order cells.
- */
-export type GroupedExportColumns<T> = ReadonlyArray<ExportColumn<T>> & {
-  /** Leading position-column count — the XLSX merge boundary. */
-  readonly positionColumnCount: number;
-};
-
-export function withOrderRows<P, O>(args: {
-  readonly positionColumns: ReadonlyArray<ExportColumn<P>>;
-  readonly orderColumns: ReadonlyArray<ExportColumn<O>>;
-}): GroupedExportColumns<FlatExportRow<P, O>> {
-  const positions = args.positionColumns.map(
-    (column): ExportColumn<FlatExportRow<P, O>> => ({
-      header: column.header,
-      value: (row) =>
-        row.kind === "position" ? column.value(row.position) : undefined,
-    }),
-  );
-
-  const orders = args.orderColumns.map(
-    (column): ExportColumn<FlatExportRow<P, O>> => ({
-      header: column.header,
-      value: (row) =>
-        row.order !== undefined ? column.value(row.order) : undefined,
-    }),
-  );
-
-  return Object.assign([...positions, ...orders], {
-    positionColumnCount: args.positionColumns.length,
-  });
-}
-
-/** One SheetJS merge range (`!merges` entry). */
-export interface XlsxMerge {
-  readonly s: { readonly r: number; readonly c: number };
-  readonly e: { readonly r: number; readonly c: number };
-}
-
-/**
- * Grouped rows → XLSX merge ranges. Position rows merge the empty
- * order-side cells horizontally; a position's order rows merge the empty
- * position side into one block — horizontally within one row and
- * additionally vertically across the group's order rows. Header row
- * (r = 0) never merges; plain (non-grouped) column sets yield no merges.
- */
-export function buildGroupedMerges<T extends object>(
-  columns: ReadonlyArray<ExportColumn<T>>,
-  rows: ReadonlyArray<T>,
-): Array<XlsxMerge> {
-  const total = columns.length;
-
-  // Grouped column sets carry their boundary as an own property; plain
-  // sets have none and read as 0 (no merges either way).
-  // SAFETY: Object.hasOwn confirmed the marker exists; withOrderRows only
-  // ever writes an integer count, and junk fails the isInteger re-check.
-  const boundary = Object.hasOwn(columns, "positionColumnCount")
-    ? (columns as GroupedExportColumns<T>).positionColumnCount
-    : 0;
-
-  if (!Number.isInteger(boundary) || boundary <= 0 || boundary >= total)
-    return [];
-
-  const merges: Array<XlsxMerge> = [];
-  const orderSideWidth = total - boundary;
-
-  // First sheet row of the current group's order block (null between groups).
-  let orderStart: number | null = null;
-
-  /** Close the pending order block at `endExclusive` (sheet-row space). */
-  const flushOrders = (endExclusive: number): void => {
-    if (orderStart === null) return;
-
-    const start = orderStart;
-
-    orderStart = null;
-
-    if (boundary >= 2) {
-      // One rectangle over the whole block: horizontal for a lone order
-      // row, horizontal + vertical for several.
-      merges.push({
-        s: { r: start, c: 0 },
-        e: { r: endExclusive - 1, c: boundary - 1 },
-      });
-    } else if (endExclusive - 1 > start) {
-      // Single position column: only a vertical merge is possible.
-      merges.push({ s: { r: start, c: 0 }, e: { r: endExclusive - 1, c: 0 } });
-    }
-  };
-
-  rows.forEach((row, index) => {
-    const sheetRow = index + 1;
-
-    const kind =
-      "kind" in row && (row.kind === "position" || row.kind === "order")
-        ? row.kind
-        : undefined;
-
-    if (kind === "position") {
-      flushOrders(sheetRow);
-
-      // Trailing order side is empty — merge into one block (needs ≥2 cols).
-      if (orderSideWidth >= 2)
-        merges.push({
-          s: { r: sheetRow, c: boundary },
-          e: { r: sheetRow, c: total - 1 },
-        });
-    } else if (kind === "order") {
-      if (orderStart === null) orderStart = sheetRow;
-    } else {
-      flushOrders(sheetRow);
-    }
-  });
-  flushOrders(rows.length + 1);
-
-  return merges;
-}
-
-/** Epoch-millis order stamp → ISO text (blank when absent). */
-const orderIso = (stamp: number | undefined): string | undefined =>
-  stamp !== undefined && Number.isFinite(stamp) && stamp > 0
-    ? new Date(stamp).toISOString()
-    : undefined;
-
-/** Order-side export columns shared by every absolute position table. */
-export const TRADE_ORDER_EXPORT_COLUMNS: ReadonlyArray<
-  ExportColumn<TradeOrder>
-> = [
-  { header: COL.orderId, value: (o) => o.orderId },
-  {
-    header: COL.date,
-    value: (o) => orderIso(o.filledTimestamp ?? o.timestamp),
-  },
-  { header: COL.side, value: (o) => o.side.toUpperCase() },
-  { header: COL.orderType, value: (o) => o.type },
-  { header: COL.status, value: (o) => o.status },
-  { header: COL.price, value: (o) => o.price },
-  { header: COL.amount, value: (o) => o.amount },
-  { header: COL.filled, value: (o) => o.filled },
-  { header: COL.remaining, value: (o) => o.remaining },
-  { header: COL.cost, value: (o) => o.cost },
-  { header: COL.orderTag, value: (o) => o.tag?.trim() || undefined },
-  {
-    header: COL.role,
-    value: (o) =>
-      o.isEntry === undefined ? undefined : o.isEntry ? "entry" : "exit",
-  },
-];
-
-/**
- * Order-side export columns for the percent-only (relative) tables —
- * no prices, amounts or timestamps exist on these by design.
- */
-export const RELATIVE_ORDER_EXPORT_COLUMNS: ReadonlyArray<
-  ExportColumn<RelativeOrder>
-> = [
-  { header: COL.side, value: (o) => o.side.toUpperCase() },
-  {
-    header: COL.role,
-    value: (o) =>
-      o.isEntry === undefined ? undefined : o.isEntry ? "entry" : "exit",
-  },
-  { header: COL.orderTag, value: (o) => o.tag?.trim() || undefined },
-  { header: COL.status, value: (o) => o.status },
-];
-
-/** RFC 4180 cell quoting: quote when the text holds `"`, `,` or a newline. */
-export function csvCell(value: CsvCellValue): string {
-  // Only numbers can be non-finite; they export as blank cells rather than
-  // the "NaN"/"Infinity" spellings String() would produce.
-  const nonFinite =
-    Number.isNaN(value) ||
-    value === Number.POSITIVE_INFINITY ||
-    value === Number.NEGATIVE_INFINITY;
-
-  const text = value == null || nonFinite ? "" : String(value);
-
-  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-/** Rows → CSV text (CRLF, BOM included for Excel). */
-export function rowsToCsv<T>(
-  columns: ReadonlyArray<ExportColumn<T>>,
-  rows: ReadonlyArray<T>,
-): string {
-  const lines = [
-    columns.map((c) => csvCell(c.header)).join(","),
-    ...rows.map((row) => columns.map((c) => csvCell(c.value(row))).join(",")),
-  ];
-
-  return `\uFEFF${lines.join("\r\n")}\r\n`;
-}
-
-/**
- * Column headers with repeats suffixed (`Amount`, `Amount (2)`) so JSON
- * objects keyed by header keep every column — e.g. position `Amount` +
- * order `Amount` in the grouped position exports.
- */
-export function dedupedExportHeaders<T>(
-  columns: ReadonlyArray<ExportColumn<T>>,
-): ReadonlyArray<string> {
-  const seen = new Map<string, number>();
-
-  return columns.map((column) => {
-    const count = (seen.get(column.header) ?? 0) + 1;
-
-    seen.set(column.header, count);
-
-    return count === 1 ? column.header : `${column.header} (${count})`;
-  });
-}
-
-/** Raw cell → JSON value: missing / non-finite numbers become `null`. */
-export function jsonCell(
-  value: string | number | boolean | null | undefined,
-): string | number | boolean | null {
-  if (value === null || value === undefined) return null;
-
-  // JSON has no NaN/Infinity spelling — non-finite numbers encode as null.
-  const nonFinite =
-    Number.isNaN(value) ||
-    value === Number.POSITIVE_INFINITY ||
-    value === Number.NEGATIVE_INFINITY;
-
-  if (nonFinite) return null;
-
-  return value;
-}
-
-/** Rows → pretty-printed JSON text (2-space indent, trailing newline). */
-export function rowsToJson<T>(
-  columns: ReadonlyArray<ExportColumn<T>>,
-  rows: ReadonlyArray<T>,
-): string {
-  const headers = dedupedExportHeaders(columns);
-
-  const records = rows.map((row) => {
-    const record: Record<string, string | number | boolean | null> = {};
-
-    columns.forEach((column, index) => {
-      record[headers[index] ?? ""] = jsonCell(column.value(row));
-    });
-
-    return record;
-  });
-
-  return `${JSON.stringify(records, null, 2)}\n`;
-}
-
-function stampOf(date: Date): string {
-  const pad = (n: number): string => String(n).padStart(2, "0");
-
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
-}
-
-/** `open-positions` + instance + timestamp → `open-positions-all-20240101-1200`. */
-export function buildExportFilename(base: string, now = new Date()): string {
-  const safe = base.trim().replace(/[^a-zA-Z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
-
-  return `${safe.length > 0 ? safe : "export"}-${stampOf(now)}`;
-}
+// Pure column/serialization core — owned by @nfi/export-core, re-exported
+// for the package's existing import surface.
+export {
+  buildExportFilename,
+  buildGroupedMerges,
+  csvCell,
+  dedupedExportHeaders,
+  expandPositionRows,
+  jsonCell,
+  orderIso,
+  rowsToCsv,
+  rowsToJson,
+  withOrderRows,
+  RELATIVE_ORDER_EXPORT_COLUMNS,
+  TRADE_ORDER_EXPORT_COLUMNS,
+  type ExportColumn,
+  type FlatExportRow,
+  type GroupedExportColumns,
+  type XlsxMerge,
+} from "@nfi/export-core";
 
 function downloadBlob(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
@@ -360,11 +76,11 @@ export function exportRowsToCsv<T>(
   columns: ReadonlyArray<ExportColumn<T>>,
   rows: ReadonlyArray<T>,
 ): void {
-  const text = rowsToCsv(columns, rows);
-
   downloadBlob(
     `${buildExportFilename(filenameBase)}.csv`,
-    new Blob([text], { type: "text/csv;charset=utf-8" }),
+    new Blob([rowsToCsv(columns, rows)], {
+      type: "text/csv;charset=utf-8",
+    }),
   );
 }
 
@@ -383,25 +99,14 @@ export function exportRowsToJson<T>(
 }
 
 /** XLSX download via SheetJS (lazy import — keeps it out of the main chunk). */
-export async function exportRowsToXlsx<T extends object>(
+export async function exportRowsToXlsx<T>(
   filenameBase: string,
   columns: ReadonlyArray<ExportColumn<T>>,
   rows: ReadonlyArray<T>,
 ): Promise<void> {
   const XLSX = await import("xlsx");
+  const sheet = XLSX.utils.aoa_to_sheet(rowsToCellMatrix(columns, rows));
 
-  const data: Array<Array<string | number | boolean>> = [
-    columns.map((column) => column.header),
-    ...rows.map((row) =>
-      columns.map((column) => {
-        const value = column.value(row);
-
-        return value === null || value === undefined ? "" : value;
-      }),
-    ),
-  ];
-
-  const sheet = XLSX.utils.aoa_to_sheet(data);
   const merges = buildGroupedMerges(columns, rows);
 
   if (merges.length > 0) sheet["!merges"] = merges;
@@ -411,11 +116,181 @@ export async function exportRowsToXlsx<T extends object>(
   XLSX.writeFile(workbook, `${buildExportFilename(filenameBase)}.xlsx`);
 }
 
+// ---------------------------------------------------------------------------
+// Server-side export (`GET /api/export`)
+// ---------------------------------------------------------------------------
+
+/** Query parameters for one server export request. */
+export interface ServerExportParams {
+  /** `undefined` = fleet (every instance). */
+  readonly instanceId?: string;
+  /** Free-text filter — the same WHERE the table's subscription uses. */
+  readonly search?: string;
+  /** Aggregation dimension (tag-performance datasets). */
+  readonly groupBy?: "enter" | "exit" | "pair" | "strategy";
+  /** HAVING COUNT(*) >= minTrades (tag-performance datasets). */
+  readonly minTrades?: number;
+  /** Aggregation order key (tag-performance datasets). */
+  readonly sortBy?: string;
+  readonly sortDir?: "asc" | "desc";
+}
+
+const FORMATS = ["csv", "xlsx", "json"] as const;
+
+export type ServerExportFormat = (typeof FORMATS)[number];
+
+const CONTENT_TYPES: Record<ServerExportFormat, string> = {
+  csv: "text/csv;charset=utf-8",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  json: "application/json;charset=utf-8",
+};
+
 /**
- * CSV/XLSX/JSON export for a widget frame's `actions` slot.
+ * Fetch one server-generated export file and hand it to the browser.
+ * Rejects with the backend's formatted message (`formatQueryError`), so
+ * callers surface 403/500 exactly like capability errors.
+ */
+export async function downloadServerExport(
+  dataset: string,
+  format: ServerExportFormat,
+  params: ServerExportParams | undefined,
+  filenameBase: string,
+): Promise<void> {
+  const query = new URLSearchParams({ dataset, format });
+
+  if (params?.instanceId !== undefined)
+    query.set("instanceId", params.instanceId);
+
+  if (params?.search !== undefined && params.search.trim().length > 0)
+    query.set("search", params.search.trim());
+
+  if (params?.groupBy !== undefined) query.set("groupBy", params.groupBy);
+
+  if (params?.minTrades !== undefined)
+    query.set("minTrades", String(params.minTrades));
+
+  if (params?.sortBy !== undefined) query.set("sortBy", params.sortBy);
+
+  if (params?.sortDir !== undefined) query.set("sortDir", params.sortDir);
+
+  const response = await fetch(resolveRestUrl(`/api/export?${query}`), {
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    // Error bodies are the contract's `{ error, detail? }` — same shape the
+    // capability transport surfaces.
+    const text = await response.text().catch(() => "");
+
+    let message = `Export failed (${response.status})`;
+
+    try {
+      message = formatQueryError(JSON.parse(text)) ?? message;
+    } catch {
+      // Non-JSON body — keep the status-based fallback.
+    }
+
+    throw new Error(message);
+  }
+
+  const blob = new Blob([await response.arrayBuffer()], {
+    type: CONTENT_TYPES[format],
+  });
+
+  downloadBlob(`${buildExportFilename(filenameBase)}.${format}`, blob);
+}
+
+/**
+ * CSV/XLSX/JSON export backed by the server's full-set generator. Same
+ * three buttons as the client-side `ExportMenu`; disabled (with a tooltip)
+ * when nothing is loaded yet.
+ */
+export function ServerExportMenu({
+  filenameBase,
+  dataset,
+  params,
+  disabled,
+}: {
+  /** Base file name (instance id included by the caller); timestamp added. */
+  readonly filenameBase: string;
+  /** Export dataset id (`/api/export?dataset=…`). */
+  readonly dataset: string;
+  /** Filter/scope parameters — the table's current view. */
+  readonly params?: ServerExportParams;
+  readonly disabled?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const empty = disabled === true;
+
+  const run = (format: ServerExportFormat): void => {
+    if (empty || busy) return;
+
+    setBusy(true);
+
+    void downloadServerExport(dataset, format, params, filenameBase)
+      .catch((cause: unknown) => {
+        window.alert(
+          formatQueryError(cause) ??
+            (cause instanceof Error ? cause.message : String(cause)),
+        );
+      })
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div style={{ display: "inline-flex", gap: "0.25rem" }}>
+      <Button
+        size="sm"
+        kind="ghost"
+        renderIcon={Download}
+        disabled={empty || busy}
+        title={
+          empty
+            ? "Nothing to export yet"
+            : "Download the FULL matching set as CSV"
+        }
+        onClick={() => run("csv")}
+      >
+        CSV
+      </Button>
+      <Button
+        size="sm"
+        kind="ghost"
+        renderIcon={Download}
+        disabled={empty || busy}
+        title={
+          empty
+            ? "Nothing to export yet"
+            : "Download the FULL matching set as XLSX"
+        }
+        onClick={() => run("xlsx")}
+      >
+        XLSX
+      </Button>
+      <Button
+        size="sm"
+        kind="ghost"
+        renderIcon={Download}
+        disabled={empty || busy}
+        title={
+          empty
+            ? "Nothing to export yet"
+            : "Download the FULL matching set as JSON"
+        }
+        onClick={() => run("json")}
+      >
+        JSON
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * CSV/XLSX/JSON export for a widget frame's `actions` slot (client-side
+ * serialization of rows the widget already holds in full).
  * Disabled (with a tooltip) when there is nothing to export.
  */
-export function ExportMenu<T extends object>({
+export function ExportMenu<T>({
   filenameBase,
   columns,
   rows,

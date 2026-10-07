@@ -5,27 +5,24 @@
  * Exposure — stake allocation across open pairs (donut + concentration).
  *
  * Answers "where is my capital?" at a glance: total deployed stake, share
- * per pair, and the largest single-pair concentration.
+ * per pair, and the largest single-pair concentration. `instances.exposure`
+ * computes the per-pair sums AND their shares in SQL over the mirror; the
+ * widget renders the rows verbatim (it used to fold the position list
+ * client-side with a Map).
  */
 
 import { Schema } from "effect";
 import type { Capability } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
 import { DonutChart, type DonutChartOptions } from "@carbon/charts-react";
-import {
-  EmptyState,
-  shallow,
-  Stat,
-  useDerived,
-  WidgetFrame,
-} from "@nfi/ui";
+import { EmptyState, Stat, WidgetFrame } from "@nfi/ui";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import { ChartBox } from "./shared/ChartBox";
 import { InstanceIdField, booleanWithDefault } from "./shared/config";
 import { useCompactMode } from "./shared/size";
 import { queryState, useWidgetAccess } from "./shared/query";
-import { InstanceSelect } from "./shared/InstanceSelect";
-import { useOpenPositionsSource } from "./shared/sources";
+import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
+import { useCapability } from "./live/live";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
 import {
@@ -34,8 +31,7 @@ import {
 } from "./shared/widgetSettingsBus";
 
 export const EXPOSURE_CAPABILITIES: ReadonlyArray<Capability> = [
-  "instances.open-positions",
-  "instances.positions-all",
+  "instances.exposure",
 ];
 
 export const ExposureConfigSchema = Schema.Struct({
@@ -54,13 +50,16 @@ export function ExposureWidget({
   panelId,
 }: WidgetProps<ExposureConfig>) {
   const cfg = config;
+  const fleet = cfg.instanceId === ALL_INSTANCES;
   const access = useWidgetAccess(EXPOSURE_CAPABILITIES);
 
-  const { data, error, isLoading } = useOpenPositionsSource(cfg.instanceId, {
-    enabled: access.allowed,
-  });
+  const view = useCapability(
+    "instances.exposure",
+    { id: fleet ? undefined : cfg.instanceId },
+    { enabled: access.allowed },
+  );
 
-  const state = queryState(error, isLoading);
+  const state = queryState(view.error, view.isLoading);
 
   const accessError = access.allowed
     ? null
@@ -71,48 +70,25 @@ export function ExposureWidget({
   const patch = (p: Partial<ExposureConfig>) =>
     applyWidgetSettings(panelId, "exposure", cfg, p);
 
-  // Derived through a store: Map build + sort + stable Carbon props rerun
-  // only when the snapshot changes, so every Panel re-render (resize/store
-  // ticks) doesn't redraw the donut.
-  const { positions, allocation, total, top, concentration, donutOptions } =
-    useDerived(data, (data) => {
-      const positions = data ?? [];
-      const byPair = new Map<string, number>();
+  const summary = view.data?.summary;
 
-      for (const p of positions) {
-        byPair.set(p.pair, (byPair.get(p.pair) ?? 0) + p.stakeAmount);
-      }
+  // SQL rows, already sorted by stake (share included) — straight to chart.
+  const allocation = (view.data?.rows ?? []).map((row) => ({
+    group: row.pair,
+    value: row.stake,
+  }));
 
-      const total = [...byPair.values()].reduce((sum, v) => sum + v, 0);
+  const total = summary?.deployed ?? 0;
+  const positions = summary?.positions ?? 0;
+  const pairs = summary?.pairs ?? 0;
+  const top = view.data?.rows[0];
+  const concentration = (top?.share ?? 0) * 100;
 
-      const allocation = [...byPair.entries()]
-        .map(([pair, value]) => ({ group: pair, value }))
-        .sort((a, b) => b.value - a.value);
-
-      const top = allocation[0];
-
-      const donutOptions: DonutChartOptions = {
-        title: "Exposure",
-        donut: { center: { label: total > 0 ? total.toFixed(0) : "" } },
-        theme: "g100",
-      };
-
-      return {
-        positions,
-        allocation,
-        total,
-        top,
-        concentration: total > 0 && top ? (top.value / total) * 100 : 0,
-        donutOptions,
-      };
-    });
-
-  const pairCount = useDerived(
-    [positions, allocation] as const,
-    ([positions, allocation]) =>
-      new Set(positions.map((p) => p.pair)).size || allocation.length,
-    { inputs: shallow },
-  );
+  const donutOptions: DonutChartOptions = {
+    title: "Exposure",
+    donut: { center: { label: total > 0 ? total.toFixed(0) : "" } },
+    theme: "g100",
+  };
 
   // Compact cells get the ranked share list — the donut needs ~280px total.
   const compact = useCompactMode(280);
@@ -143,7 +119,7 @@ export function ExposureWidget({
         isLoading={state.isLoading}
         error={accessError ?? state.error}
       >
-        {positions.length > 0 ? (
+        {positions > 0 ? (
           <div
             style={{
               display: "flex",
@@ -157,12 +133,12 @@ export function ExposureWidget({
               <Stat
                 label="Deployed stake"
                 value={total.toFixed(2)}
-                sub={`${positions.length} open positions`}
+                sub={`${positions} open positions`}
               />
               <Stat
                 label="Pairs"
-                value={String(pairCount)}
-                sub={top ? `top ${top.group}` : undefined}
+                value={String(pairs)}
+                sub={top ? `top ${top.pair}` : undefined}
               />
               <Stat
                 label="Concentration"
@@ -190,9 +166,9 @@ export function ExposureWidget({
                   overflowY: "auto",
                 }}
               >
-                {allocation.slice(0, 10).map((row) => (
+                {(view.data?.rows ?? []).slice(0, 10).map((row) => (
                   <div
-                    key={row.group}
+                    key={row.pair}
                     style={{
                       display: "flex",
                       justifyContent: "space-between",
@@ -200,12 +176,9 @@ export function ExposureWidget({
                       fontSize: "0.875rem",
                     }}
                   >
-                    <span className="nfi-mono">{row.group}</span>
+                    <span className="nfi-mono">{row.pair}</span>
                     <span className="nfi-mono">
-                      {total > 0
-                        ? ((row.value / total) * 100).toFixed(1)
-                        : "0.0"}
-                      % · {row.value.toFixed(2)}
+                      {(row.share * 100).toFixed(1)}% · {row.stake.toFixed(2)}
                     </span>
                   </div>
                 ))}

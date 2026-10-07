@@ -4,6 +4,8 @@
 import { Effect, Schema } from "effect";
 import {
   ProfitBucketsResponse,
+  type ProfitBucket,
+  type ProfitBucketTotals,
   type ProfitBucketKind,
 } from "@nfi/api-contract";
 import { defineCapability, parseLimitParam } from "./definition.js";
@@ -21,8 +23,38 @@ const asBucket = (raw: string | undefined): ProfitBucketKind =>
   raw === "weekly" || raw === "monthly" ? raw : "daily";
 
 /**
+ * Window totals over a bucket series, computed server-side so widgets
+ * never reduce the buckets client-side.
+ */
+export const bucketTotals = (
+  buckets: ReadonlyArray<ProfitBucket>,
+): ProfitBucketTotals => {
+  let profitAbs = 0;
+  let trades = 0;
+  let best = Number.NEGATIVE_INFINITY;
+  let worst = Number.POSITIVE_INFINITY;
+
+  for (const bucket of buckets) {
+    profitAbs += bucket.profitAbs;
+    trades += bucket.trades;
+
+    if (bucket.profitAbs > best) best = bucket.profitAbs;
+
+    if (bucket.profitAbs < worst) worst = bucket.profitAbs;
+  }
+
+  return {
+    profitAbs,
+    trades,
+    bestProfitAbs: Number.isFinite(best) ? best : 0,
+    worstProfitAbs: Number.isFinite(worst) ? worst : 0,
+  };
+};
+
+/**
  * `instances.profit-daily` — profit per day/week/month bucket for one
- * instance (freqtrade `GET /api/v1/{daily,weekly,monthly}`).
+ * instance (freqtrade `GET /api/v1/{daily,weekly,monthly}`), plus
+ * server-computed window totals.
  */
 export const InstancesProfitDailyCapability = defineCapability({
   name: "instances.profit-daily",
@@ -38,8 +70,9 @@ export const InstancesProfitDailyCapability = defineCapability({
       const bucket = asBucket(options.bucket);
       const timescale = parseLimitParam(options.days, 30, 100);
       const service = yield* ctx.resolveInstance(options.id);
+      const { buckets } = yield* service.getProfitBuckets(bucket, timescale);
 
-      return yield* service.getProfitBuckets(bucket, timescale);
+      return { bucket, buckets, totals: bucketTotals(buckets) };
     }).pipe(
       Effect.mapError((cause) =>
         asBackendError("instance profit-daily", cause),

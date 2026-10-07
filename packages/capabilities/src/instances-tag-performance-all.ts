@@ -8,25 +8,31 @@ import {
   type TagPerformanceRow,
 } from "@nfi/api-contract";
 import { defineCapability, parseLimitParam } from "./definition.js";
-import { asBackendError, toBackendError } from "./errors.js";
-import { fleetInstances, perInstance } from "./fleet.js";
+import { asBackendError } from "./errors.js";
+import { fleetInstances } from "./fleet.js";
+import { parseGroupBy } from "./instances-tag-performance.js";
 
 const TagPerformanceAllOptions = Schema.Struct({
   /** Newest closed trades aggregated per instance. Default 200, capped 1000. */
   limit: Schema.optional(Schema.String),
   groupBy: Schema.optional(Schema.String),
+  /** SQL HAVING: only dimensions with at least this many closed trades. */
+  minTrades: Schema.optional(Schema.String),
+  /** SQL ORDER BY: trades | wins | losses | winrate | profitAbs | profitPctAvg. */
+  sortBy: Schema.optional(Schema.String),
+  sortDir: Schema.optional(Schema.Literal("asc", "desc")),
 });
 
 /**
- * `instances.tag-performance-all` — per-tag closed-trade stats across EVERY
- * configured instance (ABSOLUTE profit): each bot's newest trades are
- * aggregated locally (see the freqtrade client's tail window), then the
- * per-tag counters merge into one fleet-wide table.
+ * `instances.tag-performance-all` — closed-trade stats across EVERY
+ * configured instance, computed as one SQL GROUP BY over the mirror
+ * (full-history coverage, no per-instance tail windows to merge).
  *
- * Per-instance failures degrade (their tags simply miss from the totals);
- * only a fleet where every instance failed errors. Never grant publicly:
- * percentages-only callers should grant `instances.tag-performance.relative`
- * instead (single instance).
+ * enter/exit/pair dimensions merge across the fleet into one row per value;
+ * `strategy` groups per (strategy, instance) — fleet strategy tables label
+ * each row `strategy · bot`. Never grant publicly: percentages-only callers
+ * should grant `instances.tag-performance.relative` instead (single
+ * instance).
  */
 export const InstancesTagPerformanceAllCapability = defineCapability({
   name: "instances.tag-performance-all",
@@ -39,88 +45,51 @@ export const InstancesTagPerformanceAllCapability = defineCapability({
   exposes: ["absolute-profit"],
   run: (options, ctx) =>
     Effect.gen(function* () {
-      const limit = parseLimitParam(options.limit, 200, 1000);
-      const groupBy: TagGroupBy = options.groupBy === "exit" ? "exit" : "enter";
+      const groupBy: TagGroupBy = parseGroupBy(options.groupBy);
+      const perInstance = groupBy === "strategy";
       const instances = yield* fleetInstances(ctx);
 
-      const outcomes = yield* perInstance(instances, (instance) =>
-        instance.service.getTagPerformance(limit, groupBy),
+      const nameById = new Map(
+        instances.map((instance) => [instance.id, instance.name] as const),
       );
 
-      const groups = new Map<
-        string,
-        {
-          trades: number;
-          wins: number;
-          losses: number;
-          profitAbs: number;
-          profitPctSum: number;
-        }
-      >();
+      const { rows, totalMatching, totals, best, worst } =
+        yield* ctx.trades.aggregate({
+          instanceId: null,
+          groupBy,
+          search: null,
+          minTrades:
+            options.minTrades === undefined
+              ? null
+              : parseLimitParam(options.minTrades, 1, 1000),
+          sortBy: options.sortBy ?? null,
+          sortDir: options.sortDir ?? "desc",
+          limit: parseLimitParam(options.limit, 200, 1000),
+          perInstance,
+          bestEdgeMinTrades: null,
+        });
 
-      let aggregated = 0;
-      let totalTrades = 0;
-      let totalKnown = false;
-      let failures = 0;
-      let firstError: string | null = null;
-
-      for (const outcome of outcomes) {
-        if (outcome.data === undefined) {
-          failures += 1;
-          firstError = firstError ?? outcome.error ?? "unreachable";
-          continue;
-        }
-
-        for (const row of outcome.data.rows) {
-          const entry = groups.get(row.tag) ?? {
-            trades: 0,
-            wins: 0,
-            losses: 0,
-            profitAbs: 0,
-            profitPctSum: 0,
-          };
-
-          entry.trades += row.trades;
-          entry.wins += row.wins;
-          entry.losses += row.losses;
-          entry.profitAbs += row.profitAbs;
-          entry.profitPctSum += row.profitPctAvg * row.trades;
-          groups.set(row.tag, entry);
-          aggregated += row.trades;
-        }
-
-        if (outcome.data.totalTrades !== undefined) {
-          totalTrades += outcome.data.totalTrades;
-          totalKnown = true;
-        }
-      }
-
-      if (aggregated === 0 && failures > 0 && failures === instances.length) {
-        return yield* Effect.fail(
-          toBackendError(
-            "fleet tag performance",
-            firstError ?? "all instances unreachable",
-          ),
-        );
-      }
-
-      const rows: TagPerformanceRow[] = [...groups.entries()].map(
-        ([tag, g]) => ({
-          tag,
-          trades: g.trades,
-          wins: g.wins,
-          losses: g.losses,
-          winrate: g.trades > 0 ? g.wins / g.trades : 0,
-          profitAbs: g.profitAbs,
-          profitPctAvg: g.trades > 0 ? g.profitPctSum / g.trades : 0,
-        }),
-      );
+      const table: TagPerformanceRow[] = rows.map((row) => ({
+        tag: row.tag,
+        trades: row.trades,
+        wins: row.wins,
+        losses: row.losses,
+        winrate: row.winrate,
+        profitAbs: row.profitAbs,
+        profitPctAvg: row.profitPctAvg,
+        instanceId: row.instanceId ?? undefined,
+        instanceName:
+          row.instanceId === null ? undefined : nameById.get(row.instanceId),
+      }));
 
       return {
         groupBy,
-        rows,
-        aggregatedTrades: aggregated,
-        totalTrades: totalKnown ? totalTrades : undefined,
+        rows: table,
+        aggregatedTrades: table.reduce((sum, row) => sum + row.trades, 0),
+        totalTrades: totalMatching,
+        totals,
+        best: best ?? undefined,
+        worst: worst ?? undefined,
       };
     }).pipe(
       Effect.mapError((cause) =>

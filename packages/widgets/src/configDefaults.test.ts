@@ -123,7 +123,8 @@ describe("widget config schemas", () => {
     expect(
       Schema.decodeUnknownSync(PerformanceStatsConfigSchema)({}),
     ).toMatchObject({
-      limit: 200,
+      // Full-history SQL aggregate: no window limit anymore.
+      instanceId: "default",
     });
     expect(
       Schema.decodeUnknownSync(StrategyBreakdownConfigSchema)({}),

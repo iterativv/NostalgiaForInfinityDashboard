@@ -26,9 +26,9 @@ import { InstanceIdField, numberWithDefault } from "./shared/config";
 import { clampInt } from "./shared/format";
 import { queryState, useWidgetAccess } from "./shared/query";
 import { InstanceSelect } from "./shared/InstanceSelect";
-import { useClosedPositionsSource } from "./shared/sources";
+import { ALL_INSTANCES } from "./shared/InstanceSelect";
+import { useCapability } from "./live/live";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
-import { type ExportColumn } from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -37,8 +37,8 @@ import {
 } from "./shared/widgetSettingsBus";
 
 export const STRATEGY_BREAKDOWN_CAPABILITIES: ReadonlyArray<Capability> = [
-  "instances.closed-positions",
-  "instances.closed-all",
+  "instances.tag-performance",
+  "instances.tag-performance-all",
 ];
 
 export const StrategyBreakdownConfigSchema = Schema.Struct({
@@ -107,11 +107,43 @@ export function StrategyBreakdownWidget({
   const minTrades = clampInt(cfg.minTrades, 1, 0, 100);
   const access = useWidgetAccess(STRATEGY_BREAKDOWN_CAPABILITIES);
 
-  const src = useClosedPositionsSource(cfg.instanceId, limit, {
-    enabled: access.allowed,
-  });
+  // One SQL GROUP BY over the FULL mirror history: strategy is the
+  // dimension, minTrades the HAVING, profit the ORDER BY. Fleet mode groups
+  // per (strategy, instance) server-side — attribution stays unambiguous
+  // without any client-side window.
+  const fleet = cfg.instanceId === ALL_INSTANCES;
 
-  const state = queryState(src.error, src.isLoading);
+  const perInstance = useCapability(
+    "instances.tag-performance",
+    {
+      id: cfg.instanceId,
+      limit: String(limit),
+      groupBy: "strategy",
+      minTrades: String(minTrades),
+      sortBy: "profitAbs",
+      sortDir: "desc",
+    },
+    { enabled: access.allowed && !fleet },
+  );
+
+  const fleetView = useCapability(
+    "instances.tag-performance-all",
+    {
+      limit: String(limit),
+      groupBy: "strategy",
+      minTrades: String(minTrades),
+      sortBy: "profitAbs",
+      sortDir: "desc",
+    },
+    { enabled: access.allowed && fleet },
+  );
+
+  const data = fleet ? fleetView.data : perInstance.data;
+
+  const state = queryState(
+    fleet ? fleetView.error : perInstance.error,
+    fleet ? fleetView.isLoading : perInstance.isLoading,
+  );
 
   const accessError = access.allowed
     ? null
@@ -122,54 +154,16 @@ export function StrategyBreakdownWidget({
   const patch = (p: Partial<StrategyBreakdownConfig>) =>
     applyWidgetSettings(panelId, "strategy-breakdown", cfg, p);
 
-  /** Fleet rows are per-instance; group by (strategy, instance) there. */
-  const fleet = cfg.instanceId === "all";
-
-  const groups = new Map<
-    string,
-    { strategy: string; trades: number; wins: number; profit: number }
-  >();
-
-  for (const p of src.data ?? []) {
-    const name = (p.strategy ?? "unknown").trim() || "unknown";
-    const key = fleet ? `${name}|${p.instanceName ?? ""}` : name;
-
-    const entry = groups.get(key) ?? {
-      strategy: fleet && p.instanceName ? `${name} · ${p.instanceName}` : name,
-      trades: 0,
-      wins: 0,
-      profit: 0,
-    };
-
-    const profit = p.closeProfitAbs ?? p.profitAbs ?? 0;
-    entry.trades += 1;
-
-    if (profit > 0) entry.wins += 1;
-    entry.profit += profit;
-    groups.set(key, entry);
-  }
-
-  const rows: StrategyRow[] = [...groups.entries()]
-    .flatMap(([key, g]) =>
-      g.trades < minTrades
-        ? []
-        : [
-            {
-              key,
-              ...g,
-              winrate: g.trades > 0 ? (g.wins / g.trades) * 100 : 0,
-            },
-          ],
-    )
-    .sort((a, b) => b.profit - a.profit);
-
-  const exportColumns: ReadonlyArray<ExportColumn<StrategyRow>> = [
-    { header: COL.strategy, value: (r) => r.strategy },
-    { header: COL.trades, value: (r) => r.trades },
-    { header: COL.wins, value: (r) => r.wins },
-    { header: COL.winRate, value: (r) => r.winrate },
-    { header: COL.totalProfit, value: (r) => r.profit },
-  ];
+  const rows: StrategyRow[] = (data?.rows ?? []).map((row) => ({
+    key: fleet ? `${row.tag}|${row.instanceId ?? ""}` : row.tag,
+    strategy:
+      fleet && row.instanceName ? `${row.tag} · ${row.instanceName}` : row.tag,
+    trades: row.trades,
+    wins: row.wins,
+    profit: row.profitAbs,
+    // Repo winrate is a 0..1 fraction; the table shows percent.
+    winrate: row.winrate * 100,
+  }));
 
   return (
     <>
@@ -221,8 +215,18 @@ export function StrategyBreakdownWidget({
               label="Strategy breakdown table actions"
               exportMenu={{
                 filenameBase: `strategy-breakdown-${cfg.instanceId}`,
-                columns: exportColumns,
-                rows,
+                dataset: "tag-performance",
+                params: {
+                  instanceId:
+                    cfg.instanceId === ALL_INSTANCES
+                      ? undefined
+                      : cfg.instanceId,
+                  groupBy: "strategy",
+                  minTrades,
+                  sortBy: "profitAbs",
+                  sortDir: "desc",
+                },
+                disabled: rows.length === 0,
               }}
             />
             <div className="nfi-table-scroll">

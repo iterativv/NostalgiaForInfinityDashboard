@@ -20,6 +20,7 @@ import { loadServerConfig } from "../config.js";
 import { buildCapabilityContext } from "./context.js";
 import { POLL_TICK_MS, SNAPSHOT_THROTTLE_MS } from "./feed.js";
 import { liveHub } from "./hub.js";
+import { syncTradesTick } from "./tradesSync.js";
 
 /**
  * Live poller — the ONLY interval in the system.
@@ -157,6 +158,15 @@ const snapshotDefaultInstance = (ctx: CapabilityContext): Effect.Effect<void> =>
     );
   });
 
+/**
+ * Hard ceiling for one tick. Work inside a tick is failure-isolated per key
+ * and per instance, but a stall that slips past all of them would stop the
+ * `Effect.forever` loop — no snapshots, no trades mirror, no live refreshes,
+ * while HTTP keeps serving from other fibers. The ceiling keeps the
+ * cadence self-healing: a timed-out tick logs once and the next one runs.
+ */
+const TICK_TIMEOUT_MS = 60_000;
+
 const tick = Effect.gen(function* () {
   const ctx = yield* buildCapabilityContext;
 
@@ -184,6 +194,15 @@ const tick = Effect.gen(function* () {
   // sqlite history is continuous across restarts and idle periods.
   liveHub.track("bot.profit", {});
   liveHub.track("bot.balance", {});
+
+  // Trades mirror sync (per-instance throttled inside): feeds the SQL layer
+  // every table capability filters through. No-op when throttles hold.
+  yield* syncTradesTick(ctx, instances).pipe(
+    Effect.catchAllCause((cause) =>
+      Effect.logWarning("trades sync tick failed, skipping", cause),
+    ),
+  );
+
   const now = Date.now();
 
   const due = liveHub
@@ -217,6 +236,14 @@ const tick = Effect.gen(function* () {
     lastSnapshotMs = now;
   }
 }).pipe(
+  Effect.timeoutFail({
+    duration: TICK_TIMEOUT_MS,
+    onTimeout: () =>
+      BackendError.make({
+        error: "live tick timed out",
+        detail: `over ${Math.round(TICK_TIMEOUT_MS / 1000)}s — work was interrupted, next tick proceeds`,
+      }),
+  }),
   Effect.catchAllCause((cause) =>
     Effect.logWarning("live tick failed, skipping", cause),
   ),

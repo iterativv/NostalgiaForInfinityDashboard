@@ -31,6 +31,23 @@ export const matchesSearch = (
   fields.some((field) => (field ?? "").toLowerCase().includes(needle));
 
 /**
+ * Identifier fields for the position search matchers: the trade id plus
+ * every sub-order's exchange order id, so typing an order or trade id
+ * surfaces its row (the tables display both — "Trade ID" and the
+ * expansion's "Order ID" column). `orders` is optional on the payloads.
+ */
+export const positionIdFields = (
+  tradeId: number,
+  orders: ReadonlyArray<{ readonly orderId: string }> | undefined,
+): ReadonlyArray<string> => {
+  const fields = [String(tradeId)];
+
+  for (const order of orders ?? []) fields.push(order.orderId);
+
+  return fields;
+};
+
+/**
  * Filter rows server-side, preserving order. Always returns a fresh array —
  * snapshots are re-decoded per poll frame anyway, so reference stability
  * buys nothing here and the mutable result satisfies the response schemas.

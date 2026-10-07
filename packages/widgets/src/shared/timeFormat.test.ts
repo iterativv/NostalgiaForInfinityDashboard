@@ -14,6 +14,14 @@ import {
   timeFormatStore,
 } from "./timeFormat";
 
+/**
+ * Expectations are TZ-INDEPENDENT on purpose: the formatters render
+ * UTC-pinned instants in the browser's local zone, so absolute wall-clock
+ * strings vary with the machine running the tests. The invariants pinned
+ * here are preset SHAPES, garbage rejection, and — the UTC boundary —
+ * freqtrade's naive `YYYY-MM-DD HH:mm:ss` strings formatting IDENTICALLY
+ * to their UTC-annotated twins.
+ */
 describe("timeFormat", () => {
   afterEach(() => {
     setTimeFormat(DEFAULT_TIME_FORMAT);
@@ -30,14 +38,17 @@ describe("timeFormat", () => {
   it("defaults to ISO 8601 (24h, no seconds)", () => {
     // localStorage holds no format in vitest → default preset.
     expect(timeFormatStore.state).toBe(DEFAULT_TIME_FORMAT);
-    expect(formatDateTime("2026-09-26 05:35:07")).toBe("2026-09-26 05:35");
+    expect(formatDateTime("2026-09-26 05:35:07")).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/,
+    );
     expect(formatDateTime("2026-09-26 05:35:07")).not.toMatch(/AM|PM/);
   });
 
-  it("parses freqtrade space-separated dates and rejects garbage", () => {
+  it("parses freqtrade space-separated dates like their UTC twins", () => {
     expect(formatDateTime("not-a-date")).toBe("—");
-    expect(formatDateTime("2026-09-26 05:35:07")).toMatch(
-      /^2026-09-26 05:35$/,
+    // The naive string and the same UTC instant must agree in every zone.
+    expect(formatDateTime("2026-09-26 05:35:07")).toBe(
+      formatDateTime("2026-09-26T05:35:07Z"),
     );
   });
 
@@ -45,35 +56,39 @@ describe("timeFormat", () => {
     const input = "2026-09-26 14:05:09";
 
     setTimeFormat("iso-8601-seconds");
-    expect(formatDateTime(input)).toBe("2026-09-26 14:05:09");
+    expect(formatDateTime(input)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 
     setTimeFormat("eu-24h");
-    expect(formatDateTime(input)).toBe("26/09/2026 14:05");
+    expect(formatDateTime(input)).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
 
     setTimeFormat("eu-12h");
-    expect(formatDateTime(input)).toBe("26/09/2026 2:05 PM");
+    expect(formatDateTime(input)).toMatch(
+      /^\d{2}\/\d{2}\/\d{4} \d{1,2}:\d{2} [AP]M$/,
+    );
 
     setTimeFormat("us-12h");
-    expect(formatDateTime(input)).toBe("09/26/2026 2:05 PM");
+    expect(formatDateTime(input)).toMatch(
+      /^\d{2}\/\d{2}\/\d{4} \d{1,2}:\d{2} [AP]M$/,
+    );
 
     setTimeFormat("us-24h");
-    expect(formatDateTime(input)).toBe("09/26/2026 14:05");
+    expect(formatDateTime(input)).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
 
     setTimeFormat("readable-24h");
-    expect(formatDateTime(input)).toBe("26 Sep 2026 14:05");
+    expect(formatDateTime(input)).toMatch(/^\d{1,2} Sep \d{4} \d{2}:\d{2}$/);
   });
 
   it("formats date-only and time-only views per preset", () => {
     const input = "2026-09-26 14:05:09";
 
-    expect(formatDateOnly(input)).toBe("2026-09-26");
-    expect(formatTimeOnly(input)).toBe("14:05");
-    expect(formatTimePrecise(input)).toBe("14:05:09");
+    expect(formatDateOnly(input)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(formatTimeOnly(input)).toMatch(/^\d{2}:\d{2}$/);
+    expect(formatTimePrecise(input)).toMatch(/^\d{2}:\d{2}:\d{2}$/);
 
     setTimeFormat("us-12h");
-    expect(formatDateOnly(input)).toBe("09/26/2026");
-    expect(formatTimeOnly(input)).toBe("2:05 PM");
-    expect(formatTimePrecise(input)).toBe("2:05:09 PM");
+    expect(formatDateOnly(input)).toMatch(/^\d{2}\/\d{2}\/\d{4}$/);
+    expect(formatTimeOnly(input)).toMatch(/^\d{1,2}:\d{2} [AP]M$/);
+    expect(formatTimePrecise(input)).toMatch(/^\d{1,2}:\d{2}:\d{2} [AP]M$/);
   });
 
   it("returns em-dash for missing input", () => {

@@ -318,6 +318,90 @@ describe("preset arrangement", () => {
     expect(cellsIn(preset("stack").arrange(makeGroups(3)))).toEqual([1, 1, 1]);
   });
 
+  it("declares a dedicated Tetris section of wall presets", () => {
+    const tetris = GRID_PRESETS.filter((p) => p.section === "Tetris");
+
+    expect(tetris.map((p) => p.id)).toEqual([
+      "tetris-wall",
+      "tetris-pairs",
+      "tetris-triples",
+      "tetris-hero",
+      "tetris-brick",
+      "tetris-mosaic",
+    ]);
+    expect(tetris.every((p) => p.tetris === true)).toBe(true);
+    // The mode-only preset never rebuilds the page; the shapes do.
+    expect(isPresetUsable(preset("tetris-wall"), 0)).toBe(true);
+    expect(isPresetUsable(preset("tetris-wall"), 1)).toBe(true);
+  });
+
+  it("packs tetris pairs two blocks across every shelf", () => {
+    const node = preset("tetris-pairs").arrange(makeGroups(5));
+
+    expect(node.kind).toBe("column");
+    expect(cellsIn(node)).toEqual([1, 1, 1, 1, 1]);
+
+    if (node.kind === "column") {
+      expect(
+        node.children.map((row) =>
+          row.kind === "row" ? row.weights : undefined,
+        ),
+      ).toEqual([[3, 3], [3, 3], [3]]);
+    }
+  });
+
+  it("cycles tetris brick and mosaic shelves across any count", () => {
+    const brick = preset("tetris-brick").arrange(makeGroups(5));
+
+    if (brick.kind === "column") {
+      expect(
+        brick.children.map((row) =>
+          row.kind === "row" ? row.weights : undefined,
+        ),
+      ).toEqual([[4, 2], [2, 4], [4]]);
+    }
+
+    const mosaic = preset("tetris-mosaic").arrange(makeGroups(7));
+
+    if (mosaic.kind === "column") {
+      expect(
+        mosaic.children.map((row) =>
+          row.kind === "row" ? row.weights : undefined,
+        ),
+      ).toEqual([[4, 2], [2, 2, 2], [3, 3]]);
+    }
+  });
+
+  it("gives tetris hero a full-width first shelf", () => {
+    const node = preset("tetris-hero").arrange(makeGroups(4));
+
+    expect(cellsIn(node)).toEqual([1, 1, 1, 1]);
+
+    if (node.kind === "column") {
+      // Pattern cycles: hero, pairs, hero again — the lone tail renders
+      // full-width rather than hanging at half width.
+      expect(
+        node.children.map((row) =>
+          row.kind === "row" ? row.weights : undefined,
+        ),
+      ).toEqual([[6], [3, 3], [6]]);
+    }
+  });
+
+  it("renders one fillable slot when a tetris shape meets an empty page", () => {
+    for (const id of [
+      "tetris-wall",
+      "tetris-pairs",
+      "tetris-triples",
+      "tetris-hero",
+      "tetris-brick",
+      "tetris-mosaic",
+    ]) {
+      expect(cellsIn(preset(id).arrange([]))).toEqual([0]);
+      expect(previewSummary(previewForPreset(preset(id), []))).toBe("empty");
+    }
+  });
+
   it("lays four slots across one row", () => {
     expect(cellsIn(preset("four-across").arrange(makeGroups(2)))).toEqual([
       1, 1, 0, 0,
@@ -362,7 +446,8 @@ describe("preset arrangement", () => {
 
   it("every preset yields at least one fillable slot on an empty page", () => {
     for (const p of GRID_PRESETS) {
-      if (p.id === "stack") continue; // degenerate by design; wrapped at apply
+      // `stack` degenerates by design (wrapped at apply).
+      if (p.id === "stack") continue;
 
       const cells = cellsIn(p.arrange([]));
 

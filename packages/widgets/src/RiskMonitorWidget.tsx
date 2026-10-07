@@ -4,22 +4,19 @@
 /**
  * Risk monitor — exposure, leverage and concentration guardrails.
  *
- * Combines balance (capital) with open positions (risk): exposure ratio,
- * unrealized PnL, max leverage, long/short split and the largest position.
- * Thresholds are display hints (warn/critical) stored per panel.
+ * `instances.exposure` computes the open-book metrics (deployed stake,
+ * unrealized PnL, max leverage, long/short split, largest position) as one
+ * SQL aggregate over the mirror; the wallet capital comes from the live
+ * balance/overview read. The exposure ratio is the one display-time
+ * division left — both operands are server-computed. Thresholds are
+ * display hints (warn/critical) stored per panel.
  */
 
 import { NumberInput, Tag } from "@carbon/react";
 import { Schema } from "effect";
 import type { Capability } from "@nfi/api-contract";
 import { defineWidget, type WidgetProps } from "@nfi/widget-sdk";
-import {
-  EmptyState,
-  shallow,
-  Stat,
-  useDerived,
-  WidgetFrame,
-} from "@nfi/ui";
+import { EmptyState, shallow, Stat, useDerived, WidgetFrame } from "@nfi/ui";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import { InstanceIdField, numberWithDefault } from "./shared/config";
@@ -27,7 +24,6 @@ import { useCompactMode } from "./shared/size";
 import { clampInt } from "./shared/format";
 import { queryState, useWidgetAccess } from "./shared/query";
 import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
-import { useOpenPositionsSource } from "./shared/sources";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
 import {
   closeWidgetSettings,
@@ -35,11 +31,10 @@ import {
 } from "./shared/widgetSettingsBus";
 
 export const RISK_MONITOR_CAPABILITIES: ReadonlyArray<Capability> = [
-  "instances.open-positions",
+  // SQL open-book aggregate (deployed/unrealized/leverage/sides/largest).
+  "instances.exposure",
   "instances.balance",
-  // Fleet mode (`instanceId: "all"`): positions/capital come from the
-  // fleet aggregates instead of the per-instance reads.
-  "instances.positions-all",
+  // Fleet mode (`instanceId: "all"`): capital comes from the fleet totals.
   "instances.overview",
 ];
 
@@ -65,9 +60,11 @@ export function RiskMonitorWidget({
   const fleet = cfg.instanceId === ALL_INSTANCES;
   const access = useWidgetAccess(RISK_MONITOR_CAPABILITIES);
 
-  const openSrc = useOpenPositionsSource(cfg.instanceId, {
-    enabled: access.allowed,
-  });
+  const exposure = useCapability(
+    "instances.exposure",
+    { id: fleet ? undefined : cfg.instanceId },
+    { enabled: access.allowed },
+  );
 
   const perBalance = useCapability(
     "instances.balance",
@@ -82,12 +79,12 @@ export function RiskMonitorWidget({
   );
 
   const error = fleet
-    ? (overview.error ?? openSrc.error)
-    : (openSrc.error ?? perBalance.error);
+    ? (overview.error ?? exposure.error)
+    : (exposure.error ?? perBalance.error);
 
   const isLoading = fleet
-    ? overview.isLoading || openSrc.isLoading
-    : openSrc.isLoading || perBalance.isLoading;
+    ? overview.isLoading || exposure.isLoading
+    : exposure.isLoading || perBalance.isLoading;
 
   const state = queryState(error, isLoading);
 
@@ -105,49 +102,29 @@ export function RiskMonitorWidget({
     ? (overview.data?.totals.totalStake ?? 0)
     : (perBalance.data?.totalStake ?? 0);
 
-  // Derived through a store: single-pass aggregation (no spread Math.max
-  // over the position list) reruns only when positions or capital change,
-  // so store/resize re-renders stay cheap.
+  // Derived through a store: the display ratio reruns only when the SQL
+  // aggregate or the capital read changes, so store/resize re-renders
+  // stay cheap.
   const risk = useDerived(
-    [openSrc.data, capitalBase] as const,
-    ([positionsData, capital]) => {
-      const positions = positionsData ?? [];
-      let deployed = 0;
-      let unrealized = 0;
-      let maxLev = 1;
-      let longs = 0;
-      let shorts = 0;
-      let largest = 0;
-
-      for (const p of positions) {
-        deployed += p.stakeAmount;
-        unrealized += p.profitAbs ?? 0;
-        const lev = p.leverage ?? 1;
-
-        if (lev > maxLev) maxLev = lev;
-
-        if (p.isShort) shorts += 1;
-        else longs += 1;
-
-        if (p.stakeAmount > largest) largest = p.stakeAmount;
-      }
+    [exposure.data, capitalBase] as const,
+    ([payload, capital]) => {
+      const summary = payload?.summary;
+      const positions = summary?.positions ?? 0;
+      const deployed = summary?.deployed ?? 0;
 
       return {
         positions,
         deployed,
         capital,
         exposurePct:
-          capital > 0
-            ? (deployed / capital) * 100
-            : positions.length > 0
-              ? 100
-              : 0,
-        unrealized,
-        maxLev,
-        longs,
-        shorts,
-        largest,
-        largestPct: deployed > 0 ? (largest / deployed) * 100 : 0,
+          capital > 0 ? (deployed / capital) * 100 : positions > 0 ? 100 : 0,
+        unrealized: summary?.unrealized ?? 0,
+        maxLev: summary?.maxLeverage ?? 1,
+        longs: summary?.longs ?? 0,
+        shorts: summary?.shorts ?? 0,
+        largest: summary?.largestStake ?? 0,
+        largestPct:
+          deployed > 0 ? ((summary?.largestStake ?? 0) / deployed) * 100 : 0,
       };
     },
     { inputs: shallow },
@@ -216,7 +193,7 @@ export function RiskMonitorWidget({
         isLoading={state.isLoading}
         error={accessError ?? state.error}
       >
-        {positions.length > 0 || capital > 0 ? (
+        {positions > 0 || capital > 0 ? (
           <div
             style={{
               display: "flex",
@@ -244,7 +221,7 @@ export function RiskMonitorWidget({
                 sub={
                   capital > 0
                     ? `of ${capital.toFixed(2)} capital`
-                    : `${positions.length} open`
+                    : `${positions} open`
                 }
               />
               <Stat

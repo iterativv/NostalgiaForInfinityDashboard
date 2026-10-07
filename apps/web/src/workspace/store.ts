@@ -56,6 +56,7 @@ import {
 import { widgetRegistry } from "./registry";
 import { buildDefaultWorkspace } from "./defaultWorkspace";
 import { migrateGridToAuto } from "./layouts";
+import { TETRIS_COLUMNS } from "./tetris";
 import {
   addFloatingTab,
   cascadePosition,
@@ -81,7 +82,7 @@ import {
   refreshPresetWorkspace,
   type PageIconKey,
 } from "./pages";
-import { clearPendingSlotLayout } from "./TrellisPresets";
+import { clearPendingSlotLayout } from "./pendingSlot";
 
 /**
  * Frontend workspace store — the single owner of interactive workspace state.
@@ -1306,6 +1307,207 @@ export function setPageIcon(pageId: string, icon: PageIconKey | undefined): bool
     pages: state.pages.map((p) =>
       p.id === pageId ? { ...p, icon: icon ?? fallbackIcon } : p,
     ),
+    ...(isHome && state.activePageId === pageId
+      ? {
+          status: "saved" as const,
+          detail: null,
+          lastSavedAt: new Date().toISOString(),
+        }
+      : null),
+  }));
+
+  if (previewing) return true;
+
+  if (workspaceStore.state.activePageId === pageId) {
+    if (
+      !isHome ||
+      capabilitiesStore.state.granted.includes("workspace.save")
+    ) {
+      schedulePersist();
+    }
+  } else {
+    if (
+      !isHome ||
+      capabilitiesStore.state.granted.includes("workspace.save")
+    ) {
+      void runApi((client) =>
+        client.Workspace.save({
+          path: { id: next.id },
+          payload: { workspace: next },
+        }),
+      ).catch(() => undefined);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Toggle a page's Tetris wall mode (`Workspace.stacked`): panes render as
+ * different-width blocks packed into top-aligned shelves — a scrolling wall
+ * at their active tab's natural height — instead of the tiled one-screen
+ * stage. Persists like a rename (active page via autosave, inactive
+ * directly, Home locally + shared). A no-op that persists nothing when the
+ * flag already matches — preset applies call this defensively on every
+ * shape change, so false→false must not churn versions.
+ */
+export function setWorkspaceStacked(pageId: string, stacked: boolean): boolean {
+  const cached = pageCache.get(pageId);
+
+  if (!cached || (cached.stacked === true) === stacked) return false;
+  snapshotPreviewBase(cached);
+
+  const next: Workspace = {
+    ...cached,
+    stacked,
+    version: cached.version + 1,
+  };
+
+  pageCache.set(pageId, next);
+  const isHome = isHomePageId(pageId);
+  const previewing = isViewAsActive();
+
+  if (isHome && !previewing) saveHomePageLocal(next);
+
+  workspaceStore.setState((state) => ({
+    ...state,
+    workspace: state.activePageId === pageId ? next : state.workspace,
+    ...(isHome && state.activePageId === pageId
+      ? {
+          status: "saved" as const,
+          detail: null,
+          lastSavedAt: new Date().toISOString(),
+        }
+      : null),
+  }));
+
+  if (previewing) return true;
+
+  if (workspaceStore.state.activePageId === pageId) {
+    if (
+      !isHome ||
+      capabilitiesStore.state.granted.includes("workspace.save")
+    ) {
+      schedulePersist();
+    }
+  } else {
+    if (
+      !isHome ||
+      capabilitiesStore.state.granted.includes("workspace.save")
+    ) {
+      void runApi((client) =>
+        client.Workspace.save({
+          path: { id: next.id },
+          payload: { workspace: next },
+        }),
+      ).catch(() => undefined);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Record a manual Tetris wall block width (panelId → column span) after a
+ * resize drag. The wall is a pure render override over the Trellis
+ * document, so these widths persist OUTSIDE it — on the workspace record
+ * (like `stacked`), shared to the backend for every visitor. Stale entries
+ * for closed panels are harmless (the wall only reads ids it places);
+ * preset applies that rebuild the shape clear the map instead.
+ */
+export function setWorkspacePanelSpan(
+  pageId: string,
+  panelId: string,
+  span: number,
+): boolean {
+  const cached = pageCache.get(pageId);
+
+  if (!cached) return false;
+
+  const clamped = Math.max(
+    1,
+    Math.min(TETRIS_COLUMNS, Math.round(span)),
+  );
+
+  if (cached.tetrisSpans?.[panelId] === clamped) return false;
+
+  snapshotPreviewBase(cached);
+
+  const next: Workspace = {
+    ...cached,
+    tetrisSpans: { ...cached.tetrisSpans, [panelId]: clamped },
+    version: cached.version + 1,
+  };
+
+  pageCache.set(pageId, next);
+  const isHome = isHomePageId(pageId);
+  const previewing = isViewAsActive();
+
+  if (isHome && !previewing) saveHomePageLocal(next);
+
+  workspaceStore.setState((state) => ({
+    ...state,
+    workspace: state.activePageId === pageId ? next : state.workspace,
+    ...(isHome && state.activePageId === pageId
+      ? {
+          status: "saved" as const,
+          detail: null,
+          lastSavedAt: new Date().toISOString(),
+        }
+      : null),
+  }));
+
+  if (previewing) return true;
+
+  if (workspaceStore.state.activePageId === pageId) {
+    if (
+      !isHome ||
+      capabilitiesStore.state.granted.includes("workspace.save")
+    ) {
+      schedulePersist();
+    }
+  } else {
+    if (
+      !isHome ||
+      capabilitiesStore.state.granted.includes("workspace.save")
+    ) {
+      void runApi((client) =>
+        client.Workspace.save({
+          path: { id: next.id },
+          payload: { workspace: next },
+        }),
+      ).catch(() => undefined);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Drop every manual Tetris wall width for a page — grid presets that
+ * REBUILD the page shape call this so a resized block can't fight the
+ * fresh arrangement ("Tetris wall", the mode-only re-pack, keeps them).
+ * A no-op that persists nothing when no widths are recorded.
+ */
+export function clearWorkspaceTetrisSpans(pageId: string): boolean {
+  const cached = pageCache.get(pageId);
+
+  if (!cached || cached.tetrisSpans === undefined) return false;
+
+  snapshotPreviewBase(cached);
+
+  const { tetrisSpans: _dropped, ...rest } = cached;
+  const next: Workspace = { ...rest, version: cached.version + 1 };
+
+  pageCache.set(pageId, next);
+  const isHome = isHomePageId(pageId);
+  const previewing = isViewAsActive();
+
+  if (isHome && !previewing) saveHomePageLocal(next);
+
+  workspaceStore.setState((state) => ({
+    ...state,
+    workspace: state.activePageId === pageId ? next : state.workspace,
     ...(isHome && state.activePageId === pageId
       ? {
           status: "saved" as const,

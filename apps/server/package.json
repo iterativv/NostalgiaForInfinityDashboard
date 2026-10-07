@@ -16,8 +16,10 @@
     "@nfi/api-contract": "workspace:*",
     "@nfi/capabilities": "workspace:*",
     "@nfi/db": "workspace:*",
+    "@nfi/export-core": "workspace:*",
     "@nfi/freqtrade-client": "workspace:*",
-    "effect": "^3.22.2"
+    "effect": "^3.22.2",
+    "xlsx": "file:../../packages/widgets/vendor/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@repo/eslint-config": "workspace:*",

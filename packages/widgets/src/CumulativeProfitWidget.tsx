@@ -4,6 +4,12 @@
 /**
  * Running total of closed-trade profit per instance, drawn as a Carbon line
  * chart over close time.
+ *
+ * `instances.cumulative-profit` computes the running sums in SQL window
+ * functions over the FULL closed history and returns the newest tail per
+ * series — the widget only maps points onto the chart (the old widget
+ * accumulated a fetched window client-side, so both the curve and its
+ * headline started wherever the window began).
  */
 
 import { NumberInput } from "@carbon/react";
@@ -25,11 +31,10 @@ import {
 } from "./shared/config";
 import { dimColor, useInstanceColors } from "./shared/instanceColors";
 import { useCompactMode } from "./shared/size";
-import { clampInt, parseCloseDate, pnlTone } from "./shared/format";
+import { clampInt, pnlTone } from "./shared/format";
 import { chartTimeFormats, useTimeFormat } from "./shared/timeFormat";
 import { queryState } from "./shared/query";
-import { InstanceSelect } from "./shared/InstanceSelect";
-import { useClosedPositionsSource } from "./shared/sources";
+import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
 import {
@@ -55,8 +60,14 @@ export function CumulativeProfitWidget({
 }: WidgetProps<CumulativeProfitConfig>) {
   const cfg = config;
   const limit = clampInt(cfg.limit, 200, 10, 500);
-  const fleet = cfg.instanceId === "all";
-  const closedQ = useClosedPositionsSource(cfg.instanceId, limit);
+  const fleet = cfg.instanceId === ALL_INSTANCES;
+
+  // SQL running sums over the full closed history; only the newest `limit`
+  // points per series cross the wire.
+  const view = useCapability("instances.cumulative-profit", {
+    id: fleet ? undefined : cfg.instanceId,
+    limit: String(limit),
+  });
 
   // `instances.profit` has no fleet aggregate — the header stat only applies per instance.
   const profit = useCapability(
@@ -65,7 +76,7 @@ export function CumulativeProfitWidget({
     { enabled: cfg.instanceId !== "all" },
   );
 
-  const state = queryState(closedQ.error, closedQ.isLoading);
+  const state = queryState(view.error, view.isLoading);
   const showSettings = useWidgetSettingsOpen(panelId);
   const { colorOf } = useInstanceColors();
 
@@ -74,68 +85,47 @@ export function CumulativeProfitWidget({
 
   const stake = profit.data?.stakeCurrency ?? "";
 
-  // Fleet mode attributes every closed trade to its bot and draws one
-  // cumulative line PER instance (colored) — absolute profit is summable,
-  // but per-bot curves answer "which instance earned this". Single mode
-  // keeps the classic Cumulative/Per-trade pair.
-  const byInstance = new Map<string, Array<{ at: number; profit: number }>>();
-
-  for (const p of closedQ.data ?? []) {
-    const at = parseCloseDate(p.closeDate);
-
-    if (at === null) continue;
-    const key = fleet ? (p.instanceId ?? p.instanceName ?? "unknown") : "sole";
-    const list = byInstance.get(key) ?? [];
-    list.push({ at, profit: p.closeProfitAbs ?? p.profitAbs ?? 0 });
-    byInstance.set(key, list);
-  }
-
+  // Fleet mode draws one cumulative line PER instance (colored) — absolute
+  // profit is summable, but per-bot curves answer "which instance earned
+  // this". Single mode keeps the classic Cumulative/Per-trade pair.
   const series: Array<{ group: string; date: string; value: number }> = [];
   const colorScale: Record<string, string> = {};
-  let windowProfit = 0;
+  let totalProfit = 0;
   let tradeCount = 0;
 
-  for (const [key, points] of byInstance) {
-    points.sort((a, b) => a.at - b.at);
-    tradeCount += points.length;
-
-    const row = (closedQ.data ?? []).find(
-      (p) => (p.instanceId ?? p.instanceName ?? "unknown") === key,
-    );
-
+  for (const entry of view.data?.series ?? []) {
     const label = fleet
-      ? (row?.instanceName ?? row?.instanceId ?? key)
+      ? (entry.instanceName ?? entry.instanceId ?? "unknown")
       : "Cumulative";
 
-    const color = fleet ? colorOf(key) : null;
-    let running = 0;
+    const color = fleet
+      ? colorOf(entry.instanceId ?? entry.instanceName ?? label)
+      : null;
 
     if (color) colorScale[label] = color;
 
+    totalProfit += entry.totalProfit;
+    tradeCount += entry.trades;
+
     if (cfg.showCumulative) {
-      for (const point of points) {
-        running += point.profit;
+      for (const point of entry.points) {
         series.push({
           group: label,
-          date: new Date(point.at).toISOString(),
-          value: running,
+          date: point.at,
+          value: point.cumulative,
         });
       }
-    } else {
-      running = points.reduce((sum, point) => sum + point.profit, 0);
     }
-
-    windowProfit += running;
 
     if (cfg.showPerTrade) {
       const perLabel = fleet ? `${label} · trades` : "Per trade";
 
       if (color) colorScale[perLabel] = dimColor(color);
 
-      for (const point of points) {
+      for (const point of entry.points) {
         series.push({
           group: perLabel,
-          date: new Date(point.at).toISOString(),
+          date: point.at,
           value: point.profit,
         });
       }
@@ -218,9 +208,10 @@ export function CumulativeProfitWidget({
           >
             {!compact ? (
               <Stat
-                label={`Window profit (${tradeCount} trades)`}
-                value={`${windowProfit >= 0 ? "+" : ""}${windowProfit.toFixed(2)}${stake ? ` ${stake}` : ""}`}
-                tone={pnlTone(windowProfit)}
+                label={`Total profit (${tradeCount} trades)`}
+                value={`${totalProfit >= 0 ? "+" : ""}${totalProfit.toFixed(2)}${stake ? ` ${stake}` : ""}`}
+                tone={pnlTone(totalProfit)}
+                sub="full closed history"
               />
             ) : null}
             <ChartBox min={compact ? 150 : 200}>
@@ -251,11 +242,7 @@ export const CumulativeProfitWidgetDef = defineWidget({
   configSchema: CumulativeProfitConfigSchema,
   defaultConfig: CUMULATIVE_PROFIT_DEFAULTS,
   component: CumulativeProfitWidget,
-  capabilities: [
-    "instances.closed-positions",
-    "instances.profit",
-    "instances.closed-all",
-  ],
+  capabilities: ["instances.cumulative-profit", "instances.profit"],
   minWidth: 450,
   minHeight: 300,
   defaultWidth: 450,

@@ -1,68 +1,75 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import {
   FleetLocksResponse,
   type TaggedPairLock,
 } from "@nfi/api-contract";
-import { defineCapability, NoOptions } from "./definition.js";
-import { toBackendError } from "./errors.js";
-import { fleetInstances, perInstance } from "./fleet.js";
+import { defineCapability } from "./definition.js";
+import { asBackendError } from "./errors.js";
+import { fleetInstances } from "./fleet.js";
+
+const FleetLocksOptions = Schema.Struct({
+  /** SQL WHERE: expired locks stay in the mirror but out of the response
+   * unless asked for (the widget's show-expired toggle). */
+  includeExpired: Schema.optional(Schema.String),
+});
+
+/** One instance's locks tagged with their source instance (fleet views). */
+interface LockGroup {
+  rows: TaggedPairLock[];
+  countOnRecord: number;
+}
 
 /**
  * `instances.locks-all` — pair locks across every configured instance,
- * each tagged with its source instance. Per-instance failures degrade;
- * only a total fleet failure fails the capability.
+ * each tagged with its source instance, read from the mirror with the
+ * expiry filter as a SQL clause per instance (assembly-only handler).
  */
 export const InstancesLocksAllCapability = defineCapability({
   name: "instances.locks-all",
-  optionsSchema: NoOptions,
+  optionsSchema: FleetLocksOptions,
   resultSchema: FleetLocksResponse,
   description: "Pair locks across all instances, tagged per instance.",
   streamable: true,
   pollMs: 30_000,
   exposes: ["bot-state"],
-  run: (_options, ctx) =>
+  run: (options, ctx) =>
     Effect.gen(function* () {
       const instances = yield* fleetInstances(ctx);
 
-      const outcomes = yield* perInstance(instances, (instance) =>
-        instance.service.getLocks(),
+      const perInstanceLocks = yield* Effect.forEach(
+        instances,
+        (instance) =>
+          ctx.trades
+            .listLocks({
+              instanceId: instance.id,
+              includeExpired: options.includeExpired === "true",
+            })
+            .pipe(
+              Effect.map(({ locks, countOnRecord }): LockGroup => ({
+                countOnRecord,
+                rows: locks.map((lock) => ({
+                  ...lock,
+                  instanceId: instance.id,
+                  instanceName: instance.name,
+                })),
+              })),
+              Effect.catchAll(() => Effect.succeed({ rows: [], countOnRecord: 0 })),
+            ),
+        { concurrency: 4 },
       );
 
-      const locks: TaggedPairLock[] = [];
-      let failures = 0;
-      let firstError: string | null = null;
+      const groups = perInstanceLocks.filter(
+        (g): g is { rows: TaggedPairLock[]; countOnRecord: number } => g !== null,
+      );
 
-      for (const outcome of outcomes) {
-        if (outcome.data !== undefined) {
-          for (const lock of outcome.data.locks) {
-            locks.push({
-              ...lock,
-              instanceId: outcome.instance.id,
-              instanceName: outcome.instance.name,
-            });
-          }
-        } else {
-          failures += 1;
-          firstError = firstError ?? outcome.error ?? "unreachable";
-        }
-      }
-
-      if (
-        locks.length === 0 &&
-        failures > 0 &&
-        failures === instances.length
-      ) {
-        return yield* Effect.fail(
-          toBackendError(
-            "fleet locks",
-            firstError ?? "all instances unreachable",
-          ),
-        );
-      }
-
-      return { locks };
-    }).pipe(Effect.mapError((cause) => toBackendError("fleet locks", cause))),
+      return {
+        locks: groups.flatMap((group) => group.rows),
+        countOnRecord: groups.reduce((sum, group) => sum + group.countOnRecord, 0),
+      };
+    }).pipe(
+    Effect.mapError((cause) => asBackendError("fleet locks", cause)),
+  ),
 });

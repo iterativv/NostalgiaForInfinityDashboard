@@ -6,21 +6,29 @@ import {
   FleetOpenPositionsResponse,
   type TaggedOpenPosition,
 } from "@nfi/api-contract";
-import { defineCapability } from "./definition.js";
-import { toBackendError } from "./errors.js";
-import { fleetInstances, perInstance } from "./fleet.js";
-import { applySearch } from "./search.js";
+import { defineCapability, parseLimitParam } from "./definition.js";
+import { asBackendError } from "./errors.js";
+import { fleetInstances } from "./fleet.js";
+import { normalizeSearch } from "./search.js";
 
 const PositionsAllOptions = Schema.Struct({
-  /** Free-text filter applied server-side, before any slicing. */
+  /** Free-text filter — a SQL WHERE over the mirror (instance names
+   * included via fleet name matching). */
   search: Schema.optional(Schema.String),
+  /** SQL ORDER BY key; absent keeps open-date order (newest first). */
+  sort: Schema.optional(Schema.Literal("profitPct")),
+  dir: Schema.optional(Schema.Literal("asc", "desc")),
+  /** SQL LIMIT after sort/filter (absent = every open position). */
+  limit: Schema.optional(Schema.String),
+  /** Sign partition on the live profit percent (SQL WHERE). */
+  filter: Schema.optional(Schema.Literal("gain", "loss")),
 });
 
 /**
  * `instances.positions-all` — open positions across every configured
- * instance, each tagged with its source instance. Reachable instances
- * contribute their positions; unreachable ones are skipped (per-instance
- * failures degrade, only a total fleet failure fails the capability).
+ * instance, each tagged with its source instance, queried from the trades
+ * mirror in one SQL statement (search, sign filter, ordering and limit are
+ * database clauses; instance names match through the fleet name filter).
  */
 export const InstancesPositionsAllCapability = defineCapability({
   name: "instances.positions-all",
@@ -34,59 +42,41 @@ export const InstancesPositionsAllCapability = defineCapability({
     Effect.gen(function* () {
       const instances = yield* fleetInstances(ctx);
 
-      const outcomes = yield* perInstance(instances, (instance) =>
-        instance.service.getOpenPositions(),
+      const nameById = new Map(
+        instances.map((instance) => [instance.id, instance.name] as const),
       );
 
-      const positions: TaggedOpenPosition[] = [];
-      let failures = 0;
-      let firstError: string | null = null;
+      const search = normalizeSearch(options.search);
 
-      for (const outcome of outcomes) {
-        if (outcome.data !== undefined) {
-          for (const position of outcome.data.positions) {
-            positions.push({
-              ...position,
-              instanceId: outcome.instance.id,
-              instanceName: outcome.instance.name,
-            });
-          }
-        } else {
-          failures += 1;
-          firstError = firstError ?? outcome.error ?? "unreachable";
-        }
-      }
+      const matchInstanceIds =
+        search === null
+          ? undefined
+          : [...nameById.entries()].flatMap(([id, name]) =>
+              name.toLowerCase().includes(search.toLowerCase()) ? [id] : [],
+            );
 
-      if (
-        positions.length === 0 &&
-        failures > 0 &&
-        failures === instances.length
-      ) {
-        return yield* Effect.fail(
-          toBackendError(
-            "fleet positions",
-            firstError ?? "all instances unreachable",
-          ),
-        );
-      }
+      const { positions } = yield* ctx.trades.listOpen({
+        instanceId: null,
+        search,
+        matchInstanceIds,
+        sort: options.sort ?? null,
+        dir: options.dir ?? "desc",
+        filter: options.filter ?? null,
+        limit: options.limit === undefined
+          ? 10_000
+          : parseLimitParam(options.limit, 20, 10_000),
+      });
+
+      const tagged: TaggedOpenPosition[] = positions.map((position) => ({
+        ...position,
+        instanceName: nameById.get(position.instanceId) ?? position.instanceId,
+      }));
 
       // Most-recently-opened first for tape-style views.
-      positions.sort((a, b) => b.openDate.localeCompare(a.openDate));
+      tagged.sort((a, b) => b.openDate.localeCompare(a.openDate));
 
-      return {
-        positions: applySearch(
-          positions,
-          (p) => [
-            p.pair,
-            p.instanceName,
-            p.strategy,
-            p.enterTag,
-            p.exitReason,
-          ],
-          options.search,
-        ),
-      };
+      return { positions: tagged };
     }).pipe(
-      Effect.mapError((cause) => toBackendError("fleet positions", cause)),
-    ),
+    Effect.mapError((cause) => asBackendError("fleet positions", cause)),
+  ),
 });

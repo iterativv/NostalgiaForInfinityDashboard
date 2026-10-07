@@ -19,6 +19,9 @@ const BalanceHistoryAllOptions = Schema.Struct({
    * Absent = raw newest samples.
    */
   bucket: Schema.optional(BalanceHistoryBucket),
+  /** SQL WHERE: restrict the response to ONE instance (the widget's
+   * instance picker selects the slice server-side). */
+  id: Schema.optional(Schema.String),
 });
 
 /**
@@ -42,7 +45,13 @@ export const InstancesBalanceHistoryAllCapability = defineCapability({
   run: (options, ctx) =>
     Effect.gen(function* () {
       const limit = parseLimitParam(options.limit, 500, 500);
-      const instances = yield* fleetInstances(ctx);
+      const fleet = yield* fleetInstances(ctx);
+
+      // The instance picker filters in SQL — only the requested instance's
+      // snapshot rows are read.
+      const instances = options.id === undefined
+        ? fleet
+        : fleet.filter((instance) => instance.id === options.id);
 
       const outcomes = yield* perInstance(instances, (instance) =>
         Effect.gen(function* () {

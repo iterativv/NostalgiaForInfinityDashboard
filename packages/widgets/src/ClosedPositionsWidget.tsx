@@ -36,10 +36,10 @@ import {
 } from "@nfi/ui";
 import { applyWidgetSettings } from "./shared/panelConfig";
 import { booleanWithDefault, numberWithDefault } from "./shared/config";
-import { clampInt, fmt, fmtDate, fmtDuration, pnlClass } from "./shared/format";
+import { clampInt, fmt, fmtDate, pnlClass } from "./shared/format";
 import { queryState } from "./shared/query";
 import { useTimeFormat } from "./shared/timeFormat";
-import { InstanceSelect } from "./shared/InstanceSelect";
+import { ALL_INSTANCES, InstanceSelect } from "./shared/InstanceSelect";
 import { SubOrdersTable } from "./shared/SubOrdersTable";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { SettingsSelect } from "./shared/SettingsSelect";
@@ -65,12 +65,6 @@ import {
   useWidgetSettingsOpen,
 } from "./shared/widgetSettingsBus";
 import { OpenPositionsConfigSchema } from "./OpenPositionsWidget";
-import {
-  expandPositionRows,
-  TRADE_ORDER_EXPORT_COLUMNS,
-  withOrderRows,
-  type ExportColumn,
-} from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 
@@ -128,51 +122,8 @@ export const CLOSED_POSITIONS_DEFAULTS: ClosedPositionsConfig =
 /** Window growth cap — matches the closed-positions capability limit cap. */
 const MAX_WINDOW = 5_000;
 
-/** Position-side CSV/XLSX columns (all fields, not just the visible set). */
-const POSITION_EXPORT_COLUMNS: ReadonlyArray<
-  ExportColumn<SourcedClosedPosition>
-> = [
-  { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
-  { header: COL.tradeId, value: (p) => p.tradeId },
-  { header: COL.pair, value: (p) => p.pair },
-  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
-  { header: COL.leverage, value: (p) => p.leverage },
-  { header: COL.amount, value: (p) => p.amount },
-  { header: COL.stake, value: (p) => p.stakeAmount },
-  { header: COL.openRate, value: (p) => p.openRate },
-  { header: COL.closeRate, value: (p) => p.closeRate },
-  {
-    header: COL.profit,
-    value: (p) => p.closeProfitAbs ?? p.profitAbs,
-  },
-  {
-    header: COL.profitPct,
-    value: (p) => p.closeProfitPct ?? p.profitPct,
-  },
-  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
-  { header: COL.exitReason, value: (p) => p.exitReason ?? "" },
-  { header: COL.strategy, value: (p) => p.strategy ?? "" },
-  { header: COL.openDate, value: (p) => p.openDate },
-  { header: COL.closeDate, value: (p) => p.closeDate ?? "" },
-  { header: COL.duration, value: (p) => fmtDuration(p.tradeDurationSeconds) },
-];
-
-/**
- * Grouped CSV/XLSX columns: position columns + sub-order columns.
- * One position row (order cells empty, merged in XLSX) followed by one
- * row per sub-order (position cells empty, merged in XLSX).
- */
-const EXPORT_COLUMNS = withOrderRows({
-  positionColumns: POSITION_EXPORT_COLUMNS,
-  orderColumns: TRADE_ORDER_EXPORT_COLUMNS,
-});
-
 /** Column set depends on config flags + fleet mode + instance colors. */
-function buildColumns([
-  cfg,
-  showBotColumn,
-  colors,
-]: readonly [
+function buildColumns([cfg, showBotColumn, colors]: readonly [
   ClosedPositionsConfig,
   boolean,
   InstanceColors,
@@ -257,9 +208,7 @@ function buildColumns([
               row.original.closeProfitAbs ?? row.original.profitAbs;
 
             return (
-              <span className={pnlClass(profitAbs)}>
-                {fmt(profitAbs, 2)}
-              </span>
+              <span className={pnlClass(profitAbs)}>{fmt(profitAbs, 2)}</span>
             );
           },
         }
@@ -393,9 +342,6 @@ export function ClosedPositionsWidget({
     { inputs: shallowStore, output: shallowStore },
   );
 
-  /** Grouped export rows: position row + sub-order rows per position. */
-  const exportRows = expandPositionRows(positions, (p) => p.orders);
-
   /**
    * Deeper history probably exists: the window can still grow AND either
    * the backend's closed-trade total exceeds the rows shown, or (searches,
@@ -517,29 +463,39 @@ export function ClosedPositionsWidget({
           <div
             style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
           >
-            {positions.length > 0 ? (
-              <NfiTableContainer>
-                <NfiTableToolbar
-                  label="Closed positions table actions"
-                  search={{
-                    id: `cpos-filter-${panelId}`,
-                    value: filter,
-                    onChange: (value) => filterStore.setState(() => value),
-                    placeholder: "Filter pair, bot, exit reason…",
-                    labelText: "Filter closed positions",
-                  }}
-                  orderBy={{
-                    id: `cpos-sort-inline-${panelId}`,
-                    value: cfg.sortBy,
-                    items: ORDER_BY_ITEMS.map((item) => ({ ...item })),
-                    onChange: onSortChange,
-                  }}
-                  exportMenu={{
-                    filenameBase: `closed-positions-${cfg.instanceId}`,
-                    columns: EXPORT_COLUMNS,
-                    rows: exportRows,
-                  }}
-                />
+            {/* The toolbar stays mounted while a search is active even with
+                zero rows — hiding it would strand the filter (the user could
+                no longer edit or clear the needle that emptied the table). */}
+            <NfiTableContainer>
+              <NfiTableToolbar
+                label="Closed positions table actions"
+                search={{
+                  id: `cpos-filter-${panelId}`,
+                  value: filter,
+                  onChange: (value) => filterStore.setState(() => value),
+                  placeholder: "Filter pair, bot, exit reason, id…",
+                  labelText: "Filter closed positions",
+                }}
+                orderBy={{
+                  id: `cpos-sort-inline-${panelId}`,
+                  value: cfg.sortBy,
+                  items: ORDER_BY_ITEMS.map((item) => ({ ...item })),
+                  onChange: onSortChange,
+                }}
+                exportMenu={{
+                  filenameBase: `closed-positions-${cfg.instanceId}`,
+                  dataset: "closed-positions",
+                  params: {
+                    instanceId:
+                      cfg.instanceId === ALL_INSTANCES
+                        ? undefined
+                        : cfg.instanceId,
+                    search: debouncedSearch,
+                  },
+                  disabled: positions.length === 0,
+                }}
+              />
+              {positions.length > 0 ? (
                 <div className="nfi-table-scroll">
                   <NfiDataTable
                     columns={columns}
@@ -567,13 +523,13 @@ export function ClosedPositionsWidget({
                     rearm={held.rows.length}
                   />
                 </div>
-              </NfiTableContainer>
-            ) : (
-              <EmptyState
-                title="No matches"
-                hint={`No closed positions match "${debouncedSearch.trim()}".`}
-              />
-            )}
+              ) : (
+                <EmptyState
+                  title="No matches"
+                  hint={`No closed positions match "${debouncedSearch.trim()}".`}
+                />
+              )}
+            </NfiTableContainer>
           </div>
         ) : (
           <EmptyState

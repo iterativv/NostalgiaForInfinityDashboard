@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
 // SPDX-License-Identifier: SSPL-1.0
 
-import { Component, memo, useSyncExternalStore, type ReactNode } from "react";
+import { Component, memo, type ReactNode } from "react";
 import { Button } from "@carbon/react";
 import { Close } from "@carbon/icons-react";
 import { useStore } from "@tanstack/react-store";
@@ -99,25 +99,11 @@ function usePanelBodySize(elStore: Store<HTMLDivElement | null>): {
  * and the small-screen scale-down would fight the natural height: it sizes
  * its wrapper to bodyHeight / scale, which an auto-height body wraps,
  * growing the card on every measure.
+ *
+ * Lives in `./stacked` so the Tetris wall page mode (which re-packs at any
+ * width) shares the exact same override.
  */
-const STACKED_MEDIA_QUERY = "(max-width: 56rem)";
-
-const stackedMedia =
-  typeof matchMedia === "undefined" ? undefined : matchMedia(STACKED_MEDIA_QUERY);
-
-function subscribeStacked(callback: () => void): () => void {
-  stackedMedia?.addEventListener("change", callback);
-
-  return () => stackedMedia?.removeEventListener("change", callback);
-}
-
-function useStackedWorkspace(): boolean {
-  return useSyncExternalStore(
-    subscribeStacked,
-    () => stackedMedia?.matches ?? false,
-    () => false,
-  );
-}
+import { useStackedWorkspace } from "./stacked";
 
 export function PanelPlaceholder({
   title,

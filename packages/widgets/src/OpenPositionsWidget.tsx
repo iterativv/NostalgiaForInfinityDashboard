@@ -36,12 +36,6 @@ import {
 import type { SourcedOpenPosition } from "./shared/sources";
 import { useCapability } from "./live/live";
 import { applyWidgetSettings } from "./shared/panelConfig";
-import {
-  expandPositionRows,
-  TRADE_ORDER_EXPORT_COLUMNS,
-  withOrderRows,
-  type ExportColumn,
-} from "./shared/export";
 import { COL } from "./shared/columns";
 import { NfiTableContainer, NfiTableToolbar } from "./shared/tableToolbar";
 import {
@@ -51,7 +45,7 @@ import {
 } from "./shared/config";
 import { clampInt, fmt, fmtDate, pnlClass } from "./shared/format";
 import { queryState } from "./shared/query";
-import { InstanceSelect } from "./shared/InstanceSelect";
+import { InstanceSelect, ALL_INSTANCES } from "./shared/InstanceSelect";
 import { SubOrdersTable } from "./shared/SubOrdersTable";
 import { SettingsToggle } from "./shared/SettingsToggle";
 import { SettingsSelect } from "./shared/SettingsSelect";
@@ -62,7 +56,12 @@ import {
   type InstanceColors,
 } from "./shared/instanceColors";
 import { useOpenPositionsSource } from "./shared/sources";
-import { parseTradeTime, type OpenSortKey, type SortDir } from "./shared/tradeSort";
+import { useHeldRows } from "./shared/loadMore";
+import {
+  parseTradeTime,
+  type OpenSortKey,
+  type SortDir,
+} from "./shared/tradeSort";
 import { WidgetSettingsModal } from "./shared/WidgetSettings";
 import {
   closeWidgetSettings,
@@ -130,11 +129,7 @@ export const OPEN_POSITIONS_DEFAULTS: OpenPositionsConfig =
   Schema.decodeUnknownSync(OpenPositionsConfigSchema)({});
 
 /** Column set depends on config flags + fleet mode + instance colors. */
-function buildColumns([
-  cfg,
-  showBotColumn,
-  colors,
-]: readonly [
+function buildColumns([cfg, showBotColumn, colors]: readonly [
   OpenPositionsConfig,
   boolean,
   InstanceColors,
@@ -288,38 +283,6 @@ function buildColumns([
   return defs.flatMap((entry) => (entry ? [entry] : []));
 }
 
-const EMPTY_POSITIONS: ReadonlyArray<SourcedOpenPosition> = [];
-
-/** Position-side CSV/XLSX columns (all fields, not just the visible set). */
-const POSITION_EXPORT_COLUMNS: ReadonlyArray<
-  ExportColumn<SourcedOpenPosition>
-> = [
-  { header: COL.bot, value: (p) => p.instanceName ?? p.instanceId ?? "" },
-  { header: COL.tradeId, value: (p) => p.tradeId },
-  { header: COL.pair, value: (p) => p.pair },
-  { header: COL.direction, value: (p) => (p.isShort ? "SHORT" : "LONG") },
-  { header: COL.leverage, value: (p) => p.leverage },
-  { header: COL.amount, value: (p) => p.amount },
-  { header: COL.stake, value: (p) => p.stakeAmount },
-  { header: COL.openRate, value: (p) => p.openRate },
-  { header: COL.currentRate, value: (p) => p.currentRate },
-  { header: COL.profit, value: (p) => p.profitAbs },
-  { header: COL.profitPct, value: (p) => p.profitPct },
-  { header: COL.enterTag, value: (p) => p.enterTag?.trim() ?? "" },
-  { header: COL.strategy, value: (p) => p.strategy ?? "" },
-  { header: COL.openDate, value: (p) => p.openDate },
-];
-
-/**
- * Grouped CSV/XLSX columns: position columns + sub-order columns.
- * One position row (order cells empty, merged in XLSX) followed by one
- * row per sub-order (position cells empty, merged in XLSX).
- */
-const EXPORT_COLUMNS = withOrderRows({
-  positionColumns: POSITION_EXPORT_COLUMNS,
-  orderColumns: TRADE_ORDER_EXPORT_COLUMNS,
-});
-
 export function OpenPositionsWidget({
   config,
   panelId,
@@ -332,10 +295,18 @@ export function OpenPositionsWidget({
   // the server only re-queries after the user pauses typing.
   const debouncedSearch = useDebouncedValue(filter, 400);
   const hasSearch = debouncedSearch.trim().length > 0;
+  /** Rows holdover identity: instance or search switch swaps the dataset. */
+  const datasetKey = `${cfg.instanceId}|${debouncedSearch}`;
 
   const src = useOpenPositionsSource(cfg.instanceId, {
     search: debouncedSearch,
   });
+
+  // Hold the previous rows while a new dataset streams in (search keystroke
+  // → new subscription key → undefined data): without the hold the frame
+  // flips to its loading pane and unmounts the toolbar — killing the
+  // search input's focus between keystrokes.
+  const held = useHeldRows(src, datasetKey);
 
   const colors = useInstanceColors();
 
@@ -345,7 +316,11 @@ export function OpenPositionsWidget({
     { enabled: cfg.instanceId !== "all" },
   );
 
-  const state = queryState(src.error, src.isLoading);
+  const state = queryState(
+    held.rows.length > 0 ? null : src.error,
+    held.firstLoading,
+  );
+
   const showSettings = useWidgetSettingsOpen(panelId);
   // fmtDate/sub-order dates read the global time-format store; this read
   // re-renders the table when the configured format changes.
@@ -361,9 +336,7 @@ export function OpenPositionsWidget({
     patch({ [key]: v } as Partial<OpenPositionsConfig>);
   };
 
-  const positions = src.data ?? EMPTY_POSITIONS;
-  /** Grouped export rows: position row + sub-order rows per position. */
-  const exportRows = expandPositionRows(positions, (p) => p.orders);
+  const positions = held.rows;
   /** Bot attribution column: explicit toggle, or implied by fleet mode. */
   const showBotColumn = cfg.showBot || cfg.instanceId === "all";
 
@@ -466,29 +439,38 @@ export function OpenPositionsWidget({
           <div
             style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
           >
-            {positions.length > 0 ? (
-              <NfiTableContainer>
-                <NfiTableToolbar
-                  label="Open positions table actions"
-                  search={{
-                    id: `pos-filter-${panelId}`,
-                    value: filter,
-                    onChange: (value) => filterStore.setState(() => value),
-                    placeholder: "Filter pair, bot, strategy…",
-                    labelText: "Filter open positions",
-                  }}
-                  orderBy={{
-                    id: `pos-sort-inline-${panelId}`,
-                    value: cfg.sortBy,
-                    items: ORDER_BY_ITEMS.map((item) => ({ ...item })),
-                    onChange: onSortChange,
-                  }}
-                  exportMenu={{
-                    filenameBase: `open-positions-${cfg.instanceId}`,
-                    columns: EXPORT_COLUMNS,
-                    rows: exportRows,
-                  }}
-                />
+            {/* The toolbar stays mounted while a search is active even with
+                zero rows — hiding it would strand the filter (the user could
+                no longer edit or clear the needle that emptied the table). */}
+            <NfiTableContainer>
+              <NfiTableToolbar
+                label="Open positions table actions"
+                search={{
+                  id: `pos-filter-${panelId}`,
+                  value: filter,
+                  onChange: (value) => filterStore.setState(() => value),
+                  placeholder: "Filter pair, bot, strategy, id…",
+                  labelText: "Filter open positions",
+                }}
+                orderBy={{
+                  id: `pos-sort-inline-${panelId}`,
+                  value: cfg.sortBy,
+                  items: ORDER_BY_ITEMS.map((item) => ({ ...item })),
+                  onChange: onSortChange,
+                }}
+                exportMenu={{
+                  filenameBase: `open-positions-${cfg.instanceId}`,
+                  dataset: "open-positions",
+                  params: {
+                    instanceId:
+                      cfg.instanceId === ALL_INSTANCES
+                        ? undefined
+                        : cfg.instanceId,
+                  },
+                  disabled: positions.length === 0,
+                }}
+              />
+              {positions.length > 0 ? (
                 <div className="nfi-table-scroll">
                   <NfiDataTable
                     columns={columns}
@@ -507,13 +489,13 @@ export function OpenPositionsWidget({
                     defaultExpanded
                   />
                 </div>
-              </NfiTableContainer>
-            ) : (
-              <EmptyState
-                title="No matches"
-                hint={`No open positions match "${debouncedSearch.trim()}".`}
-              />
-            )}
+              ) : (
+                <EmptyState
+                  title="No matches"
+                  hint={`No open positions match "${debouncedSearch.trim()}".`}
+                />
+              )}
+            </NfiTableContainer>
           </div>
         ) : (
           <EmptyState
