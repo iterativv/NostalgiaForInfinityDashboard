@@ -5,14 +5,15 @@
  * Trade overlay helpers for the candle chart — pure functions, no chart
  * imports (kept import-free so they stay unit-testable without a canvas).
  *
- * Visual language (mirrors the reference NFI trade view):
- * - entries → violet dot below the bar, labeled with the order tag
- *   (e.g. `grind 4 entry` renders as `grind 4 entry`);
+ * Visual language (drawn by `shared/tradeMarkerOverlay.ts`):
+ * - entries → violet arrow below the bar, one label pill per order tag
+ *   (e.g. `grind 4 entry`);
  * - exits / derisks → amber arrow above the bar, labeled with the tag plus
  *   an `exit` suffix unless the tag already says exit/derisk
  *   (e.g. `grind 5 exit`);
- * - orders landing on the same candle + side collapse into ONE marker with
- *   space-joined labels (e.g. `grind 5 exit 501 472 403` in the reference).
+ * - orders landing on the same candle + side collapse into ONE marker
+ *   whose labels stack as separate pills along the arrow (never a
+ *   space-joined blob).
  */
 
 export type TradeMarkerKind = "entry" | "exit";
@@ -21,7 +22,8 @@ export type TradeMarkerKind = "entry" | "exit";
 export interface TradeMarker {
   readonly time: number;
   readonly kind: TradeMarkerKind;
-  readonly text: string;
+  /** One label per pill — the chart stacks them along the marker arrow. */
+  readonly labels: string[];
 }
 
 /** Minimal order shape the overlay needs (subset of `TradeOrder`). */
@@ -88,7 +90,7 @@ const isExitOrder = (order: OverlayOrder): boolean => {
   return (order.side ?? "").toLowerCase() === "sell";
 };
 
-const MAX_MARKER_LABELS = 3;
+const MAX_MARKER_LABELS = 8;
 
 const MAX_LABEL_CHARS = 64;
 
@@ -163,17 +165,16 @@ export function buildTradeMarkers(
   }
 
   return [...grouped.values()]
+
     .sort((a, b) => a.time - b.time || (a.kind === b.kind ? 0 : a.kind === "entry" ? -1 : 1))
     .slice(-200)
-    .map(({ time, kind, labels }): TradeMarker => {
-      const shown = labels.slice(0, MAX_MARKER_LABELS).join(" ");
-      const extra = labels.length - Math.min(labels.length, MAX_MARKER_LABELS);
-
-      const text =
-        (extra > 0 ? `${shown} +${extra}` : shown).slice(0, MAX_LABEL_CHARS).trim() || kind;
-
-      return { time, kind, text };
-    });
+    .map(({ time, kind, labels }): TradeMarker => ({
+      time,
+      kind,
+      labels: labels
+        .slice(0, MAX_MARKER_LABELS)
+        .map((label) => label.slice(0, MAX_LABEL_CHARS).trim() || kind),
+    }));
 }
 
 /**
@@ -327,4 +328,80 @@ export function buildPositionHistoryMarkers(
     candleSeconds,
     tfSeconds,
   );
+}
+
+// --- Past-trade PnL areas ---------------------------------------------------
+
+/** Cap on shaded past trades (newest win) — bounds chart series count. */
+export const MAX_HISTORY_PNL_SPANS = 60;
+
+/** One past trade's profit/loss area: entry level shaded over its lifetime. */
+export interface HistoryPnlSpan {
+  /** Fill start, whole UTC seconds (snapped candle bucket). */
+  readonly since: number;
+  /** Fill end, whole UTC seconds (snapped candle bucket — the exit). */
+  readonly until: number;
+  /** Entry level the area is shaded against. */
+  readonly entry: number;
+  /** Shorts invert the profit/loss sides (profit below the entry). */
+  readonly isShort: boolean;
+}
+
+/**
+ * Closed positions → per-trade PnL spans (entry bucket → exit bucket,
+ * shaded against the trade's entry level).
+ *
+ * `entryOf` resolves the entry level: the sensitive twin reads the real
+ * `openRate`; the public twin approximates it with the entry-bucket candle
+ * close (relative payloads carry no prices). Returning null skips a trade
+ * (missing dates, unresolvable entry). Input is newest-first; only the
+ * newest `MAX_HISTORY_PNL_SPANS` resolvable trades are shaded.
+ */
+export function buildHistoryPnlSpans<
+  T extends {
+    readonly openDate: string;
+    readonly closeDate?: string;
+    readonly isShort?: boolean;
+  },
+>(
+  closed: ReadonlyArray<T>,
+  tfSeconds: number,
+  entryOf: (position: T, openBucketSec: number) => number | null,
+): HistoryPnlSpan[] {
+  if (!Number.isFinite(tfSeconds) || tfSeconds <= 0) return [];
+
+  const snap = (ms: number): number => {
+    const sec = Math.floor(ms / 1000);
+
+    return Math.floor(sec / tfSeconds) * tfSeconds;
+  };
+
+  const spans: HistoryPnlSpan[] = [];
+
+  for (const position of closed) {
+    if (spans.length >= MAX_HISTORY_PNL_SPANS) break;
+
+    const openedAt = parsePositionTime(position.openDate);
+
+    const closedAt =
+      position.closeDate !== undefined
+        ? parsePositionTime(position.closeDate)
+        : null;
+
+    if (openedAt === null || closedAt === null || closedAt < openedAt) continue;
+
+    const since = snap(openedAt);
+    const entry = entryOf(position, since);
+
+    if (entry === null || !Number.isFinite(entry) || entry <= 0) continue;
+
+    spans.push({
+      since,
+      until: snap(closedAt),
+      entry,
+      isShort: position.isShort === true,
+    });
+  }
+
+  return spans;
 }

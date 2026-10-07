@@ -29,12 +29,12 @@ describe("position candle widget (sensitive)", () => {
         pair: "",
         timeframe: "5m",
         limit: 200,
-        showSma20: true,
-        showVwap: true,
-        showVolume: true,
+        showSma20: false,
+        showVwap: false,
+        showVolume: false,
         showTrades: true,
         showAvgEntry: true,
-        subplot: "rsi",
+        subplot: "none",
       },
     );
   });
@@ -78,12 +78,12 @@ describe("position candle widget (public)", () => {
       pair: "",
       timeframe: "5m",
       limit: 200,
-      showSma20: true,
-      showVwap: true,
-      showVolume: true,
+      showSma20: false,
+      showVwap: false,
+      showVolume: false,
       showPositions: true,
       showEntryLevel: true,
-      subplot: "rsi",
+      subplot: "none",
     });
   });
 
