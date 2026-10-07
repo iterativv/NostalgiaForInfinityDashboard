@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
-// SPDX-License-Identifier: SSPL-1.0
-
 /**
  * CandleChart — OHLCV candlesticks rendered with TradingView's
  * `lightweight-charts` (canvas, crosshair, pan/zoom included).
@@ -255,6 +252,57 @@ const EMPTY_TRADE_MARKERS: ReadonlyArray<TvTradeMarker> = [];
 
 const EMPTY_PNL_SPANS: ReadonlyArray<HistoryPnlSpan> = [];
 
+/** PnL area fills: the chart's top/bottom band color contract. */
+interface PnlFills {
+  readonly topFillColor1: string;
+  readonly topFillColor2: string;
+  readonly bottomFillColor1: string;
+  readonly bottomFillColor2: string;
+}
+
+/**
+ * PnL area fills. An explicit outcome (a realized percentage) paints the
+ * whole span ONE hue — green for a winner, red for a loser — so a past
+ * trade reads by its result, not by where price wiggled relative to the
+ * entry. Without an outcome (open positions, percentage-less history) the
+ * fills fall back to the live geometric split around the entry, swapped
+ * for shorts.
+ */
+const pnlFills = (
+  palette: ReturnType<typeof candlePalette>,
+  isShort: boolean,
+  profitPct: number | null | undefined,
+): PnlFills => {
+  const outcome =
+    profitPct !== null &&
+    profitPct !== undefined &&
+    Number.isFinite(profitPct) &&
+    profitPct !== 0
+      ? profitPct > 0
+        ? "up"
+        : "down"
+      : null;
+
+  if (outcome === null) {
+    return {
+      topFillColor1: isShort ? palette.pnlDown1 : palette.pnlUp1,
+      topFillColor2: isShort ? palette.pnlDown2 : palette.pnlUp2,
+      bottomFillColor1: isShort ? palette.pnlUp1 : palette.pnlDown1,
+      bottomFillColor2: isShort ? palette.pnlUp2 : palette.pnlDown2,
+    };
+  }
+
+  const fill1 = outcome === "up" ? palette.pnlUp1 : palette.pnlDown1;
+  const fill2 = outcome === "up" ? palette.pnlUp2 : palette.pnlDown2;
+
+  return {
+    topFillColor1: fill1,
+    topFillColor2: fill2,
+    bottomFillColor1: fill1,
+    bottomFillColor2: fill2,
+  };
+};
+
 /**
  * Visible-range distance from the oldest bar that fires `onRequestOlder`:
  * a few screens of context stay pannable while the next page loads.
@@ -270,6 +318,7 @@ export function CandleChart({
   avgEntryPrice = null,
   avgEntryTitle,
   avgEntryIsShort = false,
+  avgEntryProfitPct = null,
   avgEntrySince = null,
   avgEntryUntil = null,
   avgEntryLineVisible = true,
@@ -291,9 +340,17 @@ export function CandleChart({
   /**
    * True when the followed position is short: profit sits BELOW the entry
    * (price falling), so the green/red PnL fills swap sides. Long (default)
-   * keeps profit above the entry.
+   * keeps profit above the entry. Ignored when `avgEntryProfitPct` gives
+   * the area an explicit outcome.
    */
   avgEntryIsShort?: boolean;
+  /**
+   * Signed realized percentage of the followed position — when set (closed
+   * position), the PnL area's hue follows the OUTCOME: green wash for a
+   * winner, red for a loser, regardless of where price wiggled. Undefined
+   * (open position) keeps the live geometric split around the entry.
+   */
+  avgEntryProfitPct?: number | null;
   /**
    * Entry-anchored fill start (whole UTC seconds, already snapped to the
    * candle bucket by the caller): the PnL area covers entry → newest
@@ -1059,7 +1116,9 @@ export function CandleChart({
     }|${historyPnlSpans
       .map(
         (span) =>
-          `${span.since}:${span.until}:${span.entry}:${span.isShort ? 1 : 0}`,
+          `${span.since}:${span.until}:${span.entry}:${span.isShort ? 1 : 0}:${
+            span.profitPct ?? ""
+          }`,
       )
       .join(";")}`;
 
@@ -1079,13 +1138,6 @@ export function CandleChart({
       const created: Array<ISeriesApi<"Baseline">> = [];
 
       for (const span of historyPnlSpans) {
-        // Shorts profit below the entry, so the fill sides swap (same
-        // convention as the followed position's area above).
-        const topFill1 = span.isShort ? palette.pnlDown1 : palette.pnlUp1;
-        const topFill2 = span.isShort ? palette.pnlDown2 : palette.pnlUp2;
-        const bottomFill1 = span.isShort ? palette.pnlUp1 : palette.pnlDown1;
-        const bottomFill2 = span.isShort ? palette.pnlUp2 : palette.pnlDown2;
-
         const data = orderedByTime(
           candleData
             .filter(
@@ -1105,10 +1157,7 @@ export function CandleChart({
             baseValue: { type: "price", price: span.entry },
             topLineColor: "transparent",
             bottomLineColor: "transparent",
-            topFillColor1: topFill1,
-            topFillColor2: topFill2,
-            bottomFillColor1: bottomFill1,
-            bottomFillColor2: bottomFill2,
+            ...pnlFills(palette, span.isShort, span.profitPct),
             lineWidth: 1,
             crosshairMarkerVisible: false,
             lastValueVisible: false,
@@ -1163,23 +1212,16 @@ export function CandleChart({
     try {
       let pnl = handlesStore.state.pnl;
 
-      // Short positions profit when price falls below entry, so the fills
-      // swap: above-entry (top) is loss/red, below-entry (bottom) is
-      // profit/green. Long keeps the default (top green, bottom red).
-      const topFill1 = avgEntryIsShort ? palette.pnlDown1 : palette.pnlUp1;
-      const topFill2 = avgEntryIsShort ? palette.pnlDown2 : palette.pnlUp2;
-      const bottomFill1 = avgEntryIsShort ? palette.pnlUp1 : palette.pnlDown1;
-      const bottomFill2 = avgEntryIsShort ? palette.pnlUp2 : palette.pnlDown2;
+      // Hue: a closed follow paints by its realized outcome; an open
+      // position keeps the live geometric split (see `pnlFills`).
+      const fills = pnlFills(palette, avgEntryIsShort, avgEntryProfitPct);
 
       if (!pnl) {
         pnl = chart.addSeries(BaselineSeries, {
           baseValue: { type: "price", price: avg },
           topLineColor: "transparent",
           bottomLineColor: "transparent",
-          topFillColor1: topFill1,
-          topFillColor2: topFill2,
-          bottomFillColor1: bottomFill1,
-          bottomFillColor2: bottomFill2,
+          ...fills,
           lineWidth: 1,
           crosshairMarkerVisible: false,
           lastValueVisible: false,
@@ -1189,10 +1231,7 @@ export function CandleChart({
       } else {
         pnl.applyOptions({
           baseValue: { type: "price", price: avg },
-          topFillColor1: topFill1,
-          topFillColor2: topFill2,
-          bottomFillColor1: bottomFill1,
-          bottomFillColor2: bottomFill2,
+          ...fills,
         });
       }
 
@@ -1271,6 +1310,7 @@ export function CandleChart({
     avgEntryPrice,
     avgEntryTitle,
     avgEntryIsShort,
+    avgEntryProfitPct,
     avgEntrySince,
     avgEntryUntil,
     avgEntryLineVisible,
