@@ -3258,6 +3258,17 @@ button.nfi-auto-empty:focus-visible {
   background: var(--cds-background-hover);
 }
 
+/* Pager edges (‹ ›): exhausted buttons read as spent, not merely inert. */
+.nfi-tf-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.nfi-tf-btn:disabled:hover {
+  color: var(--cds-text-secondary);
+  background: transparent;
+}
+
 .nfi-tf-active {
   color: var(--cds-text-primary);
   background: var(--cds-layer-selected);

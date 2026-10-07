@@ -11,14 +11,15 @@
  *
  * - a thin 1px leader arrow rises off the bar (amber above = exit, violet
  *   below = entry), its head pointing at the fill candle;
- * - the label pill sits at the FAR end of the arrow — clear of the price
- *   action but clamped inside the pane;
+ * - the label pill sits at the FAR end of the arrow, in the margin around
+ *   the price action: exits stack above the highest visible candle wick,
+ *   entries below the lowest — pills never paint over candles;
  * - multiple trades on one candle stack their pills (one per label) along
  *   the arrow instead of concatenating into an unreadable blob;
  * - a collision pass pushes any pill that would overlap an earlier one
- *   further out (or sideways along the pane edge), so neighboring candles
- *   never paint over each other;
- * - labels that no longer fit the pane collapse into a `+N` pill — the
+ *   further into the clear band (or sideways along it), so neighboring
+ *   candles never paint over each other;
+ * - labels that no longer fit the band collapse into a `+N` pill — the
  *   arrow still marks the event.
  *
  * The geometry lives in pure functions (`positionTradeMarkers`,
@@ -134,6 +135,13 @@ const PILL_MAX_WIDTH = 340;
 const EDGE_PAD = 2;
 
 /**
+ * Minimum clearance between a pill and the nearest candle wick — pills
+ * live entirely above the highest visible high (exits) or below the
+ * lowest visible low (entries), never on top of candles.
+ */
+const PILL_CANDLE_GAP = 5;
+
+/**
  * Top reserve for the chart's floating legend row (`.nfi-candle-legend`
  * overlays the top of the price pane) — top-clamped pills must stay below
  * it instead of hiding behind the OHLCV readout.
@@ -196,11 +204,24 @@ export interface MarkerPlacement {
 
 export type MeasureText = (text: string) => number;
 
-/** A placed pill plus whether edge-clamping moved it off the ideal spot. */
-interface PillPlacement {
-  readonly rect: PillRect;
-  readonly clamped: boolean;
+/** Pane geometry that constrains pill placement (candle avoidance). */
+export interface LayoutBounds {
+  /** Extra y reserve at the pane's top edge (the floating legend row). */
+  readonly topInset?: number;
+  /** y of the HIGHEST visible candle wick — exit pills stay above it. */
+  readonly skyY?: number;
+  /** y of the LOWEST visible candle wick — entry pills stay below it. */
+  readonly floorY?: number;
 }
+
+const overlaps = (a: PillRect, b: PillRect): boolean =>
+  a.x - COLLIDE_PAD < b.x + b.w &&
+  a.x + a.w + COLLIDE_PAD > b.x &&
+  a.y - COLLIDE_PAD < b.y + b.h &&
+  a.y + a.h + COLLIDE_PAD > b.y;
+
+const overlapsAny = (rect: PillRect, placed: ReadonlyArray<PillRect>): boolean =>
+  placed.some((p) => overlaps(rect, p));
 
 /** Arrow attachment point on a placed pill (stacking continues from here). */
 interface PillAttachPoint {
@@ -214,45 +235,6 @@ interface FittedLabel {
   readonly width: number;
 }
 
-const overlaps = (a: PillRect, b: PillRect): boolean =>
-  a.x - COLLIDE_PAD < b.x + b.w &&
-  a.x + a.w + COLLIDE_PAD > b.x &&
-  a.y - COLLIDE_PAD < b.y + b.h &&
-  a.y + a.h + COLLIDE_PAD > b.y;
-
-const overlapsAny = (rect: PillRect, placed: ReadonlyArray<PillRect>): boolean =>
-  placed.some((p) => overlaps(rect, p));
-
-/** Pill rect for a near-edge distance `dist` from the anchor, edge-clamped. */
-const pillRectAt = (
-  x: number,
-  y: number,
-  side: MarkerSide,
-  dist: number,
-  w: number,
-  width: number,
-  height: number,
-  topInset: number,
-): PillPlacement => {
-  const px = Math.min(
-    Math.max(EDGE_PAD, x - w / 2),
-    Math.max(EDGE_PAD, width - EDGE_PAD - w),
-  );
-
-  const rawY = side === -1 ? y - dist - PILL_HEIGHT : y + dist;
-  const minY = EDGE_PAD + Math.max(0, topInset);
-
-  const py = Math.min(
-    Math.max(minY, rawY),
-    Math.max(minY, height - EDGE_PAD - PILL_HEIGHT),
-  );
-
-  return {
-    rect: { x: px, y: py, w, h: PILL_HEIGHT },
-    clamped: py !== rawY,
-  };
-};
-
 const attachPointOf = (
   rect: PillRect,
   x: number,
@@ -264,10 +246,6 @@ const attachPointOf = (
   ),
   attachY: side === -1 ? rect.y + rect.h : rect.y,
 });
-
-/** Distance from the anchor to the pill's far edge (the stacking frontier). */
-const farEdgeDistance = (rect: PillRect, y: number, side: MarkerSide): number =>
-  side === -1 ? y - rect.y : rect.y + rect.h - y;
 
 /** Ellipsize to fit `maxTextWidth`, measured with `measure`. */
 export function fitLabelText(
@@ -295,23 +273,21 @@ export function fitLabelText(
 /**
  * Place every marker's label pills in pane space.
  *
- * Markers are processed in input order (callers pass time-ascending, so
- * placement is stable left to right). Each label wants a pill centered on
- * its bar at increasing distance from the anchor; a pill that would overlap
- * an already-placed one (any marker's) steps further out along the arrow.
- * Once the pane edge stops the vertical stack, remaining labels nudge
- * sideways along the edge before being given up — given-up labels land in
- * `hidden`, surfaced as a single `+N` pill when that still fits. The leader
- * always reaches the FIRST pill of its marker; the rest stack beyond it on
- * the same column.
+ * With candle bounds (`skyY` / `floorY`) the pills never cover candles:
+ * exit pills stack UPWARD from just above the highest visible candle
+ * wick, entry pills stack DOWNWARD from just below the lowest wick, all
+ * centered on their bar. A pill that would overlap an already-placed one
+ * steps further into the band; once the band is exhausted it nudges
+ * sideways along it, and only then gives up (counted into `hidden`,
+ * surfaced as a `+N` pill). Without bounds the pills stack outward from
+ * the anchor at a fixed distance — the legacy behavior.
  */
 export function layoutTradeMarkers(
   items: ReadonlyArray<MarkerLayoutItem>,
   width: number,
   height: number,
   measure: MeasureText,
-  /** Extra y reserve at the pane's top edge (the floating legend row). */
-  topInset = 0,
+  bounds: LayoutBounds = {},
 ): MarkerPlacement[] {
   if (items.length === 0 || width <= 0 || height <= 0) return [];
 
@@ -322,97 +298,119 @@ export function layoutTradeMarkers(
 
   const maxTextWidth = maxPillWidth - 2 * PILL_PAD_X;
 
+  const topInset = Math.max(0, bounds.topInset ?? 0);
+  const step = PILL_HEIGHT + PILL_GAP;
+  const paneMinPy = topInset;
+  const paneMaxPy = height - EDGE_PAD - PILL_HEIGHT;
+
   const placedRects: PillRect[] = [];
   const placements: MarkerPlacement[] = [];
 
   for (const item of items) {
     const pills: PlacedPill[] = [];
     let hidden = 0;
-    // Distance from the anchor to the NEXT pill's near edge.
-    let dist = GAP_FROM_BAR + HEAD_LEN + MIN_SHAFT;
 
-    const tryPlace = (label: LabelMeasure): boolean => {
+    // The pill band for this marker's side, as a [minPy, maxPy] window:
+    // exit pills stay above the highest wick, entry pills below the
+    // lowest one. Without candle bounds the band spans the whole pane.
+    let minPy = paneMinPy;
+    let maxPy = paneMaxPy;
+
+    if (item.side === -1 && bounds.skyY !== undefined) {
+      maxPy = Math.min(maxPy, bounds.skyY - PILL_CANDLE_GAP - PILL_HEIGHT);
+    }
+
+    if (item.side === 1 && bounds.floorY !== undefined) {
+      minPy = Math.max(minPy, bounds.floorY + PILL_CANDLE_GAP);
+    }
+
+    if (minPy > maxPy) {
+      // No candle-free band on this side — best effort at the pane edge.
+      minPy = item.side === -1 ? paneMinPy : paneMaxPy;
+      maxPy = minPy;
+    }
+
+    // The first pill sits closest to the candles: at the band's candle
+    // edge when bounds are known, else just beyond the arrowhead (legacy).
+    const anchorOffset = GAP_FROM_BAR + HEAD_LEN + PILL_HEIGHT + 4;
+
+    const nearPy =
+      item.side === -1
+        ? bounds.skyY !== undefined
+          ? maxPy
+          : Math.max(minPy, Math.min(maxPy, item.y - anchorOffset))
+        : bounds.floorY !== undefined
+          ? minPy
+          : Math.max(minPy, Math.min(maxPy, item.y + GAP_FROM_BAR + HEAD_LEN + 4));
+
+    const place = (label: LabelMeasure): boolean => {
       const fitted = fitLabelText(label.text, measure, maxTextWidth);
       const w = fitted.width + 2 * PILL_PAD_X;
-      let atDist = dist;
+
+      const x = Math.min(
+        Math.max(EDGE_PAD, item.x - w / 2),
+        Math.max(EDGE_PAD, width - EDGE_PAD - w),
+      );
+
+      let py = nearPy;
 
       for (let attempt = 0; attempt < MAX_PLACEMENT_TRIES; attempt++) {
-        const { rect, clamped } = pillRectAt(
-          item.x,
-          item.y,
-          item.side,
-          atDist,
-          w,
-          width,
-          height,
-          topInset,
-        );
+        const rect: PillRect = { x, y: py, w, h: PILL_HEIGHT };
 
         if (!overlapsAny(rect, placedRects)) {
           const { attachX, attachY } = attachPointOf(rect, item.x, item.side);
 
           placedRects.push(rect);
           pills.push({ rect, attachX, attachY, text: fitted.text });
-          dist = farEdgeDistance(rect, item.y, item.side) + PILL_GAP;
 
           return true;
         }
 
-        if (clamped) {
-          // Vertical room is exhausted at this column — walk sideways
-          // along the edge before giving the label up.
-          for (let nudge = 1; nudge <= MAX_NUDGES; nudge++) {
-            const offset =
-              Math.ceil(nudge / 2) *
-              (w + NUDGE_STEP) *
-              (nudge % 2 === 1 ? 1 : -1);
+        const next = item.side === -1 ? py - step : py + step;
 
-            const nx = Math.min(
-              Math.max(EDGE_PAD, rect.x + offset),
-              Math.max(EDGE_PAD, width - EDGE_PAD - w),
-            );
+        if (next < minPy - 0.5 || next > maxPy + 0.5) break;
 
-            if (Math.abs(nx - rect.x) < 1) continue;
+        py = next;
+      }
 
-            const nudged: PillRect = { ...rect, x: nx };
+      // Band exhausted on this column — nudge sideways along the band's
+      // nearest edge before giving the label up.
+      const bandPy = Math.min(Math.max(nearPy, minPy), maxPy);
 
-            if (!overlapsAny(nudged, placedRects)) {
-              const { attachX, attachY } = attachPointOf(
-                nudged,
-                item.x,
-                item.side,
-              );
+      for (let nudge = 1; nudge <= MAX_NUDGES; nudge++) {
+        const offset =
+          Math.ceil(nudge / 2) * (w + NUDGE_STEP) * (nudge % 2 === 1 ? 1 : -1);
 
-              placedRects.push(nudged);
-              pills.push({
-                rect: nudged,
-                attachX,
-                attachY,
-                text: fitted.text,
-              });
-              dist = farEdgeDistance(nudged, item.y, item.side) + PILL_GAP;
+        const nx = Math.min(
+          Math.max(EDGE_PAD, x + offset),
+          Math.max(EDGE_PAD, width - EDGE_PAD - w),
+        );
 
-              return true;
-            }
-          }
+        if (Math.abs(nx - x) < 1) continue;
 
-          return false;
+        const rect: PillRect = { x: nx, y: bandPy, w, h: PILL_HEIGHT };
+
+        if (!overlapsAny(rect, placedRects)) {
+          const { attachX, attachY } = attachPointOf(rect, item.x, item.side);
+
+          placedRects.push(rect);
+          pills.push({ rect, attachX, attachY, text: fitted.text });
+
+          return true;
         }
-
-        atDist += PILL_HEIGHT + PILL_GAP;
       }
 
       return false;
     };
 
     for (const label of item.labels) {
-      if (!tryPlace(label)) hidden += 1;
+      if (!place(label)) hidden += 1;
     }
 
     if (hidden > 0) {
       const plusText = `+${hidden}`;
 
-      if (tryPlace({ text: plusText, width: measure(plusText) })) hidden = 0;
+      if (place({ text: plusText, width: measure(plusText) })) hidden = 0;
     }
 
     placements.push({ x: item.x, y: item.y, side: item.side, pills, hidden });
@@ -479,6 +477,30 @@ class TradeMarkerPaneRenderer {
       const items: MarkerLayoutItem[] = [];
       const colors: string[] = [];
 
+      // Candle-avoidance bounds: the highest visible wick (exits label
+      // above it) and the lowest (entries label below it), so pills live
+      // in the margin around the price action instead of on the candles.
+      let skyY = height;
+      let floorY = 0;
+
+      for (const candle of this.primitive.candles) {
+        // SAFETY: `UTCTimestamp` brands a number of whole UTC seconds; the
+        // chart's candle times are exactly that (Number() only collapses
+        // the Time union to its numeric member).
+        const x = timeScale.timeToCoordinate(
+          Number(candle.time) as UTCTimestamp,
+        );
+
+        if (x === null || x < 0 || x > width) continue;
+
+        const yHigh = series.priceToCoordinate(candle.high);
+        const yLow = series.priceToCoordinate(candle.low);
+
+        if (yHigh !== null && yHigh < skyY) skyY = yHigh;
+
+        if (yLow !== null && yLow > floorY) floorY = yLow;
+      }
+
       for (const marker of markers) {
         // SAFETY: `UTCTimestamp` brands a number of whole UTC seconds —
         // exactly what the candle-bucket marker times are.
@@ -503,14 +525,12 @@ class TradeMarkerPaneRenderer {
 
       if (items.length === 0) return;
 
-      // Reserve the legend row: top-clamped pills must not hide behind it.
-      const placements = layoutTradeMarkers(
-        items,
-        width,
-        height,
-        measure,
-        LEGEND_INSET,
-      );
+      // Reserve the legend row; pills keep clear of the candles.
+      const placements = layoutTradeMarkers(items, width, height, measure, {
+        topInset: LEGEND_INSET,
+        skyY,
+        floorY,
+      });
 
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -579,6 +599,9 @@ export class TradeMarkerPrimitive implements ISeriesPrimitive<Time> {
 
   markers: ReadonlyArray<PositionedTradeMarker> = [];
 
+  /** The loaded candle window — drives the pill-avoidance skyline/floor. */
+  candles: ReadonlyArray<CandlestickData> = [];
+
   private requestUpdate: (() => void) | null = null;
 
   private readonly view: IPrimitivePaneView = {
@@ -607,6 +630,14 @@ export class TradeMarkerPrimitive implements ISeriesPrimitive<Time> {
     if (markers === this.markers) return;
 
     this.markers = markers;
+    this.requestUpdate?.();
+  }
+
+  /** Swap the candle window (identity-compared) for pill avoidance. */
+  setCandles(candles: ReadonlyArray<CandlestickData>): void {
+    if (candles === this.candles) return;
+
+    this.candles = candles;
     this.requestUpdate?.();
   }
 

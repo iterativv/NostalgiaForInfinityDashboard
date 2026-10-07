@@ -253,8 +253,6 @@ const NO_HANDLES: LiveHandles = {
 
 const EMPTY_TRADE_MARKERS: ReadonlyArray<TvTradeMarker> = [];
 
-const EMPTY_PNL_SPANS: ReadonlyArray<HistoryPnlSpan> = [];
-
 /** PnL area fills: the chart's top/bottom band color contract. */
 interface PnlFills {
   readonly topFillColor1: string;
@@ -262,6 +260,9 @@ interface PnlFills {
   readonly bottomFillColor1: string;
   readonly bottomFillColor2: string;
 }
+
+
+const EMPTY_PNL_SPANS: ReadonlyArray<HistoryPnlSpan> = [];
 
 /**
  * PnL area fills. An explicit outcome (a realized percentage) paints the
@@ -328,6 +329,7 @@ export function CandleChart({
   historyPnlSpans = EMPTY_PNL_SPANS,
   followMarkers = false,
   focusBarTime = null,
+  focusNonce = null,
   onRequestOlder,
 }: {
   candles: ReadonlyArray<Candle>;
@@ -393,11 +395,19 @@ export function CandleChart({
   followMarkers?: boolean;
   /**
    * Bar time (whole UTC seconds, snapped bucket) to keep the view centered
-   * on — the position pager's anchor. When it changes (or the loaded
-   * window is replaced), the visible range recenters so the bar sits about
-   * a third in, keeping the current zoom level. Null = no focus.
+   * on — the position pager's anchor. When `focusNonce` changes, the
+   * visible range recenters so the bar sits about a third in, keeping the
+   * current zoom level. Null = no focus.
    */
   focusBarTime?: number | null;
+  /**
+   * Recenter trigger — any caller identity that changes exactly when the
+   * view should jump back to `focusBarTime` (pager step, pair switch,
+   * timeframe switch). Panning and streaming-in history never recenter,
+   * so free chart exploration is never fought; without a nonce the key is
+   * the bar time alone.
+   */
+  focusNonce?: string | null;
   /**
    * Infinite scroll-back: called whenever the visible range approaches the
    * oldest loaded bar (within `LOAD_OLDER_TRIGGER_BARS`). Fires per pan
@@ -1029,6 +1039,7 @@ export function CandleChart({
 
     try {
       handlesStore.state.markers?.setMarkers(positionedMarkers);
+      handlesStore.state.markers?.setCandles(candleData);
     } catch {
       // Stale primitive mid-rebuild — next tick repairs.
     }
@@ -1073,8 +1084,10 @@ export function CandleChart({
 
     // View focus: recenter on the anchor bar (runs after the marker-follow
     // block above, so an explicit focus wins on pair/position switches).
+    // Keyed on the caller's nonce — NOT on the loaded window — so history
+    // pages streaming in while the user pans never yank the view back.
     if (focusBarTime !== null && Number.isFinite(focusBarTime) && focusBarTime > 0) {
-      const key = `${focusBarTime}|${candleData[0] ? Number(candleData[0].time) : 0}`;
+      const key = `${focusBarTime}|${focusNonce ?? ""}`;
 
       if (focusKeyStore.state !== key) {
         focusKeyStore.setState(() => key);
@@ -1099,12 +1112,32 @@ export function CandleChart({
             // Chart mid-rebuild — the default span still focuses.
           }
 
+          let from = at - Math.round(span * 0.3);
+          let to = at + Math.round(span * 0.7);
+
+          // Include the oldest shaded past trade: the highlighted history
+          // must be ON SCREEN, not merely inside the loaded data. Widening
+          // keeps the anchor bar in view (~two thirds in) instead of
+          // letting the past spans sit unseen left of the viewport.
+          for (const spanItem of historyPnlSpans) {
+            for (let i = 0; i < candleData.length; i++) {
+              if (Number(candleData[i]!.time) >= spanItem.since) {
+                if (i < from) {
+                  const pad = Math.max(6, Math.round((at - i) * 0.08));
+
+                  from = Math.max(0, i - pad);
+                  to = at + Math.max(Math.round((at - from) * 0.35), 10);
+                }
+
+                break;
+              }
+            }
+          }
+
           try {
-            chart.timeScale().setVisibleLogicalRange({
-              from: at - Math.round(span * 0.3),
-              to: at + Math.round(span * 0.7),
-            });
+            chart.timeScale().setVisibleLogicalRange({ from, to });
           } catch {
+
             // Chart mid-rebuild — next keyed change repairs.
           }
         }
@@ -1163,6 +1196,7 @@ export function CandleChart({
             ...pnlFills(palette, span.isShort, span.profitPct),
             lineWidth: 1,
             crosshairMarkerVisible: false,
+
             lastValueVisible: false,
             priceLineVisible: false,
           });
@@ -1173,6 +1207,7 @@ export function CandleChart({
           // Chart mid-rebuild — next keyed change repairs.
         }
       }
+
 
       handlesStore.setState((h) => ({ ...h, pastPnl: created }));
     }
@@ -1255,6 +1290,7 @@ export function CandleChart({
           Number.isFinite(avgEntryUntil) &&
           avgEntryUntil > 0
             ? avgEntryUntil
+
             : null;
 
         pnl.setData(
@@ -1271,6 +1307,7 @@ export function CandleChart({
               })),
           ),
         );
+
       }
     } catch {
       // Stale series mid-rebuild — next tick repairs.
@@ -1320,6 +1357,7 @@ export function CandleChart({
     historyPnlSpans,
     followMarkers,
     focusBarTime,
+    focusNonce,
     candleData,
     hasCandles,
     paletteKey,

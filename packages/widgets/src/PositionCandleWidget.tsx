@@ -778,15 +778,33 @@ export function PositionCandleWidget({
     { inputs: shallow },
   );
 
+  // Window-fit source: the OLDEST instant the chart must cover — the
+  // focused position's entry and every shaded past trade — so the
+  // highlighted history is actually inside the loaded data instead of
+  // sitting unseen before the window's start.
+  const fitSourceSec = useDerived(
+    [focused, historySpans] as const,
+    ([f, spans]): number | null => {
+      let oldest: number | null = f ? earliestEntrySecond([f]) : null;
+
+      for (const span of spans) {
+        if (oldest === null || span.since < oldest) oldest = span.since;
+      }
+
+      return oldest;
+    },
+    { inputs: shallow },
+  );
+
   // Window auto-fit: the chart must show the focused position's entry →
   // now, which the default 200 × 5m window cannot for positions older
   // than ~17h. Zoom out (timeframe and/or limit) until the entry fits.
-  // Applied at most once per (pair, entry) so a user's manual timeframe
+  // Applied at most once per source instant so a user's manual timeframe
   // pick is never fought over; aging windows refit when a NEW entry opens.
   const fitKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
-    const entrySec = focused ? earliestEntrySecond([focused]) : null;
+    const entrySec = fitSourceSec;
 
     if (entrySec === null || effectivePair.length === 0) return;
 
@@ -799,17 +817,17 @@ export function PositionCandleWidget({
     if (fitKeyStore.state === fitKey) return;
     fitKeyStore.setState(() => fitKey);
     patch({ timeframe: fit.timeframe, limit: fit.limit });
-  }, [focused, cfg.timeframe, limit, effectivePair]);
+  }, [fitSourceSec, cfg.timeframe, limit, effectivePair]);
 
   // Data-shortfall refit: freqtrade only keeps a rolling analyzed window
   // (a few hundred candles), so an old entry can sit BEFORE the loaded
   // data even at max limit. One coarser step lands on the exchange-backed
-  // timeframe, whose history reaches years back. Also once per (pair,
-  // entry) — the user keeps whatever they switch to manually afterwards.
+  // timeframe, whose history reaches years back. Also once per source
+  // instant — the user keeps whatever they switch to manually afterwards.
   const refitKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
-    const entrySec = focused ? earliestEntrySecond([focused]) : null;
+    const entrySec = fitSourceSec;
 
     if (entrySec === null || effectivePair.length === 0) return;
 
@@ -828,7 +846,7 @@ export function PositionCandleWidget({
     if (fit === null) return;
     refitKeyStore.setState(() => refitKey);
     patch({ timeframe: fit.timeframe, limit: fit.limit });
-  }, [focused, candles, cfg.timeframe, limit, effectivePair]);
+  }, [fitSourceSec, candles, cfg.timeframe, limit, effectivePair]);
 
   const candleSecs = useDerived(bars, (src): number[] =>
     src.map((b) => b.time),
@@ -1343,6 +1361,7 @@ export function PositionCandleWidget({
               historyPnlSpans={historySpans}
               followMarkers
               focusBarTime={focusedEntryBucket}
+              focusNonce={`${effectivePair}|${fromEnd}|${cfg.timeframe}`}
               onRequestOlder={() => history.loadOlder(allCandles[0]?.time ?? 0)}
             />
           </div>

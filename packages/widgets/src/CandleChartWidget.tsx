@@ -66,9 +66,11 @@ import {
 } from "./shared/CandleChart";
 import {
   averageEntryPrice as computeAverageEntry,
+  buildHistoryPnlSpans,
   buildTradeMarkers,
   earliestEntrySecond,
   timeframeSeconds,
+  type HistoryPnlSpan,
 } from "./shared/tradeOverlay";
 
 export const CANDLE_MARKET_CAPABILITY: Capability = "instances.candles";
@@ -460,6 +462,24 @@ export function CandleChartWidget({
       if (tfSec === null) return at;
 
       return Math.floor(at / tfSec) * tfSec;
+    },
+    { inputs: shallow },
+  );
+
+  // Per-trade PnL areas for the pair's closed trades (entry bucket → exit
+  // bucket, shaded against each trade's real open rate, hue by outcome).
+  const historySpans = useDerived(
+    [pairClosed, cfg.timeframe, tradesAccess.allowed] as const,
+    ([closed, timeframe, allowed]): HistoryPnlSpan[] => {
+      if (!allowed) return [];
+
+      const tfSec = timeframeSeconds(timeframe);
+
+      if (tfSec === null) return [];
+
+      return buildHistoryPnlSpans(closed, tfSec, (p) =>
+        Number.isFinite(p.openRate) && p.openRate > 0 ? p.openRate : null,
+      );
     },
     { inputs: shallow },
   );
@@ -1133,6 +1153,7 @@ export function CandleChartWidget({
               avgEntryPrice={avgEntry}
               avgEntryIsShort={followedIsShort}
               avgEntrySince={entrySince}
+              historyPnlSpans={historySpans}
               onRequestOlder={() =>
                 history.loadOlder(allCandles[0]?.time ?? 0)
               }

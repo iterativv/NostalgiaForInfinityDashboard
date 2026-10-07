@@ -72,11 +72,13 @@ import {
   type TvTradeMarker,
 } from "./shared/CandleChart";
 import {
+  buildHistoryPnlSpans,
   buildPositionHistoryMarkers,
   parsePositionTime,
   positionDirection,
   positionExitText,
   timeframeSeconds,
+  type HistoryPnlSpan,
   type PositionMarkerEvent,
 } from "./shared/tradeOverlay";
 
@@ -233,16 +235,18 @@ export function PublicCandleChartWidget({
 }: WidgetProps<PublicCandleChartConfig>) {
   // Session-aware binding — anonymous visitors get a per-browser session
   // layer when the panel sink refuses writes (see sessionConfig).
+
   const { config: cfg, patch } = useWidgetConfigSink(
+
     panelId,
     "candle-chart-public",
     config,
   );
 
   const limit = clampInt(cfg.limit, 200, 20, 1000);
-
   // Market data gates the chart itself; position history is a separate
   // gate, so a grant without the relative ids still renders candles —
+
   // just without markers (same pattern as the sensitive twin).
   const marketAccess = useWidgetAccess([
     PUBLIC_CANDLE_MARKET_CAPABILITY,
@@ -448,6 +452,57 @@ export function PublicCandleChartWidget({
   // MACD histogram sentiment colors follow the color-blind safe setting
   // (declared before the subplot derivation that closes over it).
   const palette = candlePalette(useColorBlindSafe());
+
+  // Per-trade PnL areas for the pair's closed trades. Relative payloads
+  // carry no prices, so each entry level approximates the entry-bucket
+  // candle close (same rule as the position charts' public twin); trades
+  // whose entry predates the loaded window are skipped rather than guessed.
+  const historySpans = useDerived(
+    [closedRelQ.data, cfg.pair, bars, cfg.timeframe, positionsAccess.allowed] as const,
+    ([closedData, pair, bars, timeframe, allowed]): HistoryPnlSpan[] => {
+      if (!allowed) return [];
+
+      const tfSec = timeframeSeconds(timeframe);
+
+      if (tfSec === null) return [];
+
+      const closed = (closedData?.positions ?? []).filter(
+        (p) => p.pair === pair,
+      );
+
+      if (closed.length === 0) return [];
+
+      const closeByBucket = new Map<number, number>();
+
+      for (const bar of bars) closeByBucket.set(bar.time, bar.close);
+
+      const buckets = [...closeByBucket.keys()].sort((a, b) => a - b);
+
+      return buildHistoryPnlSpans(closed, tfSec, (_p, openBucket) => {
+        let close = closeByBucket.get(openBucket);
+
+        if (close === undefined) {
+          let nearest: number | null = null;
+          let nearestDist = Infinity;
+
+          for (const bucket of buckets) {
+            const dist = Math.abs(bucket - openBucket);
+
+            if (dist < nearestDist) {
+              nearestDist = dist;
+              nearest = bucket;
+            }
+          }
+
+          if (nearest === null || nearestDist > tfSec) return null;
+          close = closeByBucket.get(nearest);
+        }
+
+        return close ?? null;
+      });
+    },
+    { inputs: shallow },
+  );
 
   const overlays = useDerived(
     [
@@ -1006,6 +1061,7 @@ export function PublicCandleChartWidget({
               showVolume={cfg.showVolume}
               subplot={subplot}
               tradeMarkers={positionMarkers}
+              historyPnlSpans={historySpans}
               onRequestOlder={() =>
                 history.loadOlder(allCandles[0]?.time ?? 0)
               }

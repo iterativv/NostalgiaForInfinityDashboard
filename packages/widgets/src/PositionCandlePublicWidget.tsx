@@ -808,13 +808,30 @@ export function PositionCandlePublicWidget({
     { inputs: shallow },
   );
 
+  // Window-fit source: the OLDEST instant the chart must cover — the
+  // focused position's entry and every shaded past trade — so the
+  // highlighted history is actually inside the loaded data.
+  const fitSourceSec = useDerived(
+    [focused, historySpans] as const,
+    ([f, spans]): number | null => {
+      let oldest: number | null = f ? earliestEntrySecond([f]) : null;
+
+      for (const span of spans) {
+        if (oldest === null || span.since < oldest) oldest = span.since;
+      }
+
+      return oldest;
+    },
+    { inputs: shallow },
+  );
+
   // Window auto-fit (same policy as the sensitive twin): zoom out until
   // the focused position's entry → now fits in the window, at most once
-  // per (pair, entry) so manual picks are never fought over.
+  // per source instant so manual picks are never fought over.
   const fitKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
-    const entrySec = focused ? earliestEntrySecond([focused]) : null;
+    const entrySec = fitSourceSec;
 
     if (entrySec === null || effectivePair.length === 0) return;
 
@@ -827,7 +844,7 @@ export function PositionCandlePublicWidget({
     if (fitKeyStore.state === fitKey) return;
     fitKeyStore.setState(() => fitKey);
     patch({ timeframe: fit.timeframe, limit: fit.limit });
-  }, [focused, cfg.timeframe, limit, effectivePair]);
+  }, [fitSourceSec, cfg.timeframe, limit, effectivePair]);
 
   // Data-shortfall refit (same policy as the sensitive twin): when the
   // bot's rolling analyzed window starts AFTER the entry, one coarser
@@ -835,7 +852,7 @@ export function PositionCandlePublicWidget({
   const refitKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
-    const entrySec = focused ? earliestEntrySecond([focused]) : null;
+    const entrySec = fitSourceSec;
 
     if (entrySec === null || effectivePair.length === 0) return;
 
@@ -855,7 +872,7 @@ export function PositionCandlePublicWidget({
     if (fit === null) return;
     refitKeyStore.setState(() => refitKey);
     patch({ timeframe: fit.timeframe, limit: fit.limit });
-  }, [focused, candles, cfg.timeframe, limit, effectivePair]);
+  }, [fitSourceSec, candles, cfg.timeframe, limit, effectivePair]);
 
   const positionMarkers = useDerived(
     [
@@ -1450,6 +1467,7 @@ export function PositionCandlePublicWidget({
               historyPnlSpans={historySpans}
               followMarkers
               focusBarTime={focusedEntryBucket}
+              focusNonce={`${effectivePair}|${fromEnd}|${cfg.timeframe}`}
               onRequestOlder={() =>
                 history.loadOlder(allCandles[0]?.time ?? 0)
               }

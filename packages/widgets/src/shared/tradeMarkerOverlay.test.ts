@@ -160,14 +160,99 @@ describe("layoutTradeMarkers", () => {
   });
 
   it("respects the top inset so pills clear the floating legend", () => {
-    // Anchor near the pane top: without an inset the pill clamps to y=2,
+    // Anchor near the pane top: without an inset the pill clamps to y=0,
     // with LEGEND_INSET it must clamp below the reserved band.
     const marker = item({ x: 200, y: 30 });
     const [bare] = layoutTradeMarkers([marker], PANE_W, PANE_H, measure);
-    const [inset] = layoutTradeMarkers([marker], PANE_W, PANE_H, measure, 40);
 
-    expect(bare?.pills[0]?.rect.y).toBe(2);
-    expect(inset?.pills[0]?.rect.y).toBe(42);
+    const [inset] = layoutTradeMarkers([marker], PANE_W, PANE_H, measure, {
+      topInset: 40,
+    });
+
+    expect(bare?.pills[0]?.rect.y).toBe(0);
+    expect(inset?.pills[0]?.rect.y).toBe(40);
+  });
+
+  it("keeps exit pills above the highest candle and entries below the lowest", () => {
+    const skyY = 90;
+    const floorY = 210;
+    const bounds = { skyY, floorY };
+
+    const [exit] = layoutTradeMarkers(
+      [item({ x: 100, y: 150, side: -1 })],
+      PANE_W,
+      PANE_H,
+      measure,
+      bounds,
+    );
+
+    const [entry] = layoutTradeMarkers(
+      [item({ x: 100, y: 150, side: 1 })],
+      PANE_W,
+      PANE_H,
+      measure,
+      bounds,
+    );
+
+    const exitRect = exit?.pills[0]?.rect;
+    const entryRect = entry?.pills[0]?.rect;
+
+    // Pill clears the wick with the gap, entirely off the candles.
+    expect(exitRect!.y + PILL_HEIGHT).toBeLessThanOrEqual(skyY - 5);
+    expect(entryRect!.y).toBeGreaterThanOrEqual(floorY + 5);
+  });
+
+  it("stacks multiple exit pills upward within the candle-free band", () => {
+    const skyY = 120;
+
+    const [placement] = layoutTradeMarkers(
+      [
+        item({
+          x: 200,
+          y: 150,
+          side: -1,
+          labels: ["one", "two", "three", "four"].map((t) => ({
+            text: t,
+            width: measure(t),
+          })),
+        }),
+      ],
+      PANE_W,
+      PANE_H,
+      measure,
+      { skyY },
+    );
+
+    const rects = placement?.pills.map((p) => p.rect) ?? [];
+
+    expect(rects.length).toBe(4);
+
+    for (const rect of rects) {
+      // Every pill stays above the skyline (candle-free).
+      expect(rect.y + PILL_HEIGHT).toBeLessThanOrEqual(skyY - 5);
+    }
+
+    for (let i = 1; i < rects.length; i++) {
+      expect(rects[i]!.y).toBeLessThan(rects[i - 1]!.y);
+    }
+  });
+
+  it("falls back to the pane edge when no band fits above the candles", () => {
+    // Skyline right at the pane top: no room above the candles.
+    const [placement] = layoutTradeMarkers(
+      [item({ x: 200, y: 150, side: -1 })],
+      PANE_W,
+      PANE_H,
+      measure,
+      { skyY: 24 },
+    );
+
+    const rect = placement?.pills[0]?.rect;
+
+    expect(rect).toBeDefined();
+    // The band collapses to the 1px sliver above the skyline — the pill
+    // rides the pane top, the best an overcrowded pane allows.
+    expect(rect!.y).toBe(1);
   });
 
   it("counts labels that fit nowhere into hidden with a +N pill", () => {
