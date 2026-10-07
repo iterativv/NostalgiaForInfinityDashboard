@@ -1387,6 +1387,15 @@ export interface ResolvedFreqtradeConfig {
 /** Default request budget when the caller leaves `requestTimeoutMs` unset. */
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * `pair_candles` computes and serializes the analyzed dataframe — by far
+ * the bot's slowest endpoint (large limits, slow hardware, many pairs
+ * routinely answer in 10-30s). It gets its own, longer budget so a slow
+ * analysis never reads as an outage; `FREQTRADE_TIMEOUT_MS` stays the
+ * budget for every snappy control endpoint.
+ */
+const CANDLES_REQUEST_TIMEOUT_MS = 30_000;
+
 /** Build a client service for an arbitrary instance config (multi-instance). */
 /** How long a service stops calling a freqtrade that is unreachable. */
 const BREAKER_COOLDOWN_MS = 30_000;
@@ -1607,14 +1616,15 @@ export const makeFreqtradeService = (
     const withRequestTimeout = <A>(
       operation: string,
       effect: Effect.Effect<A, FreqtradeError>,
+      durationMs: number = requestTimeoutMs,
     ): Effect.Effect<A, FreqtradeError> =>
       effect.pipe(
         Effect.timeoutFail({
-          duration: requestTimeoutMs,
+          duration: durationMs,
           onTimeout: () =>
             new FreqtradeError({
               operation,
-              reason: `no response within ${Math.round(requestTimeoutMs / 1000)}s`,
+              reason: `no response within ${Math.round(durationMs / 1000)}s`,
             }),
         }),
       );
@@ -1724,6 +1734,7 @@ export const makeFreqtradeService = (
       path: string,
       operation: string,
       schema: Schema.Schema<A, I>,
+      timeoutMs?: number,
     ): Effect.Effect<A, FreqtradeError> =>
       withBreaker(operation, () =>
         // The ceiling wraps auth too: a login that never answers must not
@@ -1768,6 +1779,7 @@ export const makeFreqtradeService = (
               );
             }),
           ),
+          timeoutMs,
         ),
       );
 
@@ -2143,6 +2155,7 @@ export const makeFreqtradeService = (
           `/api/v1/pair_candles?pair=${encodeURIComponent(pair)}&timeframe=${encodeURIComponent(timeframe)}&limit=${limit}`,
           "candles",
           CandlesPayload,
+          Math.max(requestTimeoutMs, CANDLES_REQUEST_TIMEOUT_MS),
         ).pipe(
           Effect.map(
             (candles) =>

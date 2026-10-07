@@ -1174,7 +1174,7 @@ export function CandleChart({
       const created: Array<ISeriesApi<"Baseline">> = [];
 
       for (const span of historyPnlSpans) {
-        const data = orderedByTime(
+        const inSpan = orderedByTime(
           candleData
             .filter(
               (d) =>
@@ -1182,11 +1182,22 @@ export function CandleChart({
             )
             .map((d) => ({
               time: d.time,
-              value: d.close,
+              close: d.close,
             })),
         );
 
-        if (data.length === 0) continue;
+        // Squared highlight: a CONSTANT line at the trade's exit level over
+        // the baseline — the area is a rectangle (entry level → exit level,
+        // entry bucket → exit bucket), never a trapezoid that follows the
+        // price path.
+        const exitValue = inSpan[inSpan.length - 1]?.close;
+
+        if (exitValue === undefined) continue;
+
+        const data = inSpan.map((d) => ({
+          time: d.time,
+          value: exitValue,
+        }));
 
         try {
           const series = chart.addSeries(BaselineSeries, {
@@ -1293,18 +1304,32 @@ export function CandleChart({
 
             : null;
 
+        const inWindow = orderedByTime(
+          candleData
+            .filter(
+              (d) =>
+                (since === null || Number(d.time) >= since) &&
+                (until === null || Number(d.time) <= until),
+            )
+            .map((d) => ({
+              time: d.time,
+              close: d.close,
+            })),
+        );
+
+        // A closed follow highlights as a SQUARED rectangle: constant line
+        // at the trade's exit level over the entry baseline (entry level →
+        // exit level, entry bucket → exit bucket). An open follow keeps
+        // the live area that tracks price against the entry.
+        const exitValue =
+          until !== null ? inWindow[inWindow.length - 1]?.close : undefined;
+
         pnl.setData(
           orderedByTime(
-            candleData
-              .filter(
-                (d) =>
-                  (since === null || Number(d.time) >= since) &&
-                  (until === null || Number(d.time) <= until),
-              )
-              .map((d) => ({
-                time: d.time,
-                value: d.close,
-              })),
+            inWindow.map((d) => ({
+              time: d.time,
+              value: exitValue ?? d.close,
+            })),
           ),
         );
 
