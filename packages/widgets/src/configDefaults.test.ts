@@ -152,10 +152,10 @@ describe("widget config schemas", () => {
         pair: "BTC/USDT",
         timeframe: "5m",
         limit: 200,
-        showSma20: true,
-        showVwap: true,
-        showVolume: true,
-        subplot: "rsi",
+        showSma20: false,
+        showVwap: false,
+        showVolume: false,
+        subplot: "none",
       },
     );
     expect(() =>

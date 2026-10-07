@@ -109,18 +109,18 @@ export const CandleChartConfigSchema = Schema.Struct({
     default: (): CandleTimeframe => "5m",
   }),
   limit: numberWithDefault(200),
-  showSma20: booleanWithDefault(true),
-  showSma50: booleanWithDefault(true),
+  showSma20: booleanWithDefault(false),
+  showSma50: booleanWithDefault(false),
   showEma12: booleanWithDefault(false),
   showBollinger: booleanWithDefault(false),
-  showVwap: booleanWithDefault(true),
-  showVolume: booleanWithDefault(true),
+  showVwap: booleanWithDefault(false),
+  showVolume: booleanWithDefault(false),
   /** Violet entry dots + amber exit arrows from the pair's sub-orders. */
   showTrades: booleanWithDefault(true),
   /** Blue dashed avg-entry line with green/red PnL fill. */
   showAvgEntry: booleanWithDefault(true),
   subplot: Schema.optionalWith(CandleSubplot, {
-    default: (): CandleSubplot => "rsi",
+    default: (): CandleSubplot => "none",
   }),
 });
 
@@ -495,7 +495,7 @@ export function CandleChartWidget({
       return buildTradeMarkers(orders, secs, tfSec).map((m) => ({
         time: utcSeconds(m.time),
         kind: m.kind,
-        text: m.text,
+        labels: m.labels,
       }));
     },
     { inputs: shallow },
@@ -914,7 +914,6 @@ export function CandleChartWidget({
                     }
                   >
                     {tf.text}
-                    {tf.id === strategyTf ? " ●" : ""}
                   </button>
                 ))}
               </div>

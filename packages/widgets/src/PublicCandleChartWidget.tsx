@@ -126,16 +126,16 @@ export const PublicCandleChartConfigSchema = Schema.Struct({
     default: (): PublicCandleTimeframe => "5m",
   }),
   limit: numberWithDefault(200),
-  showSma20: booleanWithDefault(true),
-  showSma50: booleanWithDefault(true),
+  showSma20: booleanWithDefault(false),
+  showSma50: booleanWithDefault(false),
   showEma12: booleanWithDefault(false),
   showBollinger: booleanWithDefault(false),
-  showVwap: booleanWithDefault(true),
-  showVolume: booleanWithDefault(true),
+  showVwap: booleanWithDefault(false),
+  showVolume: booleanWithDefault(false),
   /** Position-history markers (entries/exits, percentages only). */
   showPositions: booleanWithDefault(true),
   subplot: Schema.optionalWith(PublicCandleSubplot, {
-    default: (): PublicCandleSubplot => "rsi",
+    default: (): PublicCandleSubplot => "none",
   }),
 });
 
@@ -439,7 +439,7 @@ export function PublicCandleChartWidget({
       return buildPositionHistoryMarkers(events, secs, tfSec).map((m) => ({
         time: utcSeconds(m.time),
         kind: m.kind,
-        text: m.text,
+        labels: m.labels,
       }));
     },
     { inputs: shallow },
@@ -826,7 +826,6 @@ export function PublicCandleChartWidget({
                     }
                   >
                     {tf.text}
-                    {tf.id === strategyTf ? " ●" : ""}
                   </button>
                 ))}
               </div>

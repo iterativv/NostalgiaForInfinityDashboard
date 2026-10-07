@@ -1,9 +1,8 @@
-// SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
-// SPDX-License-Identifier: SSPL-1.0
-
 import { describe, expect, it } from "vitest";
 import {
+  MAX_HISTORY_PNL_SPANS,
   averageEntryPrice,
+  buildHistoryPnlSpans,
   buildPositionHistoryMarkers,
   buildTradeMarkers,
   earliestEntrySecond,
@@ -78,8 +77,8 @@ describe("buildTradeMarkers", () => {
     );
 
     expect(markers).toEqual([
-      { time: b0, kind: "entry", text: "grind 2" },
-      { time: b1, kind: "exit", text: "grind 1 exit" },
+      { time: b0, kind: "entry", labels: ["grind 2"] },
+      { time: b1, kind: "exit", labels: ["grind 1 exit"] },
     ]);
   });
 
@@ -98,7 +97,24 @@ describe("buildTradeMarkers", () => {
 
     expect(markers).toHaveLength(1);
     expect(markers[0]?.kind).toBe("exit");
-    expect(markers[0]?.text).toContain("grind 5 exit");
+    expect(markers[0]?.labels).toEqual(["grind 5 exit", "501 exit", "472 exit"]);
+  });
+
+  it("caps the labels stacked per marker", () => {
+    const [b0] = buckets;
+
+    const markers = buildTradeMarkers(
+      Array.from({ length: 12 }, (_, i) => ({
+        tag: `t${i}`,
+        side: "sell",
+        timestamp: b0! * 1000 + (i + 1) * 1_000,
+      })),
+      buckets,
+      TF,
+    );
+
+    expect(markers).toHaveLength(1);
+    expect(markers[0]?.labels).toHaveLength(8);
   });
 
   it("keeps entries and exits on the same candle as two markers", () => {
@@ -151,7 +167,7 @@ describe("buildTradeMarkers", () => {
       TF,
     );
 
-    expect(markers).toEqual([{ time: b2, kind: "entry", text: "grind 3" }]);
+    expect(markers).toEqual([{ time: b2, kind: "entry", labels: ["grind 3"] }]);
   });
 });
 
@@ -242,8 +258,8 @@ describe("buildPositionHistoryMarkers", () => {
     );
 
     expect(markers).toEqual([
-      { time: b0, kind: "entry", text: "Long" },
-      { time: b1, kind: "exit", text: "Long +2.35% exit" },
+      { time: b0, kind: "entry", labels: ["Long"] },
+      { time: b1, kind: "exit", labels: ["Long +2.35% exit"] },
     ]);
   });
 
@@ -263,7 +279,7 @@ describe("buildPositionHistoryMarkers", () => {
 
     expect(markers).toHaveLength(1);
     expect(markers[0]?.kind).toBe("entry");
-    expect(markers[0]?.text).toContain("Long");
+    expect(markers[0]?.labels).toEqual(["Long", "Short"]);
   });
 
   it("returns nothing for empty input", () => {
@@ -301,5 +317,90 @@ describe("earliestEntrySecond", () => {
   it("returns null for empty or undated input", () => {
     expect(earliestEntrySecond([])).toBeNull();
     expect(earliestEntrySecond([{ openDate: "not a date" }])).toBeNull();
+  });
+});
+
+describe("buildHistoryPnlSpans", () => {
+  const TF = 3_600;
+  const base = Date.UTC(2024, 4, 1);
+  const at = (h: number) => new Date(base + h * 3_600_000).toISOString();
+  const bucket = (h: number) => Math.floor((base / 1000 + h * TF) / TF) * TF;
+
+  it("snaps each trade to its entry→exit buckets", () => {
+    const spans = buildHistoryPnlSpans(
+      [
+        {
+          openDate: at(2),
+          closeDate: at(9),
+          isShort: true,
+          closeProfitPct: -4.2,
+          profitPct: -1,
+        },
+      ],
+      TF,
+      () => 0.35,
+    );
+
+    expect(spans).toEqual([
+      {
+        since: bucket(2),
+        until: bucket(9),
+        entry: 0.35,
+        isShort: true,
+        profitPct: -4.2,
+      },
+    ]);
+  });
+
+  it("carries the realized percentage for outcome coloring", () => {
+    const spans = buildHistoryPnlSpans(
+      [
+        { openDate: at(1), closeDate: at(2), profitPct: 7.5 },
+        { openDate: at(3), closeDate: at(4) },
+        { openDate: at(5), closeDate: at(6), profitPct: Number.NaN },
+      ],
+      TF,
+      () => 1,
+    );
+
+    expect(spans[0]?.profitPct).toBe(7.5);
+    expect(spans[1]?.profitPct).toBeUndefined();
+    // NaN is missing data, not an outcome.
+    expect(spans[2]?.profitPct).toBeUndefined();
+  });
+
+  it("skips trades without dates, inverted ranges or resolvable entries", () => {
+    const spans = buildHistoryPnlSpans(
+      [
+        { openDate: "not a date", closeDate: at(5) },
+        { openDate: at(5), closeDate: at(3) },
+        { openDate: at(1), closeDate: at(2) },
+        { openDate: at(1) },
+      ],
+      TF,
+      () => null,
+    );
+
+    expect(spans).toEqual([]);
+  });
+
+  it("caps at the newest trades (input is newest-first)", () => {
+    // Newest-first window, exactly what the closed-position sources emit.
+    const trades = Array.from(
+      { length: MAX_HISTORY_PNL_SPANS + 10 },
+      (_, i) => ({
+        openDate: at(MAX_HISTORY_PNL_SPANS + 9 - i),
+        closeDate: at(MAX_HISTORY_PNL_SPANS + 10 - i),
+      }),
+    );
+
+    const spans = buildHistoryPnlSpans(trades, TF, () => 1);
+
+    expect(spans).toHaveLength(MAX_HISTORY_PNL_SPANS);
+    // Kept spans are the newest 60: spans[0] is the newest trade
+    // (hour 69→70), the last kept one starts at hour 10.
+    expect(spans[0]?.since).toBe(bucket(MAX_HISTORY_PNL_SPANS + 9));
+    expect(spans[0]?.until).toBe(bucket(MAX_HISTORY_PNL_SPANS + 10));
+    expect(spans.at(-1)?.since).toBe(bucket(10));
   });
 });

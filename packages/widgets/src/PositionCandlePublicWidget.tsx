@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
-// SPDX-License-Identifier: SSPL-1.0
-
 /**
  * Position candles (public) — the shareable twin of `position-candle`.
  *
@@ -9,6 +6,11 @@
  * back to auto), but built only from market data and
  * `.relative` position payloads: entry/exit markers carry direction,
  * percentages and tags — never amounts, prices or order detail.
+ *
+ * The toolbar pair combobox lists every pair with trade history in those
+ * public payloads (open + closed windows), so shared-page visitors can
+ * review any traded pair; picking one re-fits the window to that pair's
+ * latest position and pans to its newest marker.
  *
  * Profit/loss shading without absolutes: the dashed baseline sits at the
  * allocation-weighted entry-bucket close (purely public inputs — entry
@@ -42,7 +44,7 @@ import {
   numberWithDefault,
   stringWithDefault,
 } from "./shared/config";
-import { clampInt, fmtCompact } from "./shared/format";
+import { clampInt, fmtCompact, pnlClass } from "./shared/format";
 import { queryState, useWidgetAccess } from "./shared/query";
 import { useNarrowMode } from "./shared/size";
 import { InstanceSelect } from "./shared/InstanceSelect";
@@ -62,12 +64,14 @@ import {
   type TvTradeMarker,
 } from "./shared/CandleChart";
 import {
+  buildHistoryPnlSpans,
   buildPositionHistoryMarkers,
   earliestEntrySecond,
   parsePositionTime,
   positionDirection,
   positionExitText,
   timeframeSeconds,
+  type HistoryPnlSpan,
   type PositionMarkerEvent,
 } from "./shared/tradeOverlay";
 import { fitWindowToEntry } from "./shared/positionFit";
@@ -82,6 +86,7 @@ import {
   PositionPairChips,
   type PositionChipOption,
 } from "./shared/PositionPairChips";
+import { PositionPager } from "./shared/PositionPager";
 import { useCandlePending } from "./shared/candlePending";
 import { useCandleHistory, mergeOlderCandles } from "./shared/candleHistory";
 import { useStrategyTimeframe } from "./shared/strategyTimeframe";
@@ -133,18 +138,18 @@ export const PositionCandlePublicConfigSchema = Schema.Struct({
     default: (): PositionCandlePublicTimeframe => "5m",
   }),
   limit: numberWithDefault(200),
-  showSma20: booleanWithDefault(true),
-  showSma50: booleanWithDefault(true),
+  showSma20: booleanWithDefault(false),
+  showSma50: booleanWithDefault(false),
   showEma12: booleanWithDefault(false),
   showBollinger: booleanWithDefault(false),
-  showVwap: booleanWithDefault(true),
-  showVolume: booleanWithDefault(true),
+  showVwap: booleanWithDefault(false),
+  showVolume: booleanWithDefault(false),
   /** Position-history markers — always on (legacy flag). */
   showPositions: booleanWithDefault(true),
   /** Entry-level line with green/red profit/loss shading — always on (legacy). */
   showEntryLevel: booleanWithDefault(true),
   subplot: Schema.optionalWith(PositionCandlePublicSubplot, {
-    default: (): PositionCandlePublicSubplot => "rsi",
+    default: (): PositionCandlePublicSubplot => "none",
   }),
 });
 
@@ -190,6 +195,8 @@ interface PairBucket {
  */
 const EMPTY_RELATIVE_OPEN: ReadonlyArray<RelativeOpenPosition> = [];
 
+const EMPTY_RELATIVE_CLOSED: ReadonlyArray<RelativeClosedPosition> = [];
+
 const EMPTY_PAIRS: ReadonlyArray<string> = [];
 
 function bucketByPair(
@@ -232,6 +239,38 @@ function bucketByPair(
 const cleanTag = (tag: string | undefined): string =>
   (tag ?? "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 
+/**
+ * Pairs with trade history in the public `.relative` payloads (open +
+ * closed windows), newest trade first — the pair switcher offers exactly
+ * these, so a pick always lands on a pair the chart can mark up.
+ */
+export function tradedPairsFromRelative(
+  open: ReadonlyArray<RelativeOpenPosition>,
+  closed: ReadonlyArray<RelativeClosedPosition>,
+): string[] {
+  const lastAt = new Map<string, number>();
+
+  const consider = (pair: string, at: number): void => {
+    if (at > (lastAt.get(pair) ?? 0)) lastAt.set(pair, at);
+  };
+
+  for (const p of open) consider(p.pair, parseTradeTime(p.openDate));
+
+  for (const p of closed) {
+    consider(
+      p.pair,
+      Math.max(
+        parseTradeTime(p.openDate),
+        p.closeDate !== undefined ? parseTradeTime(p.closeDate) : 0,
+      ),
+    );
+  }
+
+  return [...lastAt.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([pair]) => pair);
+}
+
 function entryLabel(
   isShort: boolean | undefined,
   enterTag: string | undefined,
@@ -262,10 +301,13 @@ function exitLabel(
  * average of the entry-bucket candle closes. Positions missing weights
  * (or a fully weightless set) fall back to equal shares; entries outside
  * the loaded window (or with unparseable dates) are skipped — null hides
- * the line instead of guessing.
+ * the line instead of guessing. Open positions carry `allocationWeight`;
+ * closed ones (pinned-pair history review) omit it and share equally.
  */
-export function entryLevelBaseline(
-  open: ReadonlyArray<RelativeOpenPosition>,
+export function entryLevelBaseline<
+  T extends { readonly openDate: string; readonly allocationWeight?: number },
+>(
+  open: ReadonlyArray<T>,
   candles: ReadonlyArray<{ time: number; close: number }>,
   tfSeconds: number,
 ): number | null {
@@ -534,41 +576,242 @@ export function PositionCandlePublicWidget({
     { inputs: shallow },
   );
 
-  // Short direction drives the PnL fill side (see CandleChart
-  // `avgEntryIsShort`): all-short follows invert, mixed defaults to long.
-  const followedIsShort = useDerived(
-    [pairOpen] as const,
-    ([open]): boolean =>
-      open.length > 0 && open.every((p) => p.isShort === true),
+  // One sequence of every position the pair ever had (open + closed),
+  // OLDEST first — so the pager's `i/x` reads x/x on the newest position
+  // and ‹ walks back into history.
+  const pairPositions = useDerived(
+    [pairOpen, pairClosed] as const,
+    ([open, closed]) =>
+      [...open, ...closed].sort(
+        (a, b) =>
+          parseTradeTime(a.openDate) - parseTradeTime(b.openDate) ||
+          a.tradeId - b.tradeId,
+      ),
     { inputs: shallow },
   );
 
-  // Entry-anchored fill start (relative payloads carry no order times, so
-  // the open dates back it): shading covers entry → newest, never the
-  // pre-entry history that made the old fill misleading.
-  const entrySince = useDerived(
-    [pairOpen, cfg.timeframe] as const,
-    ([open, timeframe]): number | null => {
-      const at = earliestEntrySecond(open);
+  // Which of the pair's positions the chart anchors to, counted from the
+  // END (0 = newest) so a freshly opened trade keeps the pager pinned on
+  // x/x. Resets when the pair changes; the newest position is the default
+  // anchor.
+  const posStore = useLocalStore<{ pair: string; fromEnd: number }>({
+    pair: "",
+    fromEnd: 0,
+  });
 
-      if (at === null) return at;
+  if (posStore.state.pair !== effectivePair) {
+    posStore.setState(() => ({ pair: effectivePair, fromEnd: 0 }));
+  }
+
+  const posCount = pairPositions.length;
+
+  const fromEnd = Math.min(
+    Math.max(posStore.state.fromEnd, 0),
+    Math.max(0, posCount - 1),
+  );
+
+  const posIndex = posCount === 0 ? 0 : posCount - 1 - fromEnd;
+  const pagerIndex = posCount - fromEnd;
+
+  const focused = pairPositions[posIndex];
+
+  const focusedOpen = focused?.isOpen === true;
+
+  // Pairs with trade history in the public payloads — the toolbar pair
+  // combobox offers exactly these (a pick always lands on a pair the chart
+  // can mark up), newest trade first.
+  const tradedPairsRel = useDerived(
+    [openRelQ.data?.positions, closedRelQ.data?.positions] as const,
+    ([open, closed]) =>
+      tradedPairsFromRelative(
+        open ?? EMPTY_RELATIVE_OPEN,
+        closed ?? EMPTY_RELATIVE_CLOSED,
+      ),
+    { inputs: shallow },
+  );
+
+  // Per-pair relative PnL for the pair select: each pair's latest closed
+  // position's realized percentage (pairs with only live positions fall
+  // back to their newest open percentage) — the selector doubles as a
+  // mini scoreboard. Payloads are newest-first, so the first sight of a
+  // pair is its latest position.
+  const pnlByPair = useDerived(
+    [openRelQ.data, closedRelQ.data] as const,
+    ([open, closed]): ReadonlyMap<string, number> => {
+      const map = new Map<string, number>();
+
+      for (const p of closed?.positions ?? []) {
+        if (map.has(p.pair)) continue;
+
+        const pct = [p.closeProfitPct, p.profitPct].find(
+          (v) => v !== undefined && Number.isFinite(v),
+        );
+
+        if (pct !== undefined) map.set(p.pair, pct);
+      }
+
+      for (const p of open?.positions ?? []) {
+        if (map.has(p.pair)) continue;
+
+        if (p.profitPct !== undefined && Number.isFinite(p.profitPct)) {
+          map.set(p.pair, p.profitPct);
+        }
+      }
+
+      return map;
+    },
+    { inputs: shallow },
+  );
+
+  // The focused position anchors the chart: its entry level, PnL shading
+  // and window fit — open positions keep the dashed entry line, closed
+  // ones bound the area at their exit.
+  const focusedIsShort = useDerived(
+    [focused] as const,
+    ([f]): boolean => f?.isShort === true,
+    { inputs: shallow },
+  );
+
+  // Entry-anchored fill start + view anchor (relative payloads carry no
+  // order times, so the open date backs it): shading covers the focused
+  // position's entry → its exit (closed) or → newest (open), never the
+  // pre-entry history that made the old fill misleading.
+  const focusedEntryBucket = useDerived(
+    [focused, cfg.timeframe] as const,
+    ([f, timeframe]): number | null => {
+      const at = f ? earliestEntrySecond([f]) : null;
+
+      if (at === null) return null;
 
       const tfSec = timeframeSeconds(timeframe);
 
-      if (tfSec === null) return at;
+      return tfSec === null ? at : Math.floor(at / tfSec) * tfSec;
+    },
+    { inputs: shallow },
+  );
 
-      return Math.floor(at / tfSec) * tfSec;
+  // Fill END: a focused CLOSED position stops the PnL shading at its exit
+  // bucket — the trade's story ends there.
+  const entryUntil = useDerived(
+    [focused, focusedOpen, cfg.timeframe] as const,
+    ([f, isOpen, timeframe]): number | null => {
+      if (!f || isOpen || !("closeDate" in f)) return null;
+
+      const closedAt = parsePositionTime(f.closeDate);
+
+      if (closedAt === null) return null;
+
+      const sec = Math.floor(closedAt / 1000);
+      const tfSec = timeframeSeconds(timeframe);
+
+      return tfSec === null ? sec : Math.floor(sec / tfSec) * tfSec;
+    },
+    { inputs: shallow },
+  );
+
+  // Closed focus: the area paints by the realized outcome (green winner /
+  // red loser) instead of the live split around the entry.
+  const focusedProfitPct = useDerived(
+    [focused, focusedOpen] as const,
+    ([f, isOpen]): number | null => {
+      if (!f || isOpen) return null;
+
+      const pct =
+        "closeProfitPct" in f
+          ? [f.closeProfitPct, f.profitPct]
+          : [f.profitPct];
+
+      const resolved = pct.find((v) => v !== undefined && Number.isFinite(v));
+
+      return resolved ?? null;
+    },
+    { inputs: shallow },
+  );
+
+  // Realized PnL of the focused closed position (relative — percentages
+  // only). Drives the toolbar readout when a closed position is focused.
+  const closedPnl = useDerived(
+    [focused, focusedOpen] as const,
+    ([f, isOpen]): number | null => {
+      if (!f || isOpen) return null;
+
+      const candidates = [
+        "closeProfitPct" in f ? f.closeProfitPct : undefined,
+        f.profitPct,
+      ];
+
+      const pct = candidates.find((v) => v !== undefined && Number.isFinite(v));
+
+      return pct === undefined ? null : pct;
+    },
+    { inputs: shallow },
+  );
+
+  // Per-trade PnL areas for past closed trades. Relative payloads carry no
+  // prices, so each entry level approximates the entry-bucket candle close
+  // (same rule as the entry-level baseline); trades whose entry predates
+  // the loaded window are skipped rather than guessed. The focused
+  // position's own window is shaded by the main entry-level area above.
+  const historySpans = useDerived(
+    [
+      focused,
+      focusedOpen,
+      pairClosed,
+      bars,
+      cfg.timeframe,
+      positionsAccess.allowed,
+    ] as const,
+    ([f, isOpen, closed, bars, timeframe, allowed]): HistoryPnlSpan[] => {
+      if (!allowed) return [];
+
+      const tfSec = timeframeSeconds(timeframe);
+
+      if (tfSec === null) return [];
+
+      const past =
+        !f || isOpen
+          ? closed
+          : closed.filter((p) => p.tradeId !== f.tradeId);
+
+      const closeByBucket = new Map<number, number>();
+
+      for (const bar of bars) closeByBucket.set(bar.time, bar.close);
+
+      const buckets = [...closeByBucket.keys()].sort((a, b) => a - b);
+
+      return buildHistoryPnlSpans(past, tfSec, (_p, openBucket) => {
+        let close = closeByBucket.get(openBucket);
+
+        if (close === undefined) {
+          let nearest: number | null = null;
+          let nearestDist = Infinity;
+
+          for (const bucket of buckets) {
+            const dist = Math.abs(bucket - openBucket);
+
+            if (dist < nearestDist) {
+              nearestDist = dist;
+              nearest = bucket;
+            }
+          }
+
+          if (nearest === null || nearestDist > tfSec) return null;
+          close = closeByBucket.get(nearest);
+        }
+
+        return close ?? null;
+      });
     },
     { inputs: shallow },
   );
 
   // Window auto-fit (same policy as the sensitive twin): zoom out until
-  // the followed position's entry → now fits in the window, at most once
+  // the focused position's entry → now fits in the window, at most once
   // per (pair, entry) so manual picks are never fought over.
   const fitKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
-    const entrySec = earliestEntrySecond(pairOpen);
+    const entrySec = focused ? earliestEntrySecond([focused]) : null;
 
     if (entrySec === null || effectivePair.length === 0) return;
 
@@ -581,7 +824,7 @@ export function PositionCandlePublicWidget({
     if (fitKeyStore.state === fitKey) return;
     fitKeyStore.setState(() => fitKey);
     patch({ timeframe: fit.timeframe, limit: fit.limit });
-  }, [pairOpen, cfg.timeframe, limit, effectivePair]);
+  }, [focused, cfg.timeframe, limit, effectivePair]);
 
   // Data-shortfall refit (same policy as the sensitive twin): when the
   // bot's rolling analyzed window starts AFTER the entry, one coarser
@@ -589,7 +832,7 @@ export function PositionCandlePublicWidget({
   const refitKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
-    const entrySec = earliestEntrySecond(pairOpen);
+    const entrySec = focused ? earliestEntrySecond([focused]) : null;
 
     if (entrySec === null || effectivePair.length === 0) return;
 
@@ -609,7 +852,7 @@ export function PositionCandlePublicWidget({
     if (fit === null) return;
     refitKeyStore.setState(() => refitKey);
     patch({ timeframe: fit.timeframe, limit: fit.limit });
-  }, [pairOpen, candles, cfg.timeframe, limit, effectivePair]);
+  }, [focused, candles, cfg.timeframe, limit, effectivePair]);
 
   const positionMarkers = useDerived(
     [
@@ -668,7 +911,7 @@ export function PositionCandlePublicWidget({
       return buildPositionHistoryMarkers(events, secs, tfSec).map((m) => ({
         time: utcSeconds(m.time),
         kind: m.kind,
-        text: m.text,
+        labels: m.labels,
       }));
     },
     { inputs: shallow },
@@ -678,14 +921,15 @@ export function PositionCandlePublicWidget({
   // series fill (see `entryLevelBaseline`). Null = entries predate the
   // loaded window, so the line stays hidden instead of guessing.
   const entryBaseline = useDerived(
-    [pairOpen, candles, cfg.timeframe] as const,
-    ([open, candles, timeframe]): number | null => {
-      // Position charts always show the entry level (no toggle).
+    [focused, candles, cfg.timeframe] as const,
+    ([f, candles, timeframe]): number | null => {
+      // Position charts always show the entry level (no toggle) — a single
+      // focused position, so the baseline is its entry-bucket close.
       const tfSec = timeframeSeconds(timeframe);
 
-      if (tfSec === null) return null;
+      if (tfSec === null || !f) return null;
 
-      return entryLevelBaseline(open, candles, tfSec);
+      return entryLevelBaseline([f], candles, tfSec);
     },
     { inputs: shallow },
   );
@@ -833,6 +1077,7 @@ export function PositionCandlePublicWidget({
           label="Pair (empty = follow open positions)"
           value={cfg.pair}
           pairs={availablePairs}
+          pnlByPair={pnlByPair}
           onChange={(pair) => patch({ pair })}
         />
         <SettingsSelect
@@ -936,12 +1181,22 @@ export function PositionCandlePublicWidget({
             }}
           >
             <div className="nfi-candle-toolbar">
-              <span
-                className="nfi-candle-pair"
-                title={`${candles.length} candles loaded`}
-              >
-                {effectivePair}
-              </span>
+              {tradedPairsRel.length > 0 ? (
+                <PairCombobox
+                  id={`poscp-pair-jump-${panelId}`}
+                  value={effectivePair}
+                  pairs={tradedPairsRel}
+                  pnlByPair={pnlByPair}
+                  onChange={(pair) => patch({ pair })}
+                />
+              ) : (
+                <span
+                  className="nfi-candle-pair"
+                  title={`${candles.length} candles loaded`}
+                >
+                  {effectivePair}
+                </span>
+              )}
               {isMarketData ? (
                 <span
                   className="nfi-candle-range"
@@ -969,7 +1224,6 @@ export function PositionCandlePublicWidget({
                     }
                   >
                     {tf.text}
-                    {tf.id === strategyTf ? " ●" : ""}
                   </button>
                 ))}
               </div>
@@ -980,6 +1234,18 @@ export function PositionCandlePublicWidget({
                   autoActive={pinned.length === 0}
                   onAuto={() => patch({ pair: "" })}
                   onPick={(key) => patch({ pair: key })}
+                />
+              ) : null}
+              {positionsAccess.allowed ? (
+                <PositionPager
+                  index={pagerIndex}
+                  count={posCount}
+                  onMove={(index) =>
+                    posStore.setState((s) => ({
+                      ...s,
+                      fromEnd: Math.max(0, posCount - index),
+                    }))
+                  }
                 />
               ) : null}
               <div
@@ -1122,6 +1388,17 @@ export function PositionCandlePublicWidget({
                       {followedAvg.toFixed(2)}%)
                     </span>
                   </span>
+                ) : closedPnl !== null ? (
+                  <span
+                    className="nfi-candle-range"
+                    title="Focused position · realized PnL"
+                  >
+                    exit{" "}
+                    <span className={pnlClass(closedPnl)}>
+                      ({closedPnl >= 0 ? "+" : ""}
+                      {closedPnl.toFixed(2)}%)
+                    </span>
+                  </span>
                 ) : null}
                 {narrow ? null : (
                   <>
@@ -1162,17 +1439,18 @@ export function PositionCandlePublicWidget({
               subplot={subplot}
               tradeMarkers={positionMarkers}
               avgEntryPrice={entryBaseline}
-              avgEntryIsShort={followedIsShort}
-              avgEntrySince={entrySince}
+              avgEntryIsShort={focusedIsShort}
+              avgEntryProfitPct={focusedProfitPct}
+              avgEntrySince={focusedEntryBucket}
+              avgEntryUntil={entryUntil}
+              avgEntryLineVisible={focusedOpen}
+              historyPnlSpans={historySpans}
               followMarkers
+              focusBarTime={focusedEntryBucket}
               onRequestOlder={() =>
                 history.loadOlder(allCandles[0]?.time ?? 0)
               }
-              avgEntryTitle={
-                entryBaseline !== null
-                  ? `entry lvl ${entryBaseline.toFixed(chartPrecision)}`
-                  : undefined
-              }
+              avgEntryTitle={entryBaseline !== null ? "entry lvl" : undefined}
             />
             {!pinnedOpen && pinned.length > 0 ? (
               <p style={{ fontSize: "0.75rem", opacity: 0.6, margin: 0 }}>

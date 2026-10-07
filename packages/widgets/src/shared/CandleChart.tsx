@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 Laode Muhammad Al Fatih <lamualfa@gmail.com>
-// SPDX-License-Identifier: SSPL-1.0
-
 /**
  * CandleChart — OHLCV candlesticks rendered with TradingView's
  * `lightweight-charts` (canvas, crosshair, pan/zoom included).
@@ -38,18 +35,20 @@ import {
   LineSeries,
   LineStyle,
   createChart,
-  createSeriesMarkers,
   type CandlestickData,
   type HistogramData,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
-  type ISeriesMarkersPluginApi,
   type LineData,
-  type SeriesMarker,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
+import {
+  TradeMarkerPrimitive,
+  positionTradeMarkers,
+} from "./tradeMarkerOverlay";
+import type { HistoryPnlSpan } from "./tradeOverlay";
 import { format } from "date-fns";
 import type { Candle } from "@nfi/api-contract";
 
@@ -72,18 +71,16 @@ export interface TvSubplot {
 
 /**
  * One trade marker on the candle series — time is the candle-bucket
- * `UTCTimestamp` (seconds), already snapped by the caller. Entries render
- * as a violet dot below the bar, exits/derisks as an amber arrow above.
+ * `UTCTimestamp` (seconds), already snapped by the caller. Entries draw a
+ * violet arrow below the bar, exits/derisks an amber arrow above; the
+ * marker's labels stack as pills at the arrow's far end (see
+ * `shared/tradeMarkerOverlay.ts`).
  */
 export interface TvTradeMarker {
   readonly time: UTCTimestamp;
   readonly kind: "entry" | "exit";
-  readonly text: string;
+  readonly labels: readonly string[];
 }
-
-const TRADE_ENTRY = "#8a63ff";
-
-const TRADE_EXIT = "#ffa000";
 
 /**
  * Bull/bear canvas colors come from the sentiment palette (green/red
@@ -221,10 +218,17 @@ interface LiveHandles {
   overlaySeries: Array<ISeriesApi<"Line">>;
   subSeries: Array<ISeriesApi<"Line">>;
   subHist: ISeriesApi<"Histogram"> | null;
-  /** Trade dots/arrows primitive on the candle series (v5 plugin). */
-  markers: ISeriesMarkersPluginApi<Time> | null;
+  /** Trade arrow+label primitive on the candle series (custom, v5). */
+  markers: TradeMarkerPrimitive | null;
   /** PnL fill between close and the avg-entry baseline. */
   pnl: ISeriesApi<"Baseline"> | null;
+  /** Per-trade PnL areas for past (closed) trades, newest drawn last. */
+  pastPnl: Array<ISeriesApi<"Baseline">>;
+  /**
+   * Structure generation — bumps on every chart recreate so keyed rebuilds
+   * (past PnL areas) never skip re-attaching onto the fresh chart.
+   */
+  gen: number;
   /** Dashed `avg entry` price line on the candle scale. */
   avgLine: IPriceLine | null;
 }
@@ -239,38 +243,65 @@ const NO_HANDLES: LiveHandles = {
   subHist: null,
   markers: null,
   pnl: null,
+  pastPnl: [],
+  gen: 0,
   avgLine: null,
 };
 
-/**
- * Trade markers → lightweight-charts v5 marker objects (time ascending).
- * Marker geometry uses computed keys: the library's field name is a banned
- * symbol in this repo's lint, and `["shape"]` yields the same property.
- */
-const toSeriesMarkers = (
-  markers: ReadonlyArray<TvTradeMarker>,
-): SeriesMarker<Time>[] =>
-  [...markers]
-    .sort((a, b) => a.time - b.time)
-    .map((m): SeriesMarker<Time> =>
-      m.kind === "entry"
-        ? {
-            time: m.time,
-            position: "belowBar",
-            ["shape"]: "circle",
-            color: TRADE_ENTRY,
-            text: m.text,
-          }
-        : {
-            time: m.time,
-            position: "aboveBar",
-            ["shape"]: "arrowDown",
-            color: TRADE_EXIT,
-            text: m.text,
-          },
-    );
-
 const EMPTY_TRADE_MARKERS: ReadonlyArray<TvTradeMarker> = [];
+
+const EMPTY_PNL_SPANS: ReadonlyArray<HistoryPnlSpan> = [];
+
+/** PnL area fills: the chart's top/bottom band color contract. */
+interface PnlFills {
+  readonly topFillColor1: string;
+  readonly topFillColor2: string;
+  readonly bottomFillColor1: string;
+  readonly bottomFillColor2: string;
+}
+
+/**
+ * PnL area fills. An explicit outcome (a realized percentage) paints the
+ * whole span ONE hue — green for a winner, red for a loser — so a past
+ * trade reads by its result, not by where price wiggled relative to the
+ * entry. Without an outcome (open positions, percentage-less history) the
+ * fills fall back to the live geometric split around the entry, swapped
+ * for shorts.
+ */
+const pnlFills = (
+  palette: ReturnType<typeof candlePalette>,
+  isShort: boolean,
+  profitPct: number | null | undefined,
+): PnlFills => {
+  const outcome =
+    profitPct !== null &&
+    profitPct !== undefined &&
+    Number.isFinite(profitPct) &&
+    profitPct !== 0
+      ? profitPct > 0
+        ? "up"
+        : "down"
+      : null;
+
+  if (outcome === null) {
+    return {
+      topFillColor1: isShort ? palette.pnlDown1 : palette.pnlUp1,
+      topFillColor2: isShort ? palette.pnlDown2 : palette.pnlUp2,
+      bottomFillColor1: isShort ? palette.pnlUp1 : palette.pnlDown1,
+      bottomFillColor2: isShort ? palette.pnlUp2 : palette.pnlDown2,
+    };
+  }
+
+  const fill1 = outcome === "up" ? palette.pnlUp1 : palette.pnlDown1;
+  const fill2 = outcome === "up" ? palette.pnlUp2 : palette.pnlDown2;
+
+  return {
+    topFillColor1: fill1,
+    topFillColor2: fill2,
+    bottomFillColor1: fill1,
+    bottomFillColor2: fill2,
+  };
+};
 
 /**
  * Visible-range distance from the oldest bar that fires `onRequestOlder`:
@@ -287,8 +318,13 @@ export function CandleChart({
   avgEntryPrice = null,
   avgEntryTitle,
   avgEntryIsShort = false,
+  avgEntryProfitPct = null,
   avgEntrySince = null,
+  avgEntryUntil = null,
+  avgEntryLineVisible = true,
+  historyPnlSpans = EMPTY_PNL_SPANS,
   followMarkers = false,
+  focusBarTime = null,
   onRequestOlder,
 }: {
   candles: ReadonlyArray<Candle>;
@@ -299,14 +335,22 @@ export function CandleChart({
   tradeMarkers?: ReadonlyArray<TvTradeMarker>;
   /** Dashed `avg entry` line + PnL fill; null = hidden. */
   avgEntryPrice?: number | null;
-  /** Baseline label override (defaults to `avg entry <price>`). */
+  /** Baseline label override (defaults to `avg entry`; keep it number-free — the axis label already shows the price). */
   avgEntryTitle?: string;
   /**
    * True when the followed position is short: profit sits BELOW the entry
    * (price falling), so the green/red PnL fills swap sides. Long (default)
-   * keeps profit above the entry.
+   * keeps profit above the entry. Ignored when `avgEntryProfitPct` gives
+   * the area an explicit outcome.
    */
   avgEntryIsShort?: boolean;
+  /**
+   * Signed realized percentage of the followed position — when set (closed
+   * position), the PnL area's hue follows the OUTCOME: green wash for a
+   * winner, red for a loser, regardless of where price wiggled. Undefined
+   * (open position) keeps the live geometric split around the entry.
+   */
+  avgEntryProfitPct?: number | null;
   /**
    * Entry-anchored fill start (whole UTC seconds, already snapped to the
    * candle bucket by the caller): the PnL area covers entry → newest
@@ -316,12 +360,41 @@ export function CandleChart({
    */
   avgEntrySince?: number | null;
   /**
+   * Entry-anchored fill END (whole UTC seconds, snapped to the candle
+   * bucket): a followed CLOSED position stops the PnL area at its exit —
+   * shading profit/loss over the sessions after the close would be
+   * fiction. Null (default, open positions) keeps the fill running to the
+   * newest bar.
+   */
+  avgEntryUntil?: number | null;
+  /**
+   * Draw the dashed entry-level price line (with its axis label). False
+   * keeps the PnL area but hides the line — a followed closed position
+   * has no live entry level left to track.
+   */
+  avgEntryLineVisible?: boolean;
+  /**
+   * Profit/loss areas for PAST (closed) trades on this pair — one shaded
+   * entry→exit span per trade, green above / red below the trade's entry
+   * (sides swapped for shorts). The followed position's own area comes
+   * from `avgEntryPrice` + `avgEntrySince`/`avgEntryUntil`; spans should
+   * exclude it to avoid double shading. Newest span draws last.
+   */
+  historyPnlSpans?: ReadonlyArray<HistoryPnlSpan>;
+  /**
    * Follow the newest trade marker: when the marker set changes (pair or
    * timeframe switch, fresh entry) and its newest bar sits outside the
    * current view, zoom out just enough to include it. Never zooms in and
    * never reacts to candle ticks, so free panning is undisturbed.
    */
   followMarkers?: boolean;
+  /**
+   * Bar time (whole UTC seconds, snapped bucket) to keep the view centered
+   * on — the position pager's anchor. When it changes (or the loaded
+   * window is replaced), the visible range recenters so the bar sits about
+   * a third in, keeping the current zoom level. Null = no focus.
+   */
+  focusBarTime?: number | null;
   /**
    * Infinite scroll-back: called whenever the visible range approaches the
    * oldest loaded bar (within `LOAD_OLDER_TRIGGER_BARS`). Fires per pan
@@ -612,11 +685,13 @@ export function CandleChart({
 
     handlesStore.setState((h) => ({ ...h, candles: candleSeries }));
 
-    // Trade dots/arrows (v5 markers primitive — data arrives via the trade
-    // overlay effect below, so toggles never rebuild the chart).
-    const markersPlugin = createSeriesMarkers(candleSeries, []);
+    // Trade arrows + label pills (custom primitive — data arrives via the
+    // trade overlay effect below, so toggles never rebuild the chart).
+    const markers = new TradeMarkerPrimitive();
 
-    handlesStore.setState((h) => ({ ...h, markers: markersPlugin }));
+    candleSeries.attachPrimitive(markers);
+
+    handlesStore.setState((h) => ({ ...h, markers }));
 
     if (showVolume) {
       const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -813,7 +888,9 @@ export function CandleChart({
     return () => {
       chart.remove();
       subChart?.remove();
-      handlesStore.setState(() => ({ ...NO_HANDLES }));
+      // gen survives + bumps: keyed rebuilds below must re-attach onto the
+      // next chart even when their inputs didn't change across the toggle.
+      handlesStore.setState((h) => ({ ...NO_HANDLES, gen: h.gen + 1 }));
     };
     // Structure only: data arrays + pane heights are pushed via setData /
     // applyOptions below, never rebuilt — except the sentiment palette,
@@ -919,10 +996,26 @@ export function CandleChart({
   // effect above, which runs before this one, so recreated handles are
   // always repopulated in the same commit.
   //
+  // Markers anchor to their candle bar (exit → high, entry → low) so the
+  // primitive can start each leader arrow at the right wick.
+  const positionedMarkers = useDerived(
+    [tradeMarkers, candleData] as const,
+    ([markers, candles]) => positionTradeMarkers(markers, candles),
+    { inputs: shallow },
+  );
+
   // Marker-set identity for the follow logic below: the effect re-runs on
   // every candle tick, but the zoom only moves when the markers themselves
   // change.
   const markerKeyStore = useLocalStore<string | null>(null);
+
+  // Past-trade PnL areas rebuild only on this key's change (see below).
+  const pastPnlKeyStore = useLocalStore<string | null>(null);
+
+  // View-focus identity: recenter only when the anchor bar or the loaded
+  // window actually changes — never on live ticks or history prepends'
+  // per-frame updates.
+  const focusKeyStore = useLocalStore<string | null>(null);
 
   useStoreEffect(() => {
     if (!hasCandles) return;
@@ -932,21 +1025,23 @@ export function CandleChart({
     if (!chart || !candleSeries) return;
 
     try {
-      handlesStore.state.markers?.setMarkers(toSeriesMarkers(tradeMarkers));
+      handlesStore.state.markers?.setMarkers(positionedMarkers);
     } catch {
-      // Stale plugin mid-rebuild — next tick repairs.
+      // Stale primitive mid-rebuild — next tick repairs.
     }
 
     if (followMarkers) {
-      const key = tradeMarkers.map((m) => `${m.time}:${m.kind}`).join(",");
+      const key = positionedMarkers
+        .map((m) => `${m.time}:${m.kind}`)
+        .join(",");
 
       if (markerKeyStore.state !== key) {
         markerKeyStore.setState(() => key);
 
-        if (tradeMarkers.length > 0 && candleData.length > 0) {
-          let newest = Number(tradeMarkers[0]!.time);
+        if (positionedMarkers.length > 0 && candleData.length > 0) {
+          let newest = Number(positionedMarkers[0]!.time);
 
-          for (const marker of tradeMarkers) {
+          for (const marker of positionedMarkers) {
             newest = Math.max(newest, Number(marker.time));
           }
 
@@ -971,6 +1066,112 @@ export function CandleChart({
           }
         }
       }
+    }
+
+    // View focus: recenter on the anchor bar (runs after the marker-follow
+    // block above, so an explicit focus wins on pair/position switches).
+    if (focusBarTime !== null && Number.isFinite(focusBarTime) && focusBarTime > 0) {
+      const key = `${focusBarTime}|${candleData[0] ? Number(candleData[0].time) : 0}`;
+
+      if (focusKeyStore.state !== key) {
+        focusKeyStore.setState(() => key);
+
+        let at = -1;
+
+        for (let i = candleData.length - 1; i >= 0; i--) {
+          if (Number(candleData[i]!.time) <= focusBarTime) {
+            at = i;
+            break;
+          }
+        }
+
+        if (at >= 0) {
+          let span = 120;
+
+          try {
+            const range = chart.timeScale().getVisibleLogicalRange();
+
+            if (range) span = Math.max(20, range.to - range.from);
+          } catch {
+            // Chart mid-rebuild — the default span still focuses.
+          }
+
+          try {
+            chart.timeScale().setVisibleLogicalRange({
+              from: at - Math.round(span * 0.3),
+              to: at + Math.round(span * 0.7),
+            });
+          } catch {
+            // Chart mid-rebuild — next keyed change repairs.
+          }
+        }
+      }
+    }
+
+    // Past-trade PnL areas: one baseline per span, rebuilt only when the
+    // spans, palette or the candle series they read from actually change —
+    // not on every live tick (past trades' windows are frozen).
+    const pastPnlSpanKey = `${handlesStore.state.gen}|${paletteKey}|${candleData.length}|${
+      candleData[0] ? Number(candleData[0].time) : 0
+    }|${historyPnlSpans
+      .map(
+        (span) =>
+          `${span.since}:${span.until}:${span.entry}:${span.isShort ? 1 : 0}:${
+            span.profitPct ?? ""
+          }`,
+      )
+      .join(";")}`;
+
+    if (pastPnlKeyStore.state !== pastPnlSpanKey) {
+      pastPnlKeyStore.setState(() => pastPnlSpanKey);
+
+      for (const series of handlesStore.state.pastPnl) {
+        try {
+          chart.removeSeries(series);
+        } catch {
+          // Already removed with the chart — no-op.
+        }
+      }
+
+      handlesStore.setState((h) => ({ ...h, pastPnl: [] }));
+
+      const created: Array<ISeriesApi<"Baseline">> = [];
+
+      for (const span of historyPnlSpans) {
+        const data = orderedByTime(
+          candleData
+            .filter(
+              (d) =>
+                Number(d.time) >= span.since && Number(d.time) <= span.until,
+            )
+            .map((d) => ({
+              time: d.time,
+              value: d.close,
+            })),
+        );
+
+        if (data.length === 0) continue;
+
+        try {
+          const series = chart.addSeries(BaselineSeries, {
+            baseValue: { type: "price", price: span.entry },
+            topLineColor: "transparent",
+            bottomLineColor: "transparent",
+            ...pnlFills(palette, span.isShort, span.profitPct),
+            lineWidth: 1,
+            crosshairMarkerVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+          });
+
+          series.setData(data);
+          created.push(series);
+        } catch {
+          // Chart mid-rebuild — next keyed change repairs.
+        }
+      }
+
+      handlesStore.setState((h) => ({ ...h, pastPnl: created }));
     }
 
     const avg =
@@ -1011,23 +1212,16 @@ export function CandleChart({
     try {
       let pnl = handlesStore.state.pnl;
 
-      // Short positions profit when price falls below entry, so the fills
-      // swap: above-entry (top) is loss/red, below-entry (bottom) is
-      // profit/green. Long keeps the default (top green, bottom red).
-      const topFill1 = avgEntryIsShort ? palette.pnlDown1 : palette.pnlUp1;
-      const topFill2 = avgEntryIsShort ? palette.pnlDown2 : palette.pnlUp2;
-      const bottomFill1 = avgEntryIsShort ? palette.pnlUp1 : palette.pnlDown1;
-      const bottomFill2 = avgEntryIsShort ? palette.pnlUp2 : palette.pnlDown2;
+      // Hue: a closed follow paints by its realized outcome; an open
+      // position keeps the live geometric split (see `pnlFills`).
+      const fills = pnlFills(palette, avgEntryIsShort, avgEntryProfitPct);
 
       if (!pnl) {
         pnl = chart.addSeries(BaselineSeries, {
           baseValue: { type: "price", price: avg },
           topLineColor: "transparent",
           bottomLineColor: "transparent",
-          topFillColor1: topFill1,
-          topFillColor2: topFill2,
-          bottomFillColor1: bottomFill1,
-          bottomFillColor2: bottomFill2,
+          ...fills,
           lineWidth: 1,
           crosshairMarkerVisible: false,
           lastValueVisible: false,
@@ -1037,16 +1231,15 @@ export function CandleChart({
       } else {
         pnl.applyOptions({
           baseValue: { type: "price", price: avg },
-          topFillColor1: topFill1,
-          topFillColor2: topFill2,
-          bottomFillColor1: bottomFill1,
-          bottomFillColor2: bottomFill2,
+          ...fills,
         });
       }
 
       if (candleData.length > 0) {
-        // Entry-anchored: shade entry → newest only. `setData([])` clears
-        // the fill when the entry postdates the window (never stale).
+        // Entry-anchored: shade entry → newest only, and stop at the exit
+        // bucket for a followed closed position. `setData([])` clears the
+        // fill when the window doesn't reach the trade at all (never
+        // stale).
         const since =
           avgEntrySince !== null &&
           Number.isFinite(avgEntrySince) &&
@@ -1054,10 +1247,21 @@ export function CandleChart({
             ? avgEntrySince
             : null;
 
+        const until =
+          avgEntryUntil !== null &&
+          Number.isFinite(avgEntryUntil) &&
+          avgEntryUntil > 0
+            ? avgEntryUntil
+            : null;
+
         pnl.setData(
           orderedByTime(
             candleData
-              .filter((d) => since === null || Number(d.time) >= since)
+              .filter(
+                (d) =>
+                  (since === null || Number(d.time) >= since) &&
+                  (until === null || Number(d.time) <= until),
+              )
               .map((d) => ({
                 time: d.time,
                 value: d.close,
@@ -1078,30 +1282,42 @@ export function CandleChart({
         } catch {
           // Stale line from a rebuilt chart — recreate below.
         }
+
+        handlesStore.setState((h) => ({ ...h, avgLine: null }));
       }
 
-      const line = candleSeries.createPriceLine({
-        price: avg,
-        color: palette.avgEntry,
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: avgEntryTitle ?? `avg entry ${avg.toFixed(precision)}`,
-      });
+      // The dashed level line only tracks LIVE entry levels (open
+      // positions); a followed closed position keeps its PnL area but no
+      // level to follow. The axis label carries the price — the title
+      // stays number-free so the value never renders twice side by side.
+      if (avgEntryLineVisible) {
+        const line = candleSeries.createPriceLine({
+          price: avg,
+          color: palette.avgEntry,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: avgEntryTitle ?? "avg entry",
+        });
 
-      handlesStore.setState((h) => ({ ...h, avgLine: line }));
+        handlesStore.setState((h) => ({ ...h, avgLine: line }));
+      }
     } catch {
       // Chart not ready — next tick repairs.
     }
   }, [
-    tradeMarkers,
+    positionedMarkers,
     avgEntryPrice,
     avgEntryTitle,
     avgEntryIsShort,
+    avgEntryProfitPct,
     avgEntrySince,
+    avgEntryUntil,
+    avgEntryLineVisible,
+    historyPnlSpans,
     followMarkers,
+    focusBarTime,
     candleData,
-    precision,
     hasCandles,
     paletteKey,
   ]);
